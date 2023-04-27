@@ -315,8 +315,10 @@ SPECIFICATIONS = {
     },
     "nmos-parameter-registers": {
         "repo": "nmos-parameter-registers",
-        "versions": ["main"],
-        "default_version": "main",
+        "url": "https://github.com/alabou/",
+        "branch": "tests-bcp-006-02-and-03",
+        "versions": ["tests-bcp-006-02-and-03"],
+        "default_version": "tests-bcp-006-02-and-03",
         "apis": {
             "caps-register": {
                 "name": "Capabilities Register"
@@ -329,6 +331,22 @@ SPECIFICATIONS = {
             }
         }
     },
+    # "nmos-parameter-registers": {
+    #     "repo": "nmos-parameter-registers",
+    #     "versions": ["main"],
+    #     "default_version": "main",
+    #     "apis": {
+    #         "caps-register": {
+    #             "name": "Capabilities Register"
+    #         },
+    #         "flow-register": {
+    #             "name": "Flow Attributes Register"
+    #         },
+    #         "sender-register": {
+    #             "name": "Sender Attributes Register"
+    #         }
+    #     }
+    # },
     "controller-tests": {
         "repo": None,
         "versions": ["v1.0"],
