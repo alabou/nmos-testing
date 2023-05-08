@@ -403,12 +403,12 @@ class BCP0060301Test(GenericTest):
 
                     name = "level-id"
                     if name not in sdp_format_params:
-                        leve_id = "3.1"
+                        level_id = 93 # "3.1"
                     else:
                         level_id = sdp_format_params[name]
 
                     if "tier-flag" not in sdp_format_params:
-                        tier_flag = "0"
+                        tier_flag = 0
                     else:
                         tier_flag = sdp_format_params["tier-flag"]
 
