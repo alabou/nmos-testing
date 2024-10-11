@@ -57,6 +57,28 @@ def getSchemaFromTransport(reg_path, target, transport) :
         reg_schema = load_resolved_schema(reg_path, "{}_transport_params_rtp.json".format(target), path_prefix=False)
     return reg_schema
 
+def getPrivacyProtocolFromTransport(transport) :
+
+    # todo: missing a pure TCP schema
+
+    if transport in ('urn:x-matrox:transport:srt.rtp'):
+        return ("NULL", "SRT", "RTP", "RTP_KV")
+    elif transport in ('urn:x-matrox:transport:srt.mp2t', 'urn:x-matrox:transport:srt'):
+        return ("NULL", "SRT", "UDP", "UDP_KV")
+    elif transport in ('urn:x-matrox:transport:ndi', 'urn:x-nmos:transport:ndi'):
+        return ("NULL")
+    elif transport in ('urn:x-matrox:transport:usb'):
+        return ("NULL", "USB", "USB_KV")
+    elif transport in ('urn:x-matrox:transport:udp', 'urn:x-matrox:transport:udp.mcast', 'urn:x-matrox:transport:udp.ucast', 'urn:x-matrox:transport:udp.mp2t', 'urn:x-matrox:transport:udp.mp2t.mcast', 'urn:x-matrox:transport:udp.mp2t.ucast'):
+        return ("NULL", "UDP", "UDP_KV")
+    elif transport in ('urn:x-matrox:transport:rtp.tcp', 'urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
+        return ("NULL", "RTP", "RTP_KV")
+
+    return None
+
+
+"RTP", "RTP_KV", "SRT", "UDP", "UDP_KV", "USB", "USB_KV", "NULL"
+
 def getGroupNameFromTransport(transport) :
     if transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast', 'urn:x-nmos:transport:rtp.tcp'):
         return "RTP"
@@ -941,7 +963,7 @@ class MatroxTransportsTest(GenericTest):
         if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
                 return False, "in 'rendezvous' mode the 'source_port' and 'destination_port' must be equal"
 
-        return True, None
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
     # cannot check the default configuration because there is no way for the test suite to force that state
     def checkReceiverTransportParametersSrt(self, transport, constraints, staged, active):
@@ -960,7 +982,7 @@ class MatroxTransportsTest(GenericTest):
         if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
                 return False, "in 'rendezvous' mode the 'source_port' and 'destination_port' must be equal"
 
-        return True, None
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkSenderTransportParametersUsb(self, transport, constraints, staged, active):
          
@@ -974,7 +996,7 @@ class MatroxTransportsTest(GenericTest):
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
 
-        return True, None
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
     
     def checkReceiverTransportParametersUsb(self, transport, constraints, staged, active):
 
@@ -988,7 +1010,7 @@ class MatroxTransportsTest(GenericTest):
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
 
-        return True, None
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkSenderTransportParametersNdi(self, transport, constraints, staged, active):
 
@@ -1011,7 +1033,7 @@ class MatroxTransportsTest(GenericTest):
         if not re.match(r'^[a-zA-Z0-9_]+$', active['source_name']):
             return False, "source anme {} is invalid".format(staged['source_name'])
 
-        return True, None
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
     def checkReceiverTransportParametersNdi(self, transport, constraints, staged, active):
 
@@ -1036,7 +1058,7 @@ class MatroxTransportsTest(GenericTest):
             if not re.match(r'^[a-zA-Z0-9_]+$', active['source_name']):
                 return False, "source anme {} is invalid".format(staged['source_name'])
 
-        return True, None
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkSenderTransportParametersRtp(self, transport, constraints, staged, active):
 
@@ -1062,7 +1084,7 @@ class MatroxTransportsTest(GenericTest):
                         return False, "required transport parameter {} not found in active".format(p)
                 break # check once
 
-        return True, None
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
     def checkReceiverTransportParametersRtp(self, transport, constraints, staged, active):
 
@@ -1088,7 +1110,7 @@ class MatroxTransportsTest(GenericTest):
                         return False, "required transport parameter {} not found in active".format(p)
                 break # check once
 
-        return True, None
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkSenderTransportParametersUdp(self, transport, constraints, staged, active):
 
@@ -1102,7 +1124,7 @@ class MatroxTransportsTest(GenericTest):
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
 
-        return True, None
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
     def checkReceiverTransportParametersUdp(self, transport, constraints, staged, active):
 
@@ -1115,5 +1137,79 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+
+    def checkSenderTransportParametersPEP(self, transport, constraints, staged, active):
+
+        pep_required = ('ext_privacy_protocol', 'ext_privacy_mode', 'ext_privacy_iv', 'ext_privacy_key_generator', 'ext_privacy_key_version', 'ext_privacy_key_id' )
+        ecdh_required = ('ext_privacy_ecdh_sender_public_key', 'ext_privacy_ecdh_receiver_public_key', 'ext_privacy_ecdh_curve' )
+
+        for k in constraints.keys():
+
+            if k.startswith("ext_privacy_"):
+                for p in pep_required:
+                    if p not in constraints.keys():
+                        return False, "required transport parameter {} not found in constraints".format(p)
+                    if p not in staged.keys():
+                        return False, "required transport parameter {} not found in staged".format(p)
+                    if p not in active.keys():
+                        return False, "required transport parameter {} not found in active".format(p)
+                    
+                protocols = getPrivacyProtocolFromTransport(transport)
+
+                if staged["ext_privacy_protocol"] not in protocols:
+                    return False, "invalid PEP protocol {}, expecting one of {} ".format(staged["ext_privacy_protocol"], protocols)
+                if active["ext_privacy_protocol"] not in protocols:
+                    return False, "invalid PEP protocol {}, expecting one of {} ".format(active["ext_privacy_protocol"], protocols)
+
+                break # check once
+
+            if k.startswith("ext_privacy_ecdh_"):
+                for p in ecdh_required:
+                    if p not in constraints.keys():
+                        return False, "required transport parameter {} not found in constraints".format(p)
+                    if p not in staged.keys():
+                        return False, "required transport parameter {} not found in staged".format(p)
+                    if p not in active.keys():
+                        return False, "required transport parameter {} not found in active".format(p)
+                break # check once
+
+        return True, None
+
+    def checkReceiverTransportParametersPEP(self, transport, constraints, staged, active):
+
+        pep_required = ('ext_privacy_protocol', 'ext_privacy_mode', 'ext_privacy_iv', 'ext_privacy_key_generator', 'ext_privacy_key_version', 'ext_privacy_key_id' )
+        ecdh_required = ('ext_privacy_ecdh_sender_public_key', 'ext_privacy_ecdh_receiver_public_key', 'ext_privacy_ecdh_curve' )
+
+        for k in constraints.keys():
+
+            if k.startswith("ext_privacy_"):
+                for p in pep_required:
+                    if p not in constraints.keys():
+                        return False, "required transport parameter {} not found in constraints".format(p)
+                    if p not in staged.keys():
+                        return False, "required transport parameter {} not found in staged".format(p)
+                    if p not in active.keys():
+                        return False, "required transport parameter {} not found in active".format(p)
+
+                protocols = getPrivacyProtocolFromTransport(transport)
+
+                if staged["ext_privacy_protocol"] not in protocols:
+                    return False, "invalid PEP protocol {}, expecting one of {} ".format(staged["ext_privacy_protocol"], protocols)
+                if active["ext_privacy_protocol"] not in protocols:
+                    return False, "invalid PEP protocol {}, expecting one of {} ".format(active["ext_privacy_protocol"], protocols)
+
+                break # check once
+
+            if k.startswith("ext_privacy_ecdh_"):
+                for p in ecdh_required:
+                    if p not in constraints.keys():
+                        return False, "required transport parameter {} not found in constraints".format(p)
+                    if p not in staged.keys():
+                        return False, "required transport parameter {} not found in staged".format(p)
+                    if p not in active.keys():
+                        return False, "required transport parameter {} not found in active".format(p)
+                break # check once
 
         return True, None
