@@ -163,8 +163,8 @@ SDP_PREFERENCES = {
     # video/raw, etc.
     "width": 1920,
     "height": 1080,
-    "interlace": True,
-    "exactframerate": "25",
+    "interlace": False,
+    "exactframerate": "60",
     "depth": 10,
     "sampling": "YCbCr-4:2:2",
     "colorimetry": "BT709",
@@ -332,6 +332,18 @@ SPECIFICATIONS = {
             }
         }
     },
+    "NMOS-MatroxOnly": {
+        "repo": "NMOS-MatroxOnly",
+        "url": "https://github.com/alabou/",
+        "branch": "main",
+        "versions": ["main"],
+        "default_version": "main",
+        "apis": {
+            "schemas": {
+                "name": "Matrox Schemas"
+            }
+        }
+    },    
     "controller-tests": {
         "repo": None,
         "versions": ["v1.0"],

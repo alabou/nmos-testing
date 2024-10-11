@@ -686,7 +686,7 @@ class IS05Utils(NMOSUtils):
         if response.status_code in codes:
             return True, response
         else:
-            return False, message
+            return False, message + str(response.json())
 
     def checkCleanRequestJSON(self, method, dest, data=None, code=200):
         """Checks a request can be made and the resulting json can be parsed"""

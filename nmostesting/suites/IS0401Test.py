@@ -192,9 +192,12 @@ class IS0401Test(GenericTest):
         if CONFIG.DNS_SD_MODE == "multicast":
             # Advertise the primary registry and invalid ones at pri 0, and allow the Node to do a basic registration
             if self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.0") != 0:
-                self.zc.register_service(registry_mdns[0], strict=self._strict_service_name(registry_mdns[0]))
-                self.zc.register_service(registry_mdns[1], strict=self._strict_service_name(registry_mdns[1]))
-            self.zc.register_service(registry_mdns[2], strict=self._strict_service_name(registry_mdns[2]))
+                # self.zc.register_service(registry_mdns[0], strict=self._strict_service_name(registry_mdns[0]))
+                # self.zc.register_service(registry_mdns[1], strict=self._strict_service_name(registry_mdns[1]))
+                self.zc.register_service(registry_mdns[0])
+                self.zc.register_service(registry_mdns[1])
+            # self.zc.register_service(registry_mdns[2], strict=self._strict_service_name(registry_mdns[2]))
+            self.zc.register_service(registry_mdns[2])
 
         # Wait for n seconds after advertising the service for the first POST from a Node
         start_time = time.time()

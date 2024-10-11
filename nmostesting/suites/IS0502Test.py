@@ -1144,7 +1144,7 @@ class IS0502Test(GenericTest):
 
                 src_ip = get_default_ip()
                 dst_ip = "232.40.50.{}".format(randint(1, 254))
-                dst_port = randint(5000, 5999)
+                dst_port = ((randint(5000, 5999) >> 1) << 1)
 
                 sdp_file = template.render({**CONFIG.SDP_PREFERENCES,
                                             'src_ip': src_ip,
