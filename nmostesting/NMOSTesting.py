@@ -86,6 +86,7 @@ from .suites import BCP00301Test
 from .suites import BCP0060101Test
 from .suites import BCP0060102Test
 from .suites import MatroxTransportsTest
+from .suites import MatroxCapabilitiesTest
 
 
 FLASK_APPS = []
@@ -401,8 +402,31 @@ TEST_DEFINITIONS = {
         }],
         "class": MatroxTransportsTest.MatroxTransportsTest
     },    
+   "Matrox-Capabilities": {
+        "name": "Matrox-Capabilities",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        },{
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "NMOS-MatroxOnly",
+            "api_key": "schemas"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }],
+        "class": MatroxCapabilitiesTest.MatroxCapabilitiesTest
+    },    
 }
-
 
 def enumerate_tests(class_def, describe=False):
     if describe:

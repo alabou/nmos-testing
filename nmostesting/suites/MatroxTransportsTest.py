@@ -35,6 +35,10 @@ FormatDataEvent = "urn:x-nmos:format:data.event"
 FormatMux       = "urn:x-nmos:format:mux"
 FormatUnknown   = "urn:x-nmos:format:UNKNOWN"
 
+MuxOpaque                   = "video/MP2T"
+MuxFullyDescribedMpeg2TS    = "application/MP2T"
+MuxFullyDescribedGeneric    = "application/mp2t"
+
 def getSchemaFromTransport(reg_path, target, transport) :
 
     if target != "sender" and target != "receiver":
@@ -75,9 +79,6 @@ def getPrivacyProtocolFromTransport(transport) :
         return ("NULL", "RTP", "RTP_KV")
 
     return None
-
-
-"RTP", "RTP_KV", "SRT", "UDP", "UDP_KV", "USB", "USB_KV", "NULL"
 
 def getGroupNameFromTransport(transport) :
     if transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast', 'urn:x-nmos:transport:rtp.tcp'):
@@ -233,7 +234,7 @@ def hasLayersMappingAttribute(params):
 
 class MatroxTransportsTest(GenericTest):
     """
-    Runs Node Tests covering Matrox SRT transport
+    Runs Node Tests covering Matrox transports
     """
     def __init__(self, apis, **kwargs):
         # Don't auto-test /transportfile as it is permitted to generate a 404 when master_enable is false
@@ -551,7 +552,7 @@ class MatroxTransportsTest(GenericTest):
             format = getFormatFromTransport(sender["transport"])
 
             if format is None:
-                warning = "unknown transport {}".format(receiver["transport"])
+                warning = "unknown transport {}".format(sender["transport"])
             else:
                 flow_id = sender["flow_id"]
                 if flow_id is None:
@@ -563,10 +564,11 @@ class MatroxTransportsTest(GenericTest):
                         flow = self.is04_resources["flows"][flow_id]
                         if format == FormatUnknown:
                             if len(flow["parents"]) == 0:
-                                if flow["format"] == FormatMux:
+                                # only opaque mux is allowed to have no parents
+                                if flow["format"] == FormatMux and flow["media_type"] != MuxOpaque:
                                     test.FAIL("sender {} flow {} does not have the proper format {} for not having parent flows for the transport {}".format(sender["id"], flow_id, FormatMux, sender["transport"]))
                             else:
-                                if flow["format"] != FormatMux:
+                                if flow["format"] != FormatMux or flow["media_type"] == MuxOpaque:
                                     test.FAIL("sender {} flow {} does not have the proper format {} for having parent flows for the transport {}".format(sender["id"], flow_id, FormatMux, sender["transport"]))
                         else: 
                             if flow["format"] != format:
@@ -646,7 +648,7 @@ class MatroxTransportsTest(GenericTest):
 
         for sender in self.is04_resources["senders"].values():
 
-            reg_schema = load_resolved_schema(reg_path, "constraints-schema.json", path_prefix=False)
+            reg_schema = load_resolved_schema(reg_path, "is-05-constraints-schema.json", path_prefix=False)
 
             if reg_schema is not None:
                 url = "single/senders/{}/constraints".format(sender["id"])
@@ -744,7 +746,7 @@ class MatroxTransportsTest(GenericTest):
 
         for receiver in self.is04_resources["receivers"].values():
 
-            reg_schema = load_resolved_schema(reg_path, "constraints-schema.json", path_prefix=False)
+            reg_schema = load_resolved_schema(reg_path, "is-05-constraints-schema.json", path_prefix=False)
 
             if reg_schema is not None:
                 url = "single/receivers/{}/constraints".format(receiver["id"])
