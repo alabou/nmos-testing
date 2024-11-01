@@ -61,11 +61,11 @@ from .mocks.Auth import AUTH_API, PRIMARY_AUTH, SECONDARY_AUTH
 from zeroconf import Zeroconf
 
 # Make ANSI escape character sequences (for producing coloured terminal text) work under Windows
-try:
-    import colorama
-    colorama.init()
-except ImportError:
-    pass
+# try:
+#     import colorama
+#     colorama.init()
+# except ImportError:
+#     pass
 
 from .suites import IS0401Test
 from .suites import IS0402Test
@@ -87,7 +87,7 @@ from .suites import BCP0060101Test
 from .suites import BCP0060102Test
 from .suites import MatroxTransportsTest
 from .suites import MatroxCapabilitiesTest
-
+from .suites import MatroxTestSdpTest
 
 FLASK_APPS = []
 DNS_SERVER = None
@@ -425,6 +425,33 @@ TEST_DEFINITIONS = {
             "api_key": "receiver-caps"
         }],
         "class": MatroxCapabilitiesTest.MatroxCapabilitiesTest
+    },    
+   "Matrox-TestSdp": {
+        "name": "Matrox-TestSdp",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "query"
+        },{
+            "spec_key": "is-04",
+            "api_key": "node"
+        },{
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "NMOS-MatroxOnly",
+            "api_key": "schemas"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }],
+        "class": MatroxTestSdpTest.MatroxTestSdpTest
     },    
 }
 

@@ -38,6 +38,17 @@
             "justMyCode": true,
             "args": ["suite", "Matrox-Capabilities",  "--selection", "test_03", "--host",  "127.0.0.1",  "127.0.0.1", "--port", "5056", "5056", "--version", "v1.3", "v1.1"],
             "env": {"PATH":"/home/alabou_ca/.localpython/bin:/home/alabou_ca/.local/bin:/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
+        },
+        {
+            "python": "/home/alabou_ca/.localpython/bin/python3",
+            "name": "Python: MatroxTestSdp",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "nmos-test.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["suite", "Matrox-TestSdp",  "--selection", "test_01", "--host",  "127.0.0.1",  "127.0.0.1", "127.0.0.1", "--port", "8443", "5057", "5057", "--version", "v1.3", "v1.3", "v1.1"],
+            "env": {"PATH":"/home/alabou_ca/.localpython/bin:/home/alabou_ca/.local/bin:/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
         }
 
 
