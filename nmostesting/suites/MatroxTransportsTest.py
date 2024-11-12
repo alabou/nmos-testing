@@ -38,6 +38,7 @@ FormatUnknown   = "urn:x-nmos:format:UNKNOWN"
 MuxOpaque                   = "video/MP2T"
 MuxFullyDescribedMpeg2TS    = "application/MP2T"
 MuxFullyDescribedGeneric    = "application/mp2t"
+MuxFullyDescribedRtsp       = "application/rtsp"
 
 def getSchemaFromTransport(reg_path, target, transport) :
 
@@ -59,6 +60,8 @@ def getSchemaFromTransport(reg_path, target, transport) :
         reg_schema = load_resolved_schema(reg_path, "{}_transport_params_rtp_tcp.json".format(target), path_prefix=False)
     elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
         reg_schema = load_resolved_schema(reg_path, "{}_transport_params_rtp.json".format(target), path_prefix=False)
+    elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+        reg_schema = load_resolved_schema(reg_path, "{}_transport_params_tcp.json".format(target), path_prefix=False)
     return reg_schema
 
 def getPrivacyProtocolFromTransport(transport) :
@@ -77,6 +80,8 @@ def getPrivacyProtocolFromTransport(transport) :
         return ("NULL", "UDP", "UDP_KV")
     elif transport in ('urn:x-matrox:transport:rtp.tcp', 'urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
         return ("NULL", "RTP", "RTP_KV")
+    elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+        return ("NULL", "RTSP", "RTSP_KV")
 
     return None
 
@@ -97,6 +102,8 @@ def getGroupNameFromTransport(transport) :
         return "UDP"
     elif transport == 'urn:x-matrox:transport:tcp':
         return "TCP"
+    elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+        return "RTSP"
 
 def getGroupNameFromTags(tags):
     if "urn:x-nmos:tag:grouphint/v1.0" not in tags:
@@ -223,6 +230,8 @@ def getFormatFromTransport(transport) :
     elif transport in ('urn:x-matrox:transport:udp', 'urn:x-matrox:transport:udp.mcast', 'urn:x-matrox:transport:udp.ucast', 'urn:x-matrox:transport:udp.mp2t', 'urn:x-matrox:transport:udp.mp2t.mcast', 'urn:x-matrox:transport:udp.mp2t.ucast'):
         format = FormatMux
     elif transport in ('urn:x-matrox:transport:rtp.tcp', 'urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
+        format = FormatUnknown
+    elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
         format = FormatUnknown
     return format
 
@@ -788,8 +797,9 @@ class MatroxTransportsTest(GenericTest):
                 s_params = staged["transport_params"][i]
                 a_params = active["transport_params"][i]
 
-                for c in c_params.keys():
-                    if (c not in s_params.keys()) or (c not in a_params.keys()):
+                # Use active as a reference
+                for c in a_params.keys():
+                    if (c not in c_params.keys()) or (c not in s_params.keys()):
                         return test.FAIL("receiver staged, active and constraints parameters are inconsistent")
 
                 i = i + 1
@@ -839,6 +849,8 @@ class MatroxTransportsTest(GenericTest):
             return self.checkSenderTransportParametersRtp(transport, constraints, staged, active)
         elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
             return self.checkSenderTransportParametersRtp(transport, constraints, staged, active)
+        elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+            return self.checkSenderTransportParametersRtsp(transport, constraints, staged, active)
 
         return False, "unknown transport"
 
@@ -856,6 +868,8 @@ class MatroxTransportsTest(GenericTest):
             return self.checkReceiverTransportParametersRtp(transport, constraints, staged, active)
         elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
             return self.checkReceiverTransportParametersRtp(transport, constraints, staged, active)
+        elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+            return self.checkReceiverTransportParametersRtsp(transport, constraints, staged, active)
 
         return False, "unknown transport"
 
@@ -1178,6 +1192,34 @@ class MatroxTransportsTest(GenericTest):
                 break # check once
 
         return True, None
+
+    def checkSenderTransportParametersRtsp(self, transport, constraints, staged, active):
+
+        required = ('source_ip', 'source_port')
+
+        for p in required:
+            if p not in constraints.keys():
+                return False, "required transport parameter {} not found in constraints".format(p)
+            if p not in staged.keys():
+                return False, "required transport parameter {} not found in staged".format(p)
+            if p not in active.keys():
+                return False, "required transport parameter {} not found in active".format(p)
+
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+
+    def checkReceiverTransportParametersRtsp(self, transport, constraints, staged, active):
+
+        required = ('source_ip', 'interface_ip', 'source_port')
+
+        for p in required:
+            if p not in constraints.keys():
+                return False, "required transport parameter {} not found in constraints".format(p)
+            if p not in staged.keys():
+                return False, "required transport parameter {} not found in staged".format(p)
+            if p not in active.keys():
+                return False, "required transport parameter {} not found in active".format(p)
+
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkReceiverTransportParametersPEP(self, transport, constraints, staged, active):
 
