@@ -966,6 +966,7 @@ class MatroxTransportsTest(GenericTest):
     def checkSenderTransportParametersSrt(self, transport, constraints, staged, active):
 
         required = ('source_ip', 'source_port', 'destination_ip', 'destination_port', 'protocol', 'latency')
+        optional = ('stream_id')
 
         for p in required:
             if p not in constraints.keys():
@@ -974,6 +975,16 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
 
         # check only on active as staged parameters are transient and can as a whole be invalid prior to activation
         if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
@@ -985,6 +996,7 @@ class MatroxTransportsTest(GenericTest):
     def checkReceiverTransportParametersSrt(self, transport, constraints, staged, active):
 
         required = ('source_ip', 'source_port', 'destination_ip', 'destination_port', 'protocol', 'latency')
+        optional = ('stream_id')
 
         for p in required:
             if p not in constraints.keys():
@@ -993,6 +1005,16 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
 
         # check only on active as staged parameters are transient and can as a whole be invalid prior to activation
         if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
@@ -1012,6 +1034,16 @@ class MatroxTransportsTest(GenericTest):
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
 
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in active".format(p)
+
         return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
     
     def checkReceiverTransportParametersUsb(self, transport, constraints, staged, active):
@@ -1026,6 +1058,16 @@ class MatroxTransportsTest(GenericTest):
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
 
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in active".format(p)
+
         return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkSenderTransportParametersNdi(self, transport, constraints, staged, active):
@@ -1036,6 +1078,8 @@ class MatroxTransportsTest(GenericTest):
         else:
             required = ('source_ip', 'source_port', 'source_name', 'machine_name')
 
+        optional = ('source_url')
+
         for p in required:
             if p not in constraints.keys():
                 return False, "required transport parameter {} not found in constraints".format(p)
@@ -1043,6 +1087,16 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
 
         if not re.match(r'^[a-zA-Z0-9_]+$', staged['source_name']):
             return False, "source anme {} is invalid".format(staged['source_name'])
@@ -1059,6 +1113,8 @@ class MatroxTransportsTest(GenericTest):
         else:
             required = ('source_ip', 'source_port', 'source_name', 'machine_name', 'interface_ip')
 
+        optional = ('source_url')
+
         for p in required:
             if p not in constraints.keys():
                 return False, "required transport parameter {} not found in constraints".format(p)
@@ -1066,6 +1122,16 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
 
         if staged['source_name'] is not None:
             if not re.match(r'^[a-zA-Z0-9_]+$', staged['source_name']):
@@ -1076,10 +1142,12 @@ class MatroxTransportsTest(GenericTest):
 
         return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
+    # We do not enforce the all or nothing rule for FEC
     def checkSenderTransportParametersRtp(self, transport, constraints, staged, active):
 
         required = ('source_ip', 'destination_ip', 'source_port', 'destination_port', 'rtp_enabled')
         rtcp_required = ('rtcp_enabled', 'rtcp_destination_ip', 'rtcp_destination_port', 'rtcp_source_port')
+        optional = ('fec_enabled', 'fec_destination_ip', 'fec_type', 'fec_mode', 'fec_block_width', 'fec_block_height', 'fec1D_destination_port', 'fec2D_destination_port', 'fec1D_source_port', 'fec2D_source_port' )
 
         for p in required:
             if p not in constraints.keys():
@@ -1100,12 +1168,24 @@ class MatroxTransportsTest(GenericTest):
                         return False, "required transport parameter {} not found in active".format(p)
                 break # check once
 
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
+            
         return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
+    # We do not enforce the all or nothing rule for FEC
     def checkReceiverTransportParametersRtp(self, transport, constraints, staged, active):
 
         required = ('source_ip', 'interface_ip', 'destination_port', 'rtp_enabled')
         rtcp_required = ('rtcp_destination_ip', 'rtcp_enabled', 'rtcp_destination_port')
+        optional = ('multicast_ip', 'fec_enabled', 'fec_destination_ip', 'fec_mode', 'fec1D_destination_port', 'fec2D_destination_port')
 
         for p in required:
             if p not in constraints.keys():
@@ -1126,11 +1206,23 @@ class MatroxTransportsTest(GenericTest):
                         return False, "required transport parameter {} not found in active".format(p)
                 break # check once
 
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
+            
         return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
+    # We do not enforce the all or nothing rule for FEC
     def checkSenderTransportParametersUdp(self, transport, constraints, staged, active):
 
         required = ('source_ip', 'destination_ip', 'source_port', 'destination_port', 'enabled')
+        optional = ('fec_enabled', 'fec_destination_ip', 'fec_type', 'fec_mode', 'fec_block_width', 'fec_block_height', 'fec1D_destination_port', 'fec2D_destination_port', 'fec1D_source_port', 'fec2D_source_port' )
 
         for p in required:
             if p not in constraints.keys():
@@ -1139,12 +1231,24 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
 
         return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
+    # We do not enforce the all or nothing rule for FEC
     def checkReceiverTransportParametersUdp(self, transport, constraints, staged, active):
 
         required = ('source_ip', 'interface_ip', 'destination_port', 'enabled')
+        optional = ('multicast_ip', 'fec_enabled', 'fec_destination_ip', 'fec_mode', 'fec1D_destination_port', 'fec2D_destination_port')
 
         for p in required:
             if p not in constraints.keys():
@@ -1153,6 +1257,64 @@ class MatroxTransportsTest(GenericTest):
                 return False, "required transport parameter {} not found in staged".format(p)
             if p not in active.keys():
                 return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required and p not in optional:
+                return False, "unknown transport parameter {} in active".format(p)
+
+        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+
+    def checkSenderTransportParametersRtsp(self, transport, constraints, staged, active):
+
+        required = ('source_ip', 'source_port')
+
+        for p in required:
+            if p not in constraints.keys():
+                return False, "required transport parameter {} not found in constraints".format(p)
+            if p not in staged.keys():
+                return False, "required transport parameter {} not found in staged".format(p)
+            if p not in active.keys():
+                return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in active".format(p)
+
+        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+
+    def checkReceiverTransportParametersRtsp(self, transport, constraints, staged, active):
+
+        required = ('source_ip', 'interface_ip', 'source_port')
+
+        for p in required:
+            if p not in constraints.keys():
+                return False, "required transport parameter {} not found in constraints".format(p)
+            if p not in staged.keys():
+                return False, "required transport parameter {} not found in staged".format(p)
+            if p not in active.keys():
+                return False, "required transport parameter {} not found in active".format(p)
+
+        for p in constraints.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in constraints".format(p)
+        for p in staged.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in staged".format(p)
+        for p in active.keys():
+            if not p.startswith("ext_") and p not in required:
+                return False, "unknown transport parameter {} in active".format(p)
 
         return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
@@ -1192,34 +1354,6 @@ class MatroxTransportsTest(GenericTest):
                 break # check once
 
         return True, None
-
-    def checkSenderTransportParametersRtsp(self, transport, constraints, staged, active):
-
-        required = ('source_ip', 'source_port')
-
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
-
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
-
-    def checkReceiverTransportParametersRtsp(self, transport, constraints, staged, active):
-
-        required = ('source_ip', 'interface_ip', 'source_port')
-
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
-
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
     def checkReceiverTransportParametersPEP(self, transport, constraints, staged, active):
 
