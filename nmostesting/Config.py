@@ -318,8 +318,10 @@ SPECIFICATIONS = {
     },
     "nmos-parameter-registers": {
         "repo": "nmos-parameter-registers",
-        "versions": ["main"],
-        "default_version": "main",
+        "url": "https://github.com/alabou/",
+        "branch": "MatroxOnly",
+        "versions": ["MatroxOnly"],
+        "default_version": "MatroxOnly",
         "apis": {
             "caps-register": {
                 "name": "Capabilities Register"

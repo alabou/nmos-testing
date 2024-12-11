@@ -61,11 +61,11 @@ from .mocks.Auth import AUTH_API, PRIMARY_AUTH, SECONDARY_AUTH
 from zeroconf import Zeroconf
 
 # Make ANSI escape character sequences (for producing coloured terminal text) work under Windows
-try:
-    import colorama
-    colorama.init()
-except ImportError:
-    pass
+# try:
+#     import colorama
+#     colorama.init()
+# except ImportError:
+#     pass
 
 from .suites import IS0401Test
 from .suites import IS0402Test
@@ -87,7 +87,8 @@ from .suites import BCP0060101Test
 from .suites import BCP0060102Test
 from .suites import MatroxTransportsTest
 from .suites import MatroxCapabilitiesTest
-
+from .suites import MatroxH264Test
+from .suites import MatroxH265Test
 
 FLASK_APPS = []
 DNS_SERVER = None
@@ -426,6 +427,54 @@ TEST_DEFINITIONS = {
         }],
         "class": MatroxCapabilitiesTest.MatroxCapabilitiesTest
     },    
+   "Matrox-H264": {
+        "name": "Matrox-H264",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        },{
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "NMOS-MatroxOnly",
+            "api_key": "schemas"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }],
+        "class": MatroxH264Test.MatroxH264Test
+    },    
+   "Matrox-H265": {
+        "name": "Matrox-H265",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        },{
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "NMOS-MatroxOnly",
+            "api_key": "schemas"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }],
+        "class": MatroxH265Test.MatroxH265Test
+    },     
 }
 
 def enumerate_tests(class_def, describe=False):
@@ -711,7 +760,7 @@ def init_spec_cache():
             else:
                 repo_branch = repo_data["branch"]
 
-            print(" * Initialising repository '{}'".format(repo_data["repo"]))
+            print(" * Initialising repository '{}' from branch '{}' at url '{}'".format(repo_data["repo"], repo_branch, repo_url))
 
             repo = git.Repo.clone_from(repo_url + repo_data["repo"] + '.git', path)
 
