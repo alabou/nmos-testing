@@ -318,7 +318,7 @@ class MatroxH264Test(GenericTest):
                                         "the 'st2110_21_sender_type' attribute if it is compliant with ST 2110-22." \
                                         .format(sender["id"])
 
-                    # A warning is not given if the bit_rate is not provided even if the spaeicication says "SHOULD" 
+                    # A warning is not given if the bit_rate is not provided even if the specification says "SHOULD" 
                     # because there is not such requirement in RFC6184 and it is not current practice to provide such
                     # information in all the scenarios.
                     if "st2110_21_sender_type" in sender:
