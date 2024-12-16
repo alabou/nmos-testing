@@ -154,7 +154,7 @@ class MatroxH265Test(GenericTest):
                 for parent_flow in mux_flow["parents"]:
                     if flow_map[parent_flow]["format"] == "urn:x-nmos:format:video":
                         if flow_map[parent_flow]["media_type"] == "video/H265":
-                            h265_flows.append(parent_flow)
+                            h265_flows.append(flow_map[parent_flow])
 
             warn_na = False
             warn_message = ""
@@ -235,7 +235,7 @@ class MatroxH265Test(GenericTest):
                 for parent_flow in mux_flow["parents"]:
                     if flow_map[parent_flow]["format"] == "urn:x-nmos:format:video":
                         if flow_map[parent_flow]["media_type"] == "video/H265":
-                            h265_flows.append(parent_flow)
+                            h265_flows.append(flow_map[parent_flow])
 
             for flow in h265_flows:
                 source = source_map[flow["source_id"]]
@@ -490,7 +490,7 @@ class MatroxH265Test(GenericTest):
                                             .format(name, sender["id"], nmos_name, sprop_max_don_diff, packet_transmission_mode))
 
                     # The `sprop-parameter-sets` MUST always be included if the Sender `parameter_sets_transport_mode` attribute is `out_of_band`
-                    name, nmos_name = "sprop-parameter-sets", "parameter_sets_transport_mode"
+                    name, nmos_name = "sprop-parameter-sets", "urn:x-matrox:parameter_sets_transport_mode"
 
                     if nmos_name in sender and sender[nmos_name] == "out_of_band":
                         if not name in sdp_format_params or sdp_format_params[name] == "":
@@ -837,12 +837,12 @@ class MatroxH265Test(GenericTest):
                                     return test.FAIL("Receiver {} uses an invalid value for '{}': {}"
                                                      .format(receiver["id"], constraint, enum_value))
                                 
-                            if (rfc2250 or other_mux) and constraint == "parameter_sets_flow_mode":
+                            if (rfc2250 or other_mux) and constraint == "urn:x-matrox:cap:transport:parameter_sets_flow_mode":
                                 if not "dynamic" in constraint_set[constraint]["enum"]:
                                     return test.FAIL("Receiver {} must support 'dynamic' or be unconstrained '{}': {}"
                                                      .format(receiver["id"], constraint, constraint_set[constraint]["enum"]))
             
-                            if (rfc2250 or other_mux) and constraint == "parameter_sets_transport_mode":
+                            if (rfc2250 or other_mux) and constraint == "urn:x-matrox:cap:transport:parameter_sets_transport_mode":
                                 if not "in_band" in constraint_set[constraint]["enum"]:
                                     return test.FAIL("Receiver {} must support 'in_band' or be unconstrained '{}': {}"
                                                      .format(receiver["id"], constraint, constraint_set[constraint]["enum"]))

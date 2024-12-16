@@ -89,6 +89,7 @@ from .suites import MatroxTransportsTest
 from .suites import MatroxCapabilitiesTest
 from .suites import MatroxH264Test
 from .suites import MatroxH265Test
+from .suites import MatroxAacTest
 
 FLASK_APPS = []
 DNS_SERVER = None
@@ -475,6 +476,27 @@ TEST_DEFINITIONS = {
         }],
         "class": MatroxH265Test.MatroxH265Test
     },     
+   "Matrox-AAC": {
+        "name": "Matrox-AAC",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        },{
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "NMOS-MatroxOnly",
+            "api_key": "schemas"
+        }],
+        "class": MatroxAacTest.MatroxAacTest
+    },    
 }
 
 def enumerate_tests(class_def, describe=False):
