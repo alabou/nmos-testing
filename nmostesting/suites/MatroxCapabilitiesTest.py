@@ -360,9 +360,10 @@ class MatroxCapabilitiesTest(GenericTest):
 
             # for all layers
             if AttributeLayerCompatibilityGroups not in parent_flow:
-                raise NMOSTestException("parent layer compatibility groups not found")
-
-            groups = parent_flow[AttributeLayerCompatibilityGroups]
+                groups = list(range(64))
+            else:
+                groups = parent_flow[AttributeLayerCompatibilityGroups]
+                
             mask = 0
             for v in groups:
                 mask |= 1 << v
@@ -374,7 +375,7 @@ class MatroxCapabilitiesTest(GenericTest):
                 intersection &= mask
 
             if (parent_flow[AttributeLayer] == layer):
-                layer_compatibility_groups = parent_flow[AttributeLayerCompatibilityGroups]
+                layer_compatibility_groups = groups
 
         return layer_compatibility_groups, intersection
 
@@ -507,7 +508,7 @@ class MatroxCapabilitiesTest(GenericTest):
                 return test.FAIL("Sender {} Flow has an invalid format {}. Expecting {}".format(sender["id"], flow["format"], format))
 
             # Make sure there is no sub-Flow specific attributes
-            if (AttributeLayer in sender) or (AttributeLayerCompatibilityGroups in flow):
+            if AttributeLayer in flow:
                 return test.FAIL("Sender {} has invalid sub-Flow attributes".format(sender["id"]))
             
             if format != FormatMux:
@@ -547,9 +548,9 @@ class MatroxCapabilitiesTest(GenericTest):
                         return test.FAIL("Sender {} parent flow format is invalid".format(sender["id"]))
 
                     if AttributeLayerCompatibilityGroups not in parent_flow:
-                        return test.FAIL("Sender {} parent layer compatibility groups not found".format(sender["id"]))
-
-                    groups = parent_flow[AttributeLayerCompatibilityGroups]
+                        groups = list(range(64))
+                    else:
+                        groups = parent_flow[AttributeLayerCompatibilityGroups]
 
                     mask = 0
                     for v in groups:

@@ -725,7 +725,7 @@ class MatroxTransportsTest(GenericTest):
             i = 0
             for c_params in constraints:
 
-                valid, msg = self.checkSenderTransportParameters(sender["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
+                valid, msg = checkSenderTransportParameters(sender["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
                 if not valid:
                     return test.FAIL("sender active transport parameters is not valid against minimum requirements, error {}".format(msg))
                 
@@ -824,7 +824,7 @@ class MatroxTransportsTest(GenericTest):
             i = 0
             for c_params in constraints:
 
-                valid, msg = self.checkReceiverTransportParameters(receiver["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
+                valid, msg = checkReceiverTransportParameters(receiver["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
                 if not valid:
                     return test.FAIL("receiver active transport parameters is not valid against minimum requirements, error {}".format(msg))
                 
@@ -834,44 +834,6 @@ class MatroxTransportsTest(GenericTest):
             return test.WARNING(warning)
         else:
             return test.PASS()
-
-    def checkSenderTransportParameters(self, transport, constraints, staged, active):
-
-        if transport in ('urn:x-matrox:transport:srt.rtp', 'urn:x-matrox:transport:srt.mp2t', 'urn:x-matrox:transport:srt'):
-            return self.checkSenderTransportParametersSrt(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:ndi', 'urn:x-nmos:transport:ndi'):
-            return self.checkSenderTransportParametersNdi(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:usb'):
-            return self.checkSenderTransportParametersUsb(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:udp', 'urn:x-matrox:transport:udp.mcast', 'urn:x-matrox:transport:udp.ucast', 'urn:x-matrox:transport:udp.mp2t', 'urn:x-matrox:transport:udp.mp2t.mcast', 'urn:x-matrox:transport:udp.mp2t.ucast'):
-            return self.checkSenderTransportParametersUdp(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:rtp.tcp'):
-            return self.checkSenderTransportParametersRtp(transport, constraints, staged, active)
-        elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
-            return self.checkSenderTransportParametersRtp(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
-            return self.checkSenderTransportParametersRtsp(transport, constraints, staged, active)
-
-        return False, "unknown transport"
-
-    def checkReceiverTransportParameters(self, transport, constraints, staged, active):
-
-        if transport in ('urn:x-matrox:transport:srt.rtp', 'urn:x-matrox:transport:srt.mp2t', 'urn:x-matrox:transport:srt'):
-            return self.checkReceiverTransportParametersSrt(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:ndi', 'urn:x-nmos:transport:ndi'):
-            return self.checkReceiverTransportParametersNdi(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:usb'):
-            return self.checkReceiverTransportParametersUsb(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:udp', 'urn:x-matrox:transport:udp.mcast', 'urn:x-matrox:transport:udp.ucast', 'urn:x-matrox:transport:udp.mp2t', 'urn:x-matrox:transport:udp.mp2t.mcast', 'urn:x-matrox:transport:udp.mp2t.ucast'):
-            return self.checkReceiverTransportParametersUdp(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:rtp.tcp'):
-            return self.checkReceiverTransportParametersRtp(transport, constraints, staged, active)
-        elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
-            return self.checkReceiverTransportParametersRtp(transport, constraints, staged, active)
-        elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
-            return self.checkReceiverTransportParametersRtsp(transport, constraints, staged, active)
-
-        return False, "unknown transport"
 
     def test_09(self, test):
 
@@ -962,432 +924,470 @@ class MatroxTransportsTest(GenericTest):
         else:
             return test.PASS()
 
-    # cannot check the default configuration because there is no way for the test suite to force that state
-    def checkSenderTransportParametersSrt(self, transport, constraints, staged, active):
+def checkSenderTransportParameters(transport, constraints, staged, active):
 
-        required = ('source_ip', 'source_port', 'destination_ip', 'destination_port', 'protocol', 'latency')
-        optional = ('stream_id')
+    if transport in ('urn:x-matrox:transport:srt.rtp', 'urn:x-matrox:transport:srt.mp2t', 'urn:x-matrox:transport:srt'):
+        return checkSenderTransportParametersSrt(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:ndi', 'urn:x-nmos:transport:ndi'):
+        return checkSenderTransportParametersNdi(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:usb'):
+        return checkSenderTransportParametersUsb(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:udp', 'urn:x-matrox:transport:udp.mcast', 'urn:x-matrox:transport:udp.ucast', 'urn:x-matrox:transport:udp.mp2t', 'urn:x-matrox:transport:udp.mp2t.mcast', 'urn:x-matrox:transport:udp.mp2t.ucast'):
+        return checkSenderTransportParametersUdp(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:rtp.tcp'):
+        return checkSenderTransportParametersRtp(transport, constraints, staged, active)
+    elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
+        return checkSenderTransportParametersRtp(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+        return checkSenderTransportParametersRtsp(transport, constraints, staged, active)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    return False, "unknown transport"
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
+def checkReceiverTransportParameters(transport, constraints, staged, active):
 
-        # check only on active as staged parameters are transient and can as a whole be invalid prior to activation
-        if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
-                return False, "in 'rendezvous' mode the 'source_port' and 'destination_port' must be equal"
+    if transport in ('urn:x-matrox:transport:srt.rtp', 'urn:x-matrox:transport:srt.mp2t', 'urn:x-matrox:transport:srt'):
+        return checkReceiverTransportParametersSrt(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:ndi', 'urn:x-nmos:transport:ndi'):
+        return checkReceiverTransportParametersNdi(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:usb'):
+        return checkReceiverTransportParametersUsb(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:udp', 'urn:x-matrox:transport:udp.mcast', 'urn:x-matrox:transport:udp.ucast', 'urn:x-matrox:transport:udp.mp2t', 'urn:x-matrox:transport:udp.mp2t.mcast', 'urn:x-matrox:transport:udp.mp2t.ucast'):
+        return checkReceiverTransportParametersUdp(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:rtp.tcp'):
+        return checkReceiverTransportParametersRtp(transport, constraints, staged, active)
+    elif transport in ('urn:x-nmos:transport:rtp', 'urn:x-nmos:transport:rtp.mcast', 'urn:x-nmos:transport:rtp.ucast'):
+        return checkReceiverTransportParametersRtp(transport, constraints, staged, active)
+    elif transport in ('urn:x-matrox:transport:rtsp', 'urn:x-matrox:transport:rtsp.tcp'):
+        return checkReceiverTransportParametersRtsp(transport, constraints, staged, active)
 
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+    return False, "unknown transport"
 
-    # cannot check the default configuration because there is no way for the test suite to force that state
-    def checkReceiverTransportParametersSrt(self, transport, constraints, staged, active):
+# cannot check the default configuration because there is no way for the test suite to force that state
+def checkSenderTransportParametersSrt(transport, constraints, staged, active):
 
-        required = ('source_ip', 'source_port', 'destination_ip', 'destination_port', 'protocol', 'latency')
-        optional = ('stream_id')
+    required = ('source_ip', 'source_port', 'destination_ip', 'destination_port', 'protocol', 'latency')
+    optional = ('stream_id')
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        # check only on active as staged parameters are transient and can as a whole be invalid prior to activation
-        if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
-                return False, "in 'rendezvous' mode the 'source_port' and 'destination_port' must be equal"
+    # check only on active as staged parameters are transient and can as a whole be invalid prior to activation
+    if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
+            return False, "in 'rendezvous' mode the 'source_port' and 'destination_port' must be equal"
 
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+    return checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
-    def checkSenderTransportParametersUsb(self, transport, constraints, staged, active):
-         
-        required = ('source_ip', 'source_port')
+# cannot check the default configuration because there is no way for the test suite to force that state
+def checkReceiverTransportParametersSrt(transport, constraints, staged, active):
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    required = ('source_ip', 'source_port', 'destination_ip', 'destination_port', 'protocol', 'latency')
+    optional = ('stream_id')
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in active".format(p)
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
-    
-    def checkReceiverTransportParametersUsb(self, transport, constraints, staged, active):
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        required = ('source_ip', 'source_port', 'interface_ip')
+    # check only on active as staged parameters are transient and can as a whole be invalid prior to activation
+    if active["protocol"] == "rendezvous" and active["source_port"] != active["destination_port"]:
+            return False, "in 'rendezvous' mode the 'source_port' and 'destination_port' must be equal"
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    return checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in active".format(p)
+def checkSenderTransportParametersUsb(transport, constraints, staged, active):
+        
+    required = ('source_ip', 'source_port')
 
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-    def checkSenderTransportParametersNdi(self, transport, constraints, staged, active):
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        # NMOS not worried about cross domain issues
-        if transport == 'urn:x-nmos:transport:ndi':
-            required = ('source_name', 'machine_name')
-        else:
-            required = ('source_ip', 'source_port', 'source_name', 'machine_name')
+    return checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
-        optional = ('source_url')
+def checkReceiverTransportParametersUsb(transport, constraints, staged, active):
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    required = ('source_ip', 'source_port', 'interface_ip')
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in active".format(p)
+
+    return checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+
+def checkSenderTransportParametersNdi(transport, constraints, staged, active):
+
+    # NMOS not worried about cross domain issues
+    if transport == 'urn:x-nmos:transport:ndi':
+        required = ('source_name', 'machine_name')
+    else:
+        required = ('source_ip', 'source_port', 'source_name', 'machine_name')
+
+    optional = ('source_url')
+
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
+
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
+
+    if not re.match(r'^[a-zA-Z0-9_]+$', staged['source_name']):
+        return False, "source anme {} is invalid".format(staged['source_name'])
+    if not re.match(r'^[a-zA-Z0-9_]+$', active['source_name']):
+        return False, "source anme {} is invalid".format(staged['source_name'])
+
+    return checkSenderTransportParametersPEP(transport, constraints, staged, active)
+
+def checkReceiverTransportParametersNdi(transport, constraints, staged, active):
+
+    # NMOS not worried about cross domain issues
+    if transport == 'urn:x-nmos:transport:ndi':
+        required = ('source_name', 'machine_name')
+    else:
+        required = ('source_ip', 'source_port', 'source_name', 'machine_name', 'interface_ip')
+
+    optional = ('source_url')
+
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
+
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
+
+    if staged['source_name'] is not None:
         if not re.match(r'^[a-zA-Z0-9_]+$', staged['source_name']):
             return False, "source anme {} is invalid".format(staged['source_name'])
+    if active['source_name'] is not None:
         if not re.match(r'^[a-zA-Z0-9_]+$', active['source_name']):
             return False, "source anme {} is invalid".format(staged['source_name'])
 
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+    return checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
-    def checkReceiverTransportParametersNdi(self, transport, constraints, staged, active):
+# We do not enforce the all or nothing rule for FEC
+def checkSenderTransportParametersRtp(transport, constraints, staged, active):
 
-        # NMOS not worried about cross domain issues
-        if transport == 'urn:x-nmos:transport:ndi':
-            required = ('source_name', 'machine_name')
-        else:
-            required = ('source_ip', 'source_port', 'source_name', 'machine_name', 'interface_ip')
+    required = ('source_ip', 'destination_ip', 'source_port', 'destination_port', 'rtp_enabled')
+    rtcp_required = ('rtcp_enabled', 'rtcp_destination_ip', 'rtcp_destination_port', 'rtcp_source_port')
+    optional = ('fec_enabled', 'fec_destination_ip', 'fec_type', 'fec_mode', 'fec_block_width', 'fec_block_height', 'fec1D_destination_port', 'fec2D_destination_port', 'fec1D_source_port', 'fec2D_source_port' )
 
-        optional = ('source_url')
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    for k in constraints.keys():
+        if k.startswith("rtcp_"):
+            for p in rtcp_required:
+                if p not in constraints.keys():
+                    return False, "required transport parameter {} not found in constraints".format(p)
+                if p not in staged.keys():
+                    return False, "required transport parameter {} not found in staged".format(p)
+                if p not in active.keys():
+                    return False, "required transport parameter {} not found in active".format(p)
+            break # check once
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
+        
+    return checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
-        if staged['source_name'] is not None:
-            if not re.match(r'^[a-zA-Z0-9_]+$', staged['source_name']):
-                return False, "source anme {} is invalid".format(staged['source_name'])
-        if active['source_name'] is not None:
-            if not re.match(r'^[a-zA-Z0-9_]+$', active['source_name']):
-                return False, "source anme {} is invalid".format(staged['source_name'])
+# We do not enforce the all or nothing rule for FEC
+def checkReceiverTransportParametersRtp(transport, constraints, staged, active):
 
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+    required = ('source_ip', 'interface_ip', 'destination_port', 'rtp_enabled')
+    rtcp_required = ('rtcp_destination_ip', 'rtcp_enabled', 'rtcp_destination_port')
+    optional = ('multicast_ip', 'fec_enabled', 'fec_destination_ip', 'fec_mode', 'fec1D_destination_port', 'fec2D_destination_port')
 
-    # We do not enforce the all or nothing rule for FEC
-    def checkSenderTransportParametersRtp(self, transport, constraints, staged, active):
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        required = ('source_ip', 'destination_ip', 'source_port', 'destination_port', 'rtp_enabled')
-        rtcp_required = ('rtcp_enabled', 'rtcp_destination_ip', 'rtcp_destination_port', 'rtcp_source_port')
-        optional = ('fec_enabled', 'fec_destination_ip', 'fec_type', 'fec_mode', 'fec_block_width', 'fec_block_height', 'fec1D_destination_port', 'fec2D_destination_port', 'fec1D_source_port', 'fec2D_source_port' )
+    for k in constraints.keys():
+        if k.startswith("rtcp_"):
+            for p in rtcp_required:
+                if p not in constraints.keys():
+                    return False, "required transport parameter {} not found in constraints".format(p)
+                if p not in staged.keys():
+                    return False, "required transport parameter {} not found in staged".format(p)
+                if p not in active.keys():
+                    return False, "required transport parameter {} not found in active".format(p)
+            break # check once
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
+        
+    return checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
-        for k in constraints.keys():
-            if k.startswith("rtcp_"):
-                for p in rtcp_required:
-                    if p not in constraints.keys():
-                        return False, "required transport parameter {} not found in constraints".format(p)
-                    if p not in staged.keys():
-                        return False, "required transport parameter {} not found in staged".format(p)
-                    if p not in active.keys():
-                        return False, "required transport parameter {} not found in active".format(p)
-                break # check once
+# We do not enforce the all or nothing rule for FEC
+def checkSenderTransportParametersUdp(transport, constraints, staged, active):
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
-            
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+    required = ('source_ip', 'destination_ip', 'source_port', 'destination_port', 'enabled')
+    optional = ('fec_enabled', 'fec_destination_ip', 'fec_type', 'fec_mode', 'fec_block_width', 'fec_block_height', 'fec1D_destination_port', 'fec2D_destination_port', 'fec1D_source_port', 'fec2D_source_port' )
 
-    # We do not enforce the all or nothing rule for FEC
-    def checkReceiverTransportParametersRtp(self, transport, constraints, staged, active):
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        required = ('source_ip', 'interface_ip', 'destination_port', 'rtp_enabled')
-        rtcp_required = ('rtcp_destination_ip', 'rtcp_enabled', 'rtcp_destination_port')
-        optional = ('multicast_ip', 'fec_enabled', 'fec_destination_ip', 'fec_mode', 'fec1D_destination_port', 'fec2D_destination_port')
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    return checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
-        for k in constraints.keys():
-            if k.startswith("rtcp_"):
-                for p in rtcp_required:
-                    if p not in constraints.keys():
-                        return False, "required transport parameter {} not found in constraints".format(p)
-                    if p not in staged.keys():
-                        return False, "required transport parameter {} not found in staged".format(p)
-                    if p not in active.keys():
-                        return False, "required transport parameter {} not found in active".format(p)
-                break # check once
+# We do not enforce the all or nothing rule for FEC
+def checkReceiverTransportParametersUdp(transport, constraints, staged, active):
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in rtcp_required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
-            
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+    required = ('source_ip', 'interface_ip', 'destination_port', 'enabled')
+    optional = ('multicast_ip', 'fec_enabled', 'fec_destination_ip', 'fec_mode', 'fec1D_destination_port', 'fec2D_destination_port')
 
-    # We do not enforce the all or nothing rule for FEC
-    def checkSenderTransportParametersUdp(self, transport, constraints, staged, active):
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        required = ('source_ip', 'destination_ip', 'source_port', 'destination_port', 'enabled')
-        optional = ('fec_enabled', 'fec_destination_ip', 'fec_type', 'fec_mode', 'fec_block_width', 'fec_block_height', 'fec1D_destination_port', 'fec2D_destination_port', 'fec1D_source_port', 'fec2D_source_port' )
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required and p not in optional:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    return checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
+def checkSenderTransportParametersRtsp(transport, constraints, staged, active):
 
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+    required = ('source_ip', 'source_port')
 
-    # We do not enforce the all or nothing rule for FEC
-    def checkReceiverTransportParametersUdp(self, transport, constraints, staged, active):
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        required = ('source_ip', 'interface_ip', 'destination_port', 'enabled')
-        optional = ('multicast_ip', 'fec_enabled', 'fec_destination_ip', 'fec_mode', 'fec1D_destination_port', 'fec2D_destination_port')
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    return checkSenderTransportParametersPEP(transport, constraints, staged, active)
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required and p not in optional:
-                return False, "unknown transport parameter {} in active".format(p)
+def checkReceiverTransportParametersRtsp(transport, constraints, staged, active):
 
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+    required = ('source_ip', 'interface_ip', 'source_port')
 
-    def checkSenderTransportParametersRtsp(self, transport, constraints, staged, active):
+    for p in required:
+        if p not in constraints.keys():
+            return False, "required transport parameter {} not found in constraints".format(p)
+        if p not in staged.keys():
+            return False, "required transport parameter {} not found in staged".format(p)
+        if p not in active.keys():
+            return False, "required transport parameter {} not found in active".format(p)
 
-        required = ('source_ip', 'source_port')
+    for p in constraints.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in constraints".format(p)
+    for p in staged.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in staged".format(p)
+    for p in active.keys():
+        if not p.startswith("ext_") and p not in required:
+            return False, "unknown transport parameter {} in active".format(p)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+    return checkReceiverTransportParametersPEP(transport, constraints, staged, active)
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in active".format(p)
+def checkSenderTransportParametersPEP(transport, constraints, staged, active):
 
-        return self.checkSenderTransportParametersPEP(transport, constraints, staged, active)
+    pep_required = ('ext_privacy_protocol', 'ext_privacy_mode', 'ext_privacy_iv', 'ext_privacy_key_generator', 'ext_privacy_key_version', 'ext_privacy_key_id' )
+    ecdh_required = ('ext_privacy_ecdh_sender_public_key', 'ext_privacy_ecdh_receiver_public_key', 'ext_privacy_ecdh_curve' )
 
-    def checkReceiverTransportParametersRtsp(self, transport, constraints, staged, active):
+    for k in constraints.keys():
+        if k.startswith("ext_privacy_"):
+            for p in pep_required:
+                if p not in constraints.keys():
+                    return False, "required transport parameter {} not found in constraints".format(p)
+                if p not in staged.keys():
+                    return False, "required transport parameter {} not found in staged".format(p)
+                if p not in active.keys():
+                    return False, "required transport parameter {} not found in active".format(p)
+                
+            protocols = getPrivacyProtocolFromTransport(transport)
 
-        required = ('source_ip', 'interface_ip', 'source_port')
+            if staged["ext_privacy_protocol"] not in protocols:
+                return False, "invalid PEP protocol {}, expecting one of {} ".format(staged["ext_privacy_protocol"], protocols)
+            if active["ext_privacy_protocol"] not in protocols:
+                return False, "invalid PEP protocol {}, expecting one of {} ".format(active["ext_privacy_protocol"], protocols)
 
-        for p in required:
-            if p not in constraints.keys():
-                return False, "required transport parameter {} not found in constraints".format(p)
-            if p not in staged.keys():
-                return False, "required transport parameter {} not found in staged".format(p)
-            if p not in active.keys():
-                return False, "required transport parameter {} not found in active".format(p)
+            break # check once
 
-        for p in constraints.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in constraints".format(p)
-        for p in staged.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in staged".format(p)
-        for p in active.keys():
-            if not p.startswith("ext_") and p not in required:
-                return False, "unknown transport parameter {} in active".format(p)
+    for k in constraints.keys():
+        if k.startswith("ext_privacy_ecdh_"):
+            for p in ecdh_required:
+                if p not in constraints.keys():
+                    return False, "required transport parameter {} not found in constraints".format(p)
+                if p not in staged.keys():
+                    return False, "required transport parameter {} not found in staged".format(p)
+                if p not in active.keys():
+                    return False, "required transport parameter {} not found in active".format(p)
+            break # check once
 
-        return self.checkReceiverTransportParametersPEP(transport, constraints, staged, active)
+    return True, None
 
-    def checkSenderTransportParametersPEP(self, transport, constraints, staged, active):
+def checkReceiverTransportParametersPEP(transport, constraints, staged, active):
 
-        pep_required = ('ext_privacy_protocol', 'ext_privacy_mode', 'ext_privacy_iv', 'ext_privacy_key_generator', 'ext_privacy_key_version', 'ext_privacy_key_id' )
-        ecdh_required = ('ext_privacy_ecdh_sender_public_key', 'ext_privacy_ecdh_receiver_public_key', 'ext_privacy_ecdh_curve' )
+    pep_required = ('ext_privacy_protocol', 'ext_privacy_mode', 'ext_privacy_iv', 'ext_privacy_key_generator', 'ext_privacy_key_version', 'ext_privacy_key_id' )
+    ecdh_required = ('ext_privacy_ecdh_sender_public_key', 'ext_privacy_ecdh_receiver_public_key', 'ext_privacy_ecdh_curve' )
 
-        for k in constraints.keys():
+    for k in constraints.keys():
+        if k.startswith("ext_privacy_"):
+            for p in pep_required:
+                if p not in constraints.keys():
+                    return False, "required transport parameter {} not found in constraints".format(p)
+                if p not in staged.keys():
+                    return False, "required transport parameter {} not found in staged".format(p)
+                if p not in active.keys():
+                    return False, "required transport parameter {} not found in active".format(p)
 
-            if k.startswith("ext_privacy_"):
-                for p in pep_required:
-                    if p not in constraints.keys():
-                        return False, "required transport parameter {} not found in constraints".format(p)
-                    if p not in staged.keys():
-                        return False, "required transport parameter {} not found in staged".format(p)
-                    if p not in active.keys():
-                        return False, "required transport parameter {} not found in active".format(p)
-                    
-                protocols = getPrivacyProtocolFromTransport(transport)
+            protocols = getPrivacyProtocolFromTransport(transport)
 
-                if staged["ext_privacy_protocol"] not in protocols:
-                    return False, "invalid PEP protocol {}, expecting one of {} ".format(staged["ext_privacy_protocol"], protocols)
-                if active["ext_privacy_protocol"] not in protocols:
-                    return False, "invalid PEP protocol {}, expecting one of {} ".format(active["ext_privacy_protocol"], protocols)
+            if staged["ext_privacy_protocol"] not in protocols:
+                return False, "invalid PEP protocol {}, expecting one of {} ".format(staged["ext_privacy_protocol"], protocols)
+            if active["ext_privacy_protocol"] not in protocols:
+                return False, "invalid PEP protocol {}, expecting one of {} ".format(active["ext_privacy_protocol"], protocols)
 
-                break # check once
+            break # check once
 
-            if k.startswith("ext_privacy_ecdh_"):
-                for p in ecdh_required:
-                    if p not in constraints.keys():
-                        return False, "required transport parameter {} not found in constraints".format(p)
-                    if p not in staged.keys():
-                        return False, "required transport parameter {} not found in staged".format(p)
-                    if p not in active.keys():
-                        return False, "required transport parameter {} not found in active".format(p)
-                break # check once
+    for k in constraints.keys():
+        if k.startswith("ext_privacy_ecdh_"):
+            for p in ecdh_required:
+                if p not in constraints.keys():
+                    return False, "required transport parameter {} not found in constraints".format(p)
+                if p not in staged.keys():
+                    return False, "required transport parameter {} not found in staged".format(p)
+                if p not in active.keys():
+                    return False, "required transport parameter {} not found in active".format(p)
+            break # check once
 
-        return True, None
-
-    def checkReceiverTransportParametersPEP(self, transport, constraints, staged, active):
-
-        pep_required = ('ext_privacy_protocol', 'ext_privacy_mode', 'ext_privacy_iv', 'ext_privacy_key_generator', 'ext_privacy_key_version', 'ext_privacy_key_id' )
-        ecdh_required = ('ext_privacy_ecdh_sender_public_key', 'ext_privacy_ecdh_receiver_public_key', 'ext_privacy_ecdh_curve' )
-
-        for k in constraints.keys():
-
-            if k.startswith("ext_privacy_"):
-                for p in pep_required:
-                    if p not in constraints.keys():
-                        return False, "required transport parameter {} not found in constraints".format(p)
-                    if p not in staged.keys():
-                        return False, "required transport parameter {} not found in staged".format(p)
-                    if p not in active.keys():
-                        return False, "required transport parameter {} not found in active".format(p)
-
-                protocols = getPrivacyProtocolFromTransport(transport)
-
-                if staged["ext_privacy_protocol"] not in protocols:
-                    return False, "invalid PEP protocol {}, expecting one of {} ".format(staged["ext_privacy_protocol"], protocols)
-                if active["ext_privacy_protocol"] not in protocols:
-                    return False, "invalid PEP protocol {}, expecting one of {} ".format(active["ext_privacy_protocol"], protocols)
-
-                break # check once
-
-            if k.startswith("ext_privacy_ecdh_"):
-                for p in ecdh_required:
-                    if p not in constraints.keys():
-                        return False, "required transport parameter {} not found in constraints".format(p)
-                    if p not in staged.keys():
-                        return False, "required transport parameter {} not found in staged".format(p)
-                    if p not in active.keys():
-                        return False, "required transport parameter {} not found in active".format(p)
-                break # check once
-
-        return True, None
+    return True, None
