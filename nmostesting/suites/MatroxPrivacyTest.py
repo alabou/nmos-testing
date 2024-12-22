@@ -451,12 +451,12 @@ class MatroxPrivacyTest(GenericTest):
 
                     if active["master_enable"]:
 
-                        # It must not be possible to change any privacy attribute if active even to its current value
+                        # It must be possible to change any privacy attribute if active to its current value as re-activation
                         for name in c_params.keys():
                             if name.startswith("ext_privacy_"):
-                                valid, response = self.updateSenderParameter(sender, True, name, c_params[name], staged["transport_params"])
-                                if valid:
-                                    return test.FAIL("sender {} : did not fail activation as expected, response {}".format(sender["id"], response))
+                                valid, response = self.updateSenderParameter(sender, True, name, active["transport_params"][i][name], staged["transport_params"])
+                                if not valid:
+                                    return test.FAIL("sender {} : fail re-activation, response {}".format(sender["id"], response))
                                 else:
                                     pass
                     else:
@@ -747,12 +747,12 @@ class MatroxPrivacyTest(GenericTest):
 
                     if active["master_enable"]:
 
-                        # It must not be possible to change any privacy attribute if active even to its current value
+                        # It must be possible to change any privacy attribute if active to its current value as re-activation
                         for name in c_params.keys():
                             if name.startswith("ext_privacy_"):
-                                valid, response = self.updateReceiverParameter(receiver, True, name, c_params[name], staged["transport_params"])
-                                if valid:
-                                    return test.FAIL("receiver {} : did not fail activation as expected, response {}".format(receiver["id"], response))
+                                valid, response = self.updateReceiverParameter(receiver, True, name, active["transport_params"][i][name], staged["transport_params"])
+                                if not valid:
+                                    return test.FAIL("receiver {} : fail re-activation, response {}".format(receiver["id"], response))
                                 else:
                                     pass
                     else:
@@ -804,6 +804,272 @@ class MatroxPrivacyTest(GenericTest):
 
                 i = i + 1
 
+
+        if warning is not None:
+            return test.WARNING(warning)
+        else:
+            return test.PASS()
+
+    def test_06(self, test):
+
+        """ Check that senders ECDH private/public key is regenerated on an activation with master_enable set to false """
+
+        reg_api = self.apis["schemas"]
+        reg_path = reg_api["spec_path"] + "/schemas"
+
+        valid, result = self.get_is04_resources("senders")
+        if not valid:
+            return test.FAIL(result)
+
+        valid, result = self.get_is05_partial_resources("senders")
+        if not valid:
+            return test.FAIL(result)
+
+        warning = None
+        all_active = True # proven otherwise
+
+        iv = dict()
+
+        for sender in self.is04_resources["senders"].values():
+
+            reg_schema = load_resolved_schema(reg_path, "is-05-constraints-schema.json", path_prefix=False)
+
+            if reg_schema is not None:
+                url = "single/senders/{}/constraints".format(sender["id"])
+                valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                if valid:
+
+                    # There is nothing to validate in the response as there are only constraints
+                    constraints = response.json()
+
+                    try:
+                        for params in constraints:
+                            self.validate_schema(params, reg_schema)
+                    except ValidationError as e:
+                        return test.FAIL("sender {} : transport parameters constraints do not match schema".format(sender["id"]))
+                else:
+                    return test.FAIL("sender {} : request to transport parameters constraints is not valid".format(sender["id"]))
+            else:
+                warning = (warning or "") + " " + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
+
+            # Now check that the elements of the constraints, stages and active all match
+            url = "single/senders/{}/staged".format(sender["id"])
+            valid, response = self.is05_utils.checkCleanRequest("GET", url)
+            if not valid:
+                return test.FAIL("sender {} : cannot get sender staged parameters".format(sender["id"]))
+            staged = response.json()
+
+            url = "single/senders/{}/active".format(sender["id"])
+            valid, response = self.is05_utils.checkCleanRequest("GET", url)
+            if not valid:
+                return test.FAIL("sender {} : cannot get sender active parameters".format(sender["id"]))
+            active = response.json()
+
+            if len(constraints) != len(staged["transport_params"]) or len(constraints) != len(active["transport_params"]):
+                return test.FAIL("sender {} : staged, active and constraints arrays are inconsistent".format(sender["id"]))
+            
+            # now check transport minimum requirements
+            i = 0
+            for c_params in constraints:
+
+                valid, msg = checkSenderTransportParameters(sender["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
+                if not valid:
+                    return test.FAIL("sender {} : active transport parameters is not valid against minimum requirements, error {}".format(sender["id"], msg))
+                valid, generic, elliptic, msg = self.hasSenderTransportParametersPEP(sender["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
+                if not valid:
+                    return test.FAIL("sender {} : active transport parameters is not valid against minimum requirements, error {}".format(sender["id"], msg))
+
+                null_mode  = "NULL" in constraints[i][privacy_mode]["enum"]
+                null_curve = "NULL" in constraints[i][privacy_ecdh_curve]["enum"]
+
+                if generic and elliptic:
+
+                    if null_curve:
+                        return test.DISABLED("sender {} : ECDH mode not supported".format(sender["id"]))
+
+                    if active["master_enable"]:
+                        return test.DISABLED("sender {} : testing ECDH private/public keys pair regeneration require inactive senders".format(sender["id"]))
+
+                    previous_key = active["transport_params"][i][privacy_ecdh_sender_public_key]
+
+                    valid, response = self.updateSenderParameter(sender, False, privacy_ecdh_sender_public_key, previous_key, staged["transport_params"])
+                    if not valid:
+                        return test.FAIL("sender {} : fail activation, response {}".format(sender["id"], response))
+
+                    if reg_schema is not None:
+                        url = "single/senders/{}/constraints".format(sender["id"])
+                        valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                        if valid:
+
+                            # There is nothing to validate in the response as there are only constraints
+                            new_constraints = response.json()
+
+                            try:
+                                for params in new_constraints:
+                                    self.validate_schema(params, reg_schema)
+                            except ValidationError as e:
+                                return test.FAIL("sender {} : transport parameters constraints do not match schema".format(sender["id"]))
+                        else:
+                            return test.FAIL("sender {} : request to transport parameters constraints is not valid".format(sender["id"]))
+                    else:
+                        warning = (warning or "") + " " + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
+
+                    # Now check that the elements of the constraints, stages and active all match
+                    url = "single/senders/{}/staged".format(sender["id"])
+                    valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                    if not valid:
+                        return test.FAIL("sender {} : cannot get sender staged parameters".format(sender["id"]))
+                    new_staged = response.json()
+
+                    url = "single/senders/{}/active".format(sender["id"])
+                    valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                    if not valid:
+                        return test.FAIL("sender {} : cannot get sender active parameters".format(sender["id"]))
+                    new_active = response.json()
+
+                    if len(new_constraints) != len(new_staged["transport_params"]) or len(new_constraints) != len(new_active["transport_params"]):
+                        return test.FAIL("sender {} : staged, active and constraints arrays are inconsistent".format(sender["id"]))
+
+                    if previous_key == new_staged["transport_params"][i][privacy_ecdh_sender_public_key]:
+                        return test.FAIL("sender {} : ECDH private/public key {} not regenerated on staged endpoint at de-activation".format(sender["id"], previous_key))
+
+                    if previous_key == new_active["transport_params"][i][privacy_ecdh_sender_public_key]:
+                        return test.FAIL("sender {} : ECDH private/public key {} not regenerated on active endpoint at de-activation".format(sender["id"], previous_key))
+
+                i = i + 1
+
+        if warning is not None:
+            return test.WARNING(warning)
+        else:
+            return test.PASS()
+
+    def test_07(self, test):
+
+        """ Check that receivers ECDH private/public key is regenerated on an activation with master_enable set to false """
+
+        reg_api = self.apis["schemas"]
+        reg_path = reg_api["spec_path"] + "/schemas"
+
+        valid, result = self.get_is04_resources("receivers")
+        if not valid:
+            return test.FAIL(result)
+
+        valid, result = self.get_is05_partial_resources("receivers")
+        if not valid:
+            return test.FAIL(result)
+
+        warning = None
+        all_active = True # proven otherwise
+
+        iv = dict()
+
+        for receiver in self.is04_resources["receivers"].values():
+
+            reg_schema = load_resolved_schema(reg_path, "is-05-constraints-schema.json", path_prefix=False)
+
+            if reg_schema is not None:
+                url = "single/receivers/{}/constraints".format(receiver["id"])
+                valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                if valid:
+
+                    # There is nothing to validate in the response as there are only constraints
+                    constraints = response.json()
+
+                    try:
+                        for params in constraints:
+                            self.validate_schema(params, reg_schema)
+                    except ValidationError as e:
+                        return test.FAIL("receiver {} : transport parameters constraints do not match schema".format(receiver["id"]))
+                else:
+                    return test.FAIL("receiver {} : request to transport parameters constraints is not valid".format(receiver["id"]))
+            else:
+                warning = (warning or "") + " " + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
+
+            # Now check that the elements of the constraints, stages and active all match
+            url = "single/receivers/{}/staged".format(receiver["id"])
+            valid, response = self.is05_utils.checkCleanRequest("GET", url)
+            if not valid:
+                return test.FAIL("receiver {} : cannot get receiver staged parameters".format(receiver["id"]))
+            staged = response.json()
+
+            url = "single/receivers/{}/active".format(receiver["id"])
+            valid, response = self.is05_utils.checkCleanRequest("GET", url)
+            if not valid:
+                return test.FAIL("receiver {} : cannot get receiver active parameters".format(receiver["id"]))
+            active = response.json()
+
+            if len(constraints) != len(staged["transport_params"]) or len(constraints) != len(active["transport_params"]):
+                return test.FAIL("receiver {} : staged, active and constraints arrays are inconsistent".format(receiver["id"]))
+            
+            # now check transport minimum requirements
+            i = 0
+            for c_params in constraints:
+
+                valid, msg = checkReceiverTransportParameters(receiver["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
+                if not valid:
+                    return test.FAIL("receiver {} : active transport parameters is not valid against minimum requirements, error {}".format(receiver["id"], msg))
+                valid, generic, elliptic, msg = self.hasReceiverTransportParametersPEP(receiver["transport"], c_params, staged["transport_params"][i], active["transport_params"][i])
+                if not valid:
+                    return test.FAIL("receiver {} : active transport parameters is not valid against minimum requirements, error {}".format(receiver["id"], msg))
+
+                null_mode  = "NULL" in constraints[i][privacy_mode]["enum"]
+                null_curve = "NULL" in constraints[i][privacy_ecdh_curve]["enum"]
+
+                if generic and elliptic:
+
+                    if null_curve:
+                        return test.DISABLED("receiver {} : ECDH mode not supported".format(receiver["id"]))
+
+                    if active["master_enable"]:
+                        return test.DISABLED("receiver {} : testing ECDH private/public keys pair regeneration require inactive receivers".format(receiver["id"]))
+
+                    previous_key = active["transport_params"][i][privacy_ecdh_receiver_public_key]
+
+                    valid, response = self.updateReceiverParameter(receiver, False, privacy_ecdh_receiver_public_key, previous_key, staged["transport_params"])
+                    if not valid:
+                        return test.FAIL("receiver {} : fail activation, response {}".format(receiver["id"], response))
+
+                    if reg_schema is not None:
+                        url = "single/receivers/{}/constraints".format(receiver["id"])
+                        valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                        if valid:
+
+                            # There is nothing to validate in the response as there are only constraints
+                            new_constraints = response.json()
+
+                            try:
+                                for params in new_constraints:
+                                    self.validate_schema(params, reg_schema)
+                            except ValidationError as e:
+                                return test.FAIL("receiver {} : transport parameters constraints do not match schema".format(receiver["id"]))
+                        else:
+                            return test.FAIL("receiver {} : request to transport parameters constraints is not valid".format(receiver["id"]))
+                    else:
+                        warning = (warning or "") + " " + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
+
+                    # Now check that the elements of the constraints, stages and active all match
+                    url = "single/receivers/{}/staged".format(receiver["id"])
+                    valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                    if not valid:
+                        return test.FAIL("receiver {} : cannot get receiver staged parameters".format(receiver["id"]))
+                    new_staged = response.json()
+
+                    url = "single/receivers/{}/active".format(receiver["id"])
+                    valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                    if not valid:
+                        return test.FAIL("receiver {} : cannot get receiver active parameters".format(receiver["id"]))
+                    new_active = response.json()
+
+                    if len(new_constraints) != len(new_staged["transport_params"]) or len(new_constraints) != len(new_active["transport_params"]):
+                        return test.FAIL("receiver {} : staged, active and constraints arrays are inconsistent".format(receiver["id"]))
+
+                    if previous_key == new_staged["transport_params"][i][privacy_ecdh_receiver_public_key]:
+                        return test.FAIL("receiver {} : ECDH private/public key {} not regenerated on staged endpoint at de-activation".format(receiver["id"], previous_key))
+
+                    if previous_key == new_active["transport_params"][i][privacy_ecdh_receiver_public_key]:
+                        return test.FAIL("receiver {} : ECDH private/public key {} not regenerated on active endpoint at de-activation".format(receiver["id"], previous_key))
+
+                i = i + 1
 
         if warning is not None:
             return test.WARNING(warning)
