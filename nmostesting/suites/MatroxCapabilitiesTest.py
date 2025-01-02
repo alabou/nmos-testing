@@ -413,6 +413,10 @@ class MatroxCapabilitiesTest(GenericTest):
             if "media_types" in sender["caps"]:
                 return test.FAIL("Sender {} has an illegal 'media_types' attribute in its caps".format(sender["id"]))
 
+            # Make sure Senders do not use the Receiver's specific "event_types" attribute in their caps
+            if "event_types" in sender["caps"]:
+                return test.FAIL("Sender {} has an illegal 'event_types' attribute in its caps".format(sender["id"]))
+
             if "constraint_sets" in sender["caps"]:
                 try:
                     self.validate_schema(sender, schema)
