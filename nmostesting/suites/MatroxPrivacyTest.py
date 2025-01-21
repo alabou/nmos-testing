@@ -302,7 +302,7 @@ class MatroxPrivacyTest(GenericTest):
                     ok, msg = self.check_generic_attribute_values(True, sender, c_params, staged["transport_params"][i], active["transport_params"][i], elliptic)
                     if not ok:
                         return test.FAIL("sender {} : invalid privacy encryption attribute value, error {}".format(sender["id"], msg))
-                    if msg is not None:
+                    if msg != "":
                         warning += "|" + msg
 
                     null_mode  = "NULL" in constraints[i][privacy_mode]["enum"]
@@ -339,7 +339,7 @@ class MatroxPrivacyTest(GenericTest):
             ok, msg = self.check_across_legs(True, sender, constraints, staged["transport_params"], active["transport_params"], elliptic)
             if not ok:
                 return test.FAIL("sender {} : invalid privacy capability, error {}".format(sender["id"], msg))
-            if msg is not None:
+            if msg != "":
                 warning += "|" + msg
 
             # We do require an active sender to get final parameters and to know if there is really no SDP transport file
@@ -362,7 +362,7 @@ class MatroxPrivacyTest(GenericTest):
                         ok, msg = self.check_privacy_attribute(True, sender, len(constraints), constraints[0], active["transport_params"][0], sdp_lines)
                         if not ok:
                             return test.FAIL("sender {} : invalid privacy capability, error {}".format(sender["id"], msg))
-                        if msg is not None:
+                        if msg != "":
                             warning += "|" + msg
             else:
                 all_active = False
@@ -461,9 +461,11 @@ class MatroxPrivacyTest(GenericTest):
                                     pass
                     else:
 
-                        # It must be possible to change any privacy attribute if inactive to its current value
+                        # It must be possible to change any privacy attribute if inactive to its current value except for 
+                        # ext_privacy_ecdh_sender_public_key on a Sender and ext_privacy_ecdh_receiver_public_key on a
+                        # Receiver as an activation with master_enable set to false regenerate those values.
                         for name in c_params.keys():
-                            if name.startswith("ext_privacy_"):
+                            if name.startswith("ext_privacy_") and name != "ext_privacy_ecdh_sender_public_key":
                                 valid, response = self.updateSenderParameter(sender, False, name, active["transport_params"][i][name], staged["transport_params"])
                                 if not valid:
                                     return test.FAIL("sender {} : failed activation, response {}".format(sender["id"], response))
@@ -481,8 +483,10 @@ class MatroxPrivacyTest(GenericTest):
                                         pass
 
                         # It must be possible to change any privacy attribute if inactive to any value of the associated constraints
+                        # except for ext_privacy_ecdh_sender_public_key on a Sender and ext_privacy_ecdh_receiver_public_key on a
+                        # Receiver as an activation with master_enable set to false regenerate those values.
                         for name in c_params.keys():
-                            if name.startswith("ext_privacy_"):
+                            if name.startswith("ext_privacy_") and name != "ext_privacy_ecdh_sender_public_key":
                                 if "enum" in c_params[name]: 
                                     for value in c_params[name]["enum"]:
                                         valid, response = self.updateSenderParameter(sender, False, name, value, staged["transport_params"])
@@ -614,7 +618,7 @@ class MatroxPrivacyTest(GenericTest):
                     ok, msg = self.check_generic_attribute_values(False, receiver, c_params, staged["transport_params"][i], active["transport_params"][i], elliptic)
                     if not ok:
                         return test.FAIL("receiver {} : invalid privacy encryption attribute value, error {}".format(receiver["id"], msg))
-                    if msg is not None:
+                    if msg != "":
                         warning += "|" + msg
 
                     null_mode  = "NULL" in constraints[i][privacy_mode]["enum"]
@@ -643,7 +647,7 @@ class MatroxPrivacyTest(GenericTest):
             ok, msg = self.check_across_legs(True, receiver, constraints, staged["transport_params"], active["transport_params"], elliptic)
             if not ok:
                 return test.FAIL("receiver {} : invalid privacy capability, error {}".format(receiver["id"], msg))
-            if msg is not None:
+            if msg != "":
                 warning += "|" + msg
 
             # We do require an active receiver to get final parameters and to know if there is really no SDP transport file
@@ -658,7 +662,7 @@ class MatroxPrivacyTest(GenericTest):
                     ok, msg = self.check_privacy_attribute(False, receiver, len(constraints), constraints[0], active["transport_params"][0], sdp_lines)
                     if not ok:
                         return test.FAIL("receiver {} : invalid privacy capability, error {}".format(receiver["id"], msg))
-                    if msg is not None:
+                    if msg != "":
                         warning += "|" + msg
             else:
                 all_active = False
@@ -757,9 +761,11 @@ class MatroxPrivacyTest(GenericTest):
                                     pass
                     else:
 
-                        # It must be possible to change any privacy attribute if inactive to its current value
+                        # It must be possible to change any privacy attribute if inactive to its current value except for 
+                        # ext_privacy_ecdh_sender_public_key on a Sender and ext_privacy_ecdh_receiver_public_key on a
+                        # Receiver as an activation with master_enable set to false regenerate those values.
                         for name in c_params.keys():
-                            if name.startswith("ext_privacy_"):
+                            if name.startswith("ext_privacy_") and name != "ext_privacy_ecdh_receiver_public_key":
                                 valid, response = self.updateReceiverParameter(receiver, False, name, active["transport_params"][i][name], staged["transport_params"])
                                 if not valid:
                                     return test.FAIL("receiver {} : failed activation, response {}".format(receiver["id"], response))
@@ -777,8 +783,10 @@ class MatroxPrivacyTest(GenericTest):
                                         pass
 
                         # It must be possible to change any privacy attribute if inactive to any value of the associated constraints
+                        # except for ext_privacy_ecdh_sender_public_key on a Sender and ext_privacy_ecdh_receiver_public_key on a
+                        # Receiver as an activation with master_enable set to false regenerate those values.
                         for name in c_params.keys():
-                            if name.startswith("ext_privacy_"):
+                            if name.startswith("ext_privacy_") and name != "ext_privacy_ecdh_receiver_public_key":
                                 if "enum" in c_params[name]: 
                                     for value in c_params[name]["enum"]:
                                         valid, response = self.updateReceiverParameter(receiver, False, name, value, staged["transport_params"])
@@ -1739,4 +1747,4 @@ class MatroxPrivacyTest(GenericTest):
             if not found_short or not found_full:
                 return False, "{} {} : extmap attributes for PEP extension headers are missing".format(identity, sender_receiver["id"])
 
-        return True, None
+        return True, ""

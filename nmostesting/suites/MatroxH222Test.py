@@ -17,23 +17,23 @@ from ..IS05Utils import IS05Utils
 from ..TestHelper import load_resolved_schema
 from ..TestHelper import check_content_type
 
-from ..MatroxCapabilitiesTest import AttributeLayer
-from ..MatroxCapabilitiesTest import AttributeLayerCompatibilityGroups
-from ..MatroxCapabilitiesTest import AttributeReceiverId
-from ..MatroxCapabilitiesTest import AttributeSynchronousMedia
-from ..MatroxCapabilitiesTest import AttributeParameterSetsTransportMode
-from ..MatroxCapabilitiesTest import AttributeParameterSetsFlowMode
-from ..MatroxCapabilitiesTest import AttributeAudioLayers
-from ..MatroxCapabilitiesTest import AttributeVideoLayers
-from ..MatroxCapabilitiesTest import AttributeDataLayers
-from ..MatroxCapabilitiesTest import AttributeConstantBitRate
+from .MatroxCapabilitiesTest import AttributeLayer
+from .MatroxCapabilitiesTest import AttributeLayerCompatibilityGroups
+from .MatroxCapabilitiesTest import AttributeReceiverId
+from .MatroxCapabilitiesTest import AttributeSynchronousMedia
+from .MatroxCapabilitiesTest import AttributeParameterSetsTransportMode
+from .MatroxCapabilitiesTest import AttributeParameterSetsFlowMode
+from .MatroxCapabilitiesTest import AttributeAudioLayers
+from .MatroxCapabilitiesTest import AttributeVideoLayers
+from .MatroxCapabilitiesTest import AttributeDataLayers
+from .MatroxCapabilitiesTest import AttributeConstantBitRate
 
-from ..MatroxCapabilitiesTest import CapFormatVideoLayers
-from ..MatroxCapabilitiesTest import CapFormatAudioLayers
-from ..MatroxCapabilitiesTest import CapFormatDataLayers
-from ..MatroxCapabilitiesTest import CapFormat
-from ..MatroxCapabilitiesTest import CapLayer
-from ..MatroxCapabilitiesTest import CapLayerCompatibilityGroups
+from .MatroxCapabilitiesTest import CapFormatVideoLayers
+from .MatroxCapabilitiesTest import CapFormatAudioLayers
+from .MatroxCapabilitiesTest import CapFormatDataLayers
+from .MatroxCapabilitiesTest import CapMetaFormat
+from .MatroxCapabilitiesTest import CapMetaLayer
+from .MatroxCapabilitiesTest import CapMetaLayerCompatibilityGroups
 
 NODE_API_KEY = "node"
 CONNECTION_API_KEY = "connection"
@@ -166,6 +166,10 @@ class MatroxH222Test(GenericTest):
         if not valid:
             return test.FAIL(result)
 
+        valid, result = self.get_is04_resources("sources")
+        if not valid:
+            return test.FAIL(result)
+
         reg_path = reg_api["spec_path"] + "/flow-attributes"
         reg_schema = load_resolved_schema(reg_path, "flow_data_register.json", path_prefix=False)
 
@@ -197,8 +201,8 @@ class MatroxH222Test(GenericTest):
                 if parent_flow_source["format"] != flow["format"]:
                     return test.FAIL("flow {}: MUST have an associated source {} of the same 'format'".format(flow["id"], parent_flow_source["id"]))
 
-                if AttributeLayer in parent_flow:
-                    return test.FAIL("flow {}: MUST NOT have a 'layer' attribute.".format(parent_flow["id"]))
+                if AttributeLayer in flow:
+                    return test.FAIL("flow {}: MUST NOT have a 'layer' attribute.".format(flow["id"]))
 
                 # Check for other required attributes. The value of those attributes is tested in Matrox-Capabilities test suite
                 if AttributeAudioLayers not in flow:
@@ -230,12 +234,12 @@ class MatroxH222Test(GenericTest):
                     if AttributeLayer not in parent_flow:
                         return test.FAIL("parent flow {}: MUST have a 'layer' attribute.".format(parent_flow["id"]))
 
-                    if AttributeAudioLayers in flow:
-                        return test.FAIL("parent flow {}: MUST NOT have the 'audio_layers' attribute.".format(flow["id"]))
-                    if AttributeVideoLayers in flow:
-                        return test.FAIL("parent flow {}: MUST NOT have the 'video_layers' attribute.".format(flow["id"]))
-                    if AttributeDataLayers in flow:
-                        return test.FAIL("parent flow {}: MUST NOT have the 'data_layers' attribute.".format(flow["id"]))
+                    if AttributeAudioLayers in parent_flow:
+                        return test.FAIL("parent flow {}: MUST NOT have the 'audio_layers' attribute.".format(parent_flow["id"]))
+                    if AttributeVideoLayers in parent_flow:
+                        return test.FAIL("parent flow {}: MUST NOT have the 'video_layers' attribute.".format(parent_flow["id"]))
+                    if AttributeDataLayers in parent_flow:
+                        return test.FAIL("parent flow {}: MUST NOT have the 'data_layers' attribute.".format(parent_flow["id"]))
 
                     # special cases for audio sub-flows
                     if parent_flow["format"] == "urn:x-nmos:format:audio":
@@ -313,7 +317,7 @@ class MatroxH222Test(GenericTest):
                         return test.FAIL("source {}: MUST have a parent for each sub-flow".format(source["id"]))
                     
             # get sources that are not mux
-            non_mux_sources = [source for source in self.is04_resources["sources"].values() if flow["format"] in ("urn:x-nmos:format:audio", "urn:x-nmos:format:video", "urn:x-nmos:format:data")]
+            non_mux_sources = [source for source in self.is04_resources["sources"].values() if source["format"] in ("urn:x-nmos:format:audio", "urn:x-nmos:format:video", "urn:x-nmos:format:data")]
             for source in non_mux_sources:
                 # receiver_id is optional, it can be unspecified or null
                 if AttributeReceiverId in source and source[AttributeReceiverId]:
@@ -380,7 +384,7 @@ class MatroxH222Test(GenericTest):
                     if flow_id not in flow_map:
                         return test.FAIL("sender {}: has an invalid associated flow {}".format(sender["id"], flow_id))
                     flow = flow_map[flow_id]
-                    if startswith(sender["transport"], "urn:x-nmos:transport:rtp") or sender["transport"] == "urn:x-nmos:transport:srt.rtp":
+                    if sender["transport"].startswith("urn:x-nmos:transport:rtp") or sender["transport"] == "urn:x-nmos:transport:srt.rtp":
                         if flow["media_type"] != "application/MP2T":
                             return test.FAIL("flow {}: MUST indicate media_type 'application/MP2T' for RTP based transport.".format(flow["id"]))
                     else:
@@ -405,7 +409,7 @@ class MatroxH222Test(GenericTest):
                             continue
 
                         # reject based on sub-Flow rules
-                        if CapFormat in constraint_set or CapLayer in constraint_set:
+                        if CapMetaFormat in constraint_set or CapMetaLayer in constraint_set:
                             continue
 
                         mp2t_constraint_sets.append(constraint_set)
@@ -459,7 +463,7 @@ class MatroxH222Test(GenericTest):
 
                 rtp_based_transport = False
 
-                if startswith(sender["transport"], "urn:x-nmos:transport:rtp") or sender["transport"] == "urn:x-nmos:transport:srt.rtp":
+                if sender["transport"].startswith("urn:x-nmos:transport:rtp") or sender["transport"] == "urn:x-nmos:transport:srt.rtp":
                     rtp_based_transport = True
                 else:
                     rtp_based_transport = False
@@ -542,8 +546,8 @@ class MatroxH222Test(GenericTest):
             mp2t_receivers_ids = [receiver["id"] for receiver in mp2t_receivers]
 
             # mux receivers identified by transport
-            for receiver in self.is04_resources["receivers"].values() if receiver["format"] == "urn:x-nmos:format:mux":
-                if receiver["transport"] in ("urn:x-matrox:transport:srt", "urn:x-matrox:transport:srt.mp2t") or startswith(receiver["transport"], "urn:x-matrox:transport:udp"):
+            for receiver in [receiver for receiver in self.is04_resources["receivers"].values() if receiver["format"] == "urn:x-nmos:format:mux"]:
+                if receiver["transport"] in ("urn:x-matrox:transport:srt", "urn:x-matrox:transport:srt.mp2t") or receiver["transport"].startswith("urn:x-matrox:transport:udp"):
                     if receiver["id"] not in mp2t_receivers_ids:
                         return test.FAIL("receiver {}: of `mux` format MUST have 'media_types' set to 'application/MP2T' or 'application/mp2t'.".format(receiver["id"]))
                         
@@ -580,7 +584,7 @@ class MatroxH222Test(GenericTest):
                         continue
 
                     # reject based on sub-Flow rules
-                    if CapFormat in constraint_set or CapLayer in constraint_set:
+                    if CapMetaFormat in constraint_set or CapMetaLayer in constraint_set:
                         continue
 
                     mp2t_constraint_sets.append(constraint_set)
@@ -648,7 +652,7 @@ class MatroxH222Test(GenericTest):
                         continue
 
                     # reject based on sub-Flow rules
-                    if CapFormat in constraint_set or CapLayer in constraint_set:
+                    if CapMetaFormat in constraint_set or CapMetaLayer in constraint_set:
                         continue
 
                     mp2t_constraint_sets.append(constraint_set)
