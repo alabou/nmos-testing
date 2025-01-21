@@ -198,7 +198,7 @@ class MatroxPrivacyTest(GenericTest):
             else:
                 return test.FAIL("Node API did not respond as expected: {}".format(result))
         else:
-            return test.FAIL("Node API must be running v1.3 or greater to fully implement BCP-006-01")
+            return test.FAIL("Node API must be running v1.3 or greater to fully implement this specification")
 
     def test_02(self, test):
 
@@ -215,7 +215,7 @@ class MatroxPrivacyTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
         all_active = True # proven otherwise
 
         iv = dict()
@@ -240,7 +240,7 @@ class MatroxPrivacyTest(GenericTest):
                 else:
                     return test.FAIL("sender {} : request to transport parameters constraints is not valid".format(sender["id"]))
             else:
-                warning = (warning or "") + " " + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
+                warning += "|" + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/senders/{}/staged".format(sender["id"])
@@ -303,7 +303,7 @@ class MatroxPrivacyTest(GenericTest):
                     if not ok:
                         return test.FAIL("sender {} : invalid privacy encryption attribute value, error {}".format(sender["id"], msg))
                     if msg is not None:
-                        warning = (warning or "") + " " + msg
+                        warning += "|" + msg
 
                     null_mode  = "NULL" in constraints[i][privacy_mode]["enum"]
                     null_curve = "NULL" in constraints[i][privacy_ecdh_curve]["enum"]
@@ -329,7 +329,7 @@ class MatroxPrivacyTest(GenericTest):
                     params = active["transport_params"][i]
 
                     if params[privacy_iv] in iv:
-                        warning = (warning or "") + " " + "sender {} : invalid duplicated iv attribute {}".format(sender["id"], params[privacy_iv])
+                        warning += "|" + "sender {} : invalid duplicated iv attribute {}".format(sender["id"], params[privacy_iv])
                     else:
                         iv[params[privacy_iv]] = None # must be unique among all senders
 
@@ -340,7 +340,7 @@ class MatroxPrivacyTest(GenericTest):
             if not ok:
                 return test.FAIL("sender {} : invalid privacy capability, error {}".format(sender["id"], msg))
             if msg is not None:
-                warning = (warning or "") + " " + msg
+                warning += "|" + msg
 
             # We do require an active sender to get final parameters and to know if there is really no SDP transport file
             if active["master_enable"]:
@@ -363,14 +363,14 @@ class MatroxPrivacyTest(GenericTest):
                         if not ok:
                             return test.FAIL("sender {} : invalid privacy capability, error {}".format(sender["id"], msg))
                         if msg is not None:
-                            warning = (warning or "") + " " + msg
+                            warning += "|" + msg
             else:
                 all_active = False
 
         if not all_active:
             return test.UNCLEAR("sender {} : one or more of the tested Senders has master_enable set to false. Please ensure all Senders are enabled and re-test.".format(sender["id"]))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -390,7 +390,7 @@ class MatroxPrivacyTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
         all_active = True # proven otherwise
 
         iv = dict()
@@ -415,7 +415,7 @@ class MatroxPrivacyTest(GenericTest):
                 else:
                     return test.FAIL("sender {} : request to transport parameters constraints is not valid".format(sender["id"]))
             else:
-                warning = (warning or "") + " " + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
+                warning += "|" + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/senders/{}/staged".format(sender["id"])
@@ -509,7 +509,7 @@ class MatroxPrivacyTest(GenericTest):
                 i = i + 1
 
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -529,7 +529,7 @@ class MatroxPrivacyTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
         all_active = True # proven otherwise
 
         for receiver in self.is04_resources["receivers"].values():
@@ -552,7 +552,7 @@ class MatroxPrivacyTest(GenericTest):
                 else:
                     return test.FAIL("receiver {} : request to transport parameters constraints is not valid".format(receiver["id"]))
             else:
-                warning = (warning or "") + " " + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
+                warning += "|" + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/receivers/{}/staged".format(receiver["id"])
@@ -615,7 +615,7 @@ class MatroxPrivacyTest(GenericTest):
                     if not ok:
                         return test.FAIL("receiver {} : invalid privacy encryption attribute value, error {}".format(receiver["id"], msg))
                     if msg is not None:
-                        warning = (warning or "") + " " + msg
+                        warning += "|" + msg
 
                     null_mode  = "NULL" in constraints[i][privacy_mode]["enum"]
                     null_curve = "NULL" in constraints[i][privacy_ecdh_curve]["enum"]
@@ -644,7 +644,7 @@ class MatroxPrivacyTest(GenericTest):
             if not ok:
                 return test.FAIL("receiver {} : invalid privacy capability, error {}".format(receiver["id"], msg))
             if msg is not None:
-                warning = (warning or "") + " " + msg
+                warning += "|" + msg
 
             # We do require an active receiver to get final parameters and to know if there is really no SDP transport file
             if active["master_enable"]:
@@ -659,14 +659,14 @@ class MatroxPrivacyTest(GenericTest):
                     if not ok:
                         return test.FAIL("receiver {} : invalid privacy capability, error {}".format(receiver["id"], msg))
                     if msg is not None:
-                        warning = (warning or "") + " " + msg
+                        warning += "|" + msg
             else:
                 all_active = False
 
         if not all_active:
             return test.UNCLEAR("receiver {} : one or more of the tested Receivers has master_enable set to false. Please ensure all Receivers are enabled and re-test.".format(receiver["id"]))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -686,7 +686,7 @@ class MatroxPrivacyTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
         all_active = True # proven otherwise
 
         iv = dict()
@@ -711,7 +711,7 @@ class MatroxPrivacyTest(GenericTest):
                 else:
                     return test.FAIL("receiver {} : request to transport parameters constraints is not valid".format(receiver["id"]))
             else:
-                warning = (warning or "") + " " + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
+                warning += "|" + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/receivers/{}/staged".format(receiver["id"])
@@ -805,7 +805,7 @@ class MatroxPrivacyTest(GenericTest):
                 i = i + 1
 
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -825,7 +825,7 @@ class MatroxPrivacyTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
         all_active = True # proven otherwise
 
         iv = dict()
@@ -850,7 +850,7 @@ class MatroxPrivacyTest(GenericTest):
                 else:
                     return test.FAIL("sender {} : request to transport parameters constraints is not valid".format(sender["id"]))
             else:
-                warning = (warning or "") + " " + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
+                warning += "|" + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/senders/{}/staged".format(sender["id"])
@@ -912,7 +912,7 @@ class MatroxPrivacyTest(GenericTest):
                         else:
                             return test.FAIL("sender {} : request to transport parameters constraints is not valid".format(sender["id"]))
                     else:
-                        warning = (warning or "") + " " + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
+                        warning += "|" + "sender {} : unknown transport {}".format(sender["id"], sender["transport"])
 
                     # Now check that the elements of the constraints, stages and active all match
                     url = "single/senders/{}/staged".format(sender["id"])
@@ -938,7 +938,7 @@ class MatroxPrivacyTest(GenericTest):
 
                 i = i + 1
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -958,7 +958,7 @@ class MatroxPrivacyTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
         all_active = True # proven otherwise
 
         iv = dict()
@@ -983,7 +983,7 @@ class MatroxPrivacyTest(GenericTest):
                 else:
                     return test.FAIL("receiver {} : request to transport parameters constraints is not valid".format(receiver["id"]))
             else:
-                warning = (warning or "") + " " + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
+                warning += "|" + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/receivers/{}/staged".format(receiver["id"])
@@ -1045,7 +1045,7 @@ class MatroxPrivacyTest(GenericTest):
                         else:
                             return test.FAIL("receiver {} : request to transport parameters constraints is not valid".format(receiver["id"]))
                     else:
-                        warning = (warning or "") + " " + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
+                        warning += "|" + "receiver {} : unknown transport {}".format(receiver["id"], receiver["transport"])
 
                     # Now check that the elements of the constraints, stages and active all match
                     url = "single/receivers/{}/staged".format(receiver["id"])
@@ -1071,7 +1071,7 @@ class MatroxPrivacyTest(GenericTest):
 
                 i = i + 1
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -1232,7 +1232,7 @@ class MatroxPrivacyTest(GenericTest):
 
     def check_generic_attribute_values(self, is_sender, sender_receiver, constraints, staged, active, elliptic):
 
-        warning = None
+        warning = ""
 
         if is_sender:
             identity = "sender"
@@ -1470,9 +1470,9 @@ class MatroxPrivacyTest(GenericTest):
         else:
             # for the Receiver the iv parameter constraints SHOULD allow any value and internally verify for proper size and hexadecimal
             if "enum" in constraints[privacy_iv]:
-                warning = (warning or "") + " " + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_iv)
+                warning += "|" + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_iv)
             if "pattern" in constraints[privacy_iv] and constraints[privacy_iv]["pattern"] != "^[0-9a-fA-F]{16}$":
-                warning = (warning or "") + " " + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{16}$'".format(identity, sender_receiver["id"], privacy_iv)
+                warning += "|" + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{16}$'".format(identity, sender_receiver["id"], privacy_iv)
             if len(staged[privacy_iv]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in staged[privacy_iv]):
                 return False, "{} {} : {} staged value {} is not within constraints {}".format(identity, sender_receiver["id"], privacy_iv, staged[privacy_iv], enums)
             if len(active[privacy_iv]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in active[privacy_iv]):
@@ -1492,9 +1492,9 @@ class MatroxPrivacyTest(GenericTest):
         else:
             # for the Receiver the key_generator parameter constraints SHOULD allow any value and internally verify for proper size and hexadecimal
             if "enum" in constraints[privacy_key_generator]:
-                warning = (warning or "") + " " + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_key_generator)
+                warning += "|" + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_key_generator)
             if "pattern" in constraints[privacy_key_generator] and constraints[privacy_key_generator]["pattern"] != "^[0-9a-fA-F]{32}$":
-                warning = (warning or "") + " " + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{32}$'".format(identity, sender_receiver["id"], privacy_key_generator)
+                warning += "|" + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{32}$'".format(identity, sender_receiver["id"], privacy_key_generator)
             if len(staged[privacy_key_generator]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in staged[privacy_key_generator]):
                 return False, "{} {} : {} staged value {} is not within constraints {}".format(identity, sender_receiver["id"], privacy_key_generator, staged[privacy_key_generator], enums)
             if len(active[privacy_key_generator]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in active[privacy_key_generator]):
@@ -1514,9 +1514,9 @@ class MatroxPrivacyTest(GenericTest):
         else:
             # for the Receiver the key_version parameter constraints SHOULD allow any value and internally verify for proper size and hexadecimal
             if "enum" in constraints[privacy_key_version]:
-                warning = (warning or "") + " " + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_key_version)
+                warning += "|" + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_key_version)
             if "pattern" in constraints[privacy_key_version] and constraints[privacy_key_version]["pattern"] != "^[0-9a-fA-F]{8}$":
-                warning = (warning or "") + " " + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{8}$'".format(identity, sender_receiver["id"], privacy_key_version)
+                warning += "|" + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{8}$'".format(identity, sender_receiver["id"], privacy_key_version)
             if len(staged[privacy_key_version]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in staged[privacy_key_version]):
                 return False, "{} {} : {} staged value {} is not within constraints {}".format(identity, sender_receiver["id"], privacy_key_version, staged[privacy_key_version], enums)
             if len(active[privacy_key_version]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in active[privacy_key_version]):
@@ -1562,9 +1562,9 @@ class MatroxPrivacyTest(GenericTest):
                         return False, "{} {} : {} constraint must be an hexadecimal value".format(identity, sender_receiver["id"], privacy_ecdh_sender_public_key)
                 else:
                     if "enum" in constraints[privacy_ecdh_sender_public_key]:
-                        warning = (warning or "") + " " + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_ecdh_sender_public_key)
+                        warning += "|" + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_ecdh_sender_public_key)
                     if "pattern" in constraints[privacy_ecdh_sender_public_key] and constraints[privacy_ecdh_sender_public_key]["pattern"] != "^[0-9a-fA-F]{2,}$":
-                        warning = (warning or "") + " " + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{2,}$'".format(identity, sender_receiver["id"], privacy_ecdh_sender_public_key)
+                        warning += "|" + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{2,}$'".format(identity, sender_receiver["id"], privacy_ecdh_sender_public_key)
                     if len(staged[privacy_ecdh_sender_public_key]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in staged[privacy_ecdh_sender_public_key]):
                         return False, "{} {} : {} staged value {} is not within constraints {}".format(identity, sender_receiver["id"], privacy_ecdh_sender_public_key, staged[privacy_ecdh_sender_public_key], enums)
                     if len(active[privacy_ecdh_sender_public_key]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in active[privacy_ecdh_sender_public_key]):
@@ -1583,9 +1583,9 @@ class MatroxPrivacyTest(GenericTest):
                         return False, "{} {} : {} constraint must be an hexadecimal value".format(identity, sender_receiver["id"], privacy_ecdh_receiver_public_key)
                 else:
                     if "enum" in constraints[privacy_ecdh_receiver_public_key]:
-                        warning = (warning or "") + " " + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_ecdh_receiver_public_key)
+                        warning += "|" + "{} {} : {} constraint should allow any value".format(identity, sender_receiver["id"], privacy_ecdh_receiver_public_key)
                     if "pattern" in constraints[privacy_ecdh_receiver_public_key] and constraints[privacy_ecdh_receiver_public_key]["pattern"] != "^[0-9a-fA-F]{2,}$":
-                        warning = (warning or "") + " " + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{2,}$'".format(identity, sender_receiver["id"], privacy_ecdh_receiver_public_key)
+                        warning += "|" + "{} {} : {} constraint pattern should be '^[0-9a-fA-F]{2,}$'".format(identity, sender_receiver["id"], privacy_ecdh_receiver_public_key)
                     if len(staged[privacy_ecdh_receiver_public_key]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in staged[privacy_ecdh_receiver_public_key]):
                         return False, "{} {} : {} staged value {} is not within constraints {}".format(identity, sender_receiver["id"], privacy_ecdh_receiver_public_key, staged[privacy_ecdh_receiver_public_key], enums)
                     if len(active[privacy_ecdh_receiver_public_key]) < 2 or not all(char in "0123456789abcdefABCDEF" for char in active[privacy_ecdh_receiver_public_key]):
@@ -1617,7 +1617,7 @@ class MatroxPrivacyTest(GenericTest):
 
     def check_across_legs(self, is_sender, sender_receiver, constraints, staged, active, elliptic):
 
-        warning = None
+        warning = ""
 
         if is_sender:
             identity = "sender"
@@ -1641,8 +1641,8 @@ class MatroxPrivacyTest(GenericTest):
 
             i += 1
 
-        if not warning:
-            return True, None
+        if warning == "":
+            return True, ""
         else:
             return False, warning
         

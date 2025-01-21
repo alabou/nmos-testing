@@ -372,7 +372,7 @@ class MatroxTransportsTest(GenericTest):
             else:
                 return test.FAIL("Node API did not respond as expected: {}".format(result))
         else:
-            return test.FAIL("Node API must be running v1.3 or greater to fully implement BCP-006-01")
+            return test.FAIL("Node API must be running v1.3 or greater to fully implement this specification")
 
     def test_02(self, test):
 
@@ -389,7 +389,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for sender in self.is04_resources["senders"].values():
 
@@ -436,9 +436,9 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("sender request to active transport parameters is not valid")
             else:
-                warning = "unknown transport {}".format(sender["transport"])
+                warning += "|" + "unknown transport {}".format(sender["transport"])
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -454,7 +454,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for receiver in self.is04_resources["receivers"].values():
 
@@ -499,9 +499,9 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("receiver request to active transport parameters is not valid")
             else:
-                warning = "unknown transport {}".format(receiver["transport"])
+                warning += "|" + "unknown transport {}".format(receiver["transport"])
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -520,18 +520,18 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for receiver in self.is04_resources["receivers"].values():
 
             format = getFormatFromTransport(receiver["transport"])
 
             if format is None:
-                warning = "unknown transport {}".format(receiver["transport"])
+                warning += "|" + "unknown transport {}".format(receiver["transport"])
             elif format != FormatUnknown and receiver["format"] != format:
                 test.FAIL("receiver {} does have the proper format {} for the transport {}".format(receiver["id"], format, receiver["transport"]))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -554,21 +554,21 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for sender in self.is04_resources["senders"].values():
 
             format = getFormatFromTransport(sender["transport"])
 
             if format is None:
-                warning = "unknown transport {}".format(sender["transport"])
+                warning += "|" + "unknown transport {}".format(sender["transport"])
             else:
                 flow_id = sender["flow_id"]
                 if flow_id is None:
-                    warning = "sender {} is not having a current flow".format(sender["id"])
+                    warning += "|" + "sender {} is not having a current flow".format(sender["id"])
                 else:
                     if flow_id not in self.is04_resources["flows"]:
-                        warning = "flow {} not found in IS-04 resources".format(flow_id)
+                        warning += "|" + "flow {} not found in IS-04 resources".format(flow_id)
                     else:
                         flow = self.is04_resources["flows"][flow_id]
                         if format == FormatUnknown:
@@ -583,7 +583,7 @@ class MatroxTransportsTest(GenericTest):
                             if flow["format"] != format:
                                 test.FAIL("sender {} flow {} does not have the proper format {} for the transport {}".format(sender["id"], flow_id, format, sender["transport"]))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -603,7 +603,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for receiver in self.is04_resources["receivers"].values():
 
@@ -631,9 +631,9 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("receiver request to active transport parameters is not valid")
             else:
-                warning = "unknown transport {}".format(receiver["transport"])
+                warning += "|" + "unknown transport {}".format(receiver["transport"])
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -653,7 +653,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for sender in self.is04_resources["senders"].values():
 
@@ -675,7 +675,7 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("sender request to transport parameters constraints is not valid")
             else:
-                warning = "unknown transport {}".format(sender["transport"])
+                warning += "|" + "unknown transport {}".format(sender["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/senders/{}/staged".format(sender["id"])
@@ -731,7 +731,7 @@ class MatroxTransportsTest(GenericTest):
                 
                 i = i + 1
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -751,7 +751,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for receiver in self.is04_resources["receivers"].values():
 
@@ -773,7 +773,7 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("receiver request to transport parameters constraints is not valid")
             else:
-                warning = "unknown transport {}".format(receiver["transport"])
+                warning += "|" + "unknown transport {}".format(receiver["transport"])
 
             # Now check that the elements of the constraints, stages and active all match
             url = "single/receivers/{}/staged".format(receiver["id"])
@@ -830,7 +830,7 @@ class MatroxTransportsTest(GenericTest):
                 
                 i = i + 1
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -850,7 +850,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         found_in_devices = {} # check uniqueness of group names
 
@@ -874,7 +874,7 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("sender {} group hint {} of device {} is not unique among the senders of the device".format(sender["id"], group_hint, device_id))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -895,7 +895,7 @@ class MatroxTransportsTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         found_in_devices = {} # check uniqueness of group names
 
@@ -919,7 +919,7 @@ class MatroxTransportsTest(GenericTest):
                 else:
                     return test.FAIL("receiver {} group hint {} of device {} is not unique among the receivers of the device".format(receiver["id"], group_hint, device_id))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()

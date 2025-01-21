@@ -128,14 +128,12 @@ class MatroxUsbTest(GenericTest):
             else:
                 return test.FAIL("Node API did not respond as expected: {}".format(result))
         else:
-            return test.FAIL("Node API must be running v1.3 or greater to fully implement BCP-006-01")
+            return test.FAIL("Node API must be running v1.3 or greater to fully implement this specification")
 
     def test_02(self, test):
         """USB Flows have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         reg_api = self.apis[FLOW_REGISTER_KEY]
 
@@ -182,7 +180,7 @@ class MatroxUsbTest(GenericTest):
     def test_03(self, test):
         """USB Sources have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         for resource_type in ["flows", "sources"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -226,9 +224,7 @@ class MatroxUsbTest(GenericTest):
     def test_04(self, test):
         """USB Senders have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         reg_api = self.apis[SENDER_REGISTER_KEY]
 
@@ -294,9 +290,9 @@ class MatroxUsbTest(GenericTest):
                             if not ok:
                                 return test.FAIL("sender {}: invalid {} capabilities, error {}".format(sender["id"], constraint, msg))
                         else:
-                            warn_message += " sender {}: SHOULD declare {} capabilities".format(sender["id"], constraint)
+                            warn_message += "|" + "sender {}: SHOULD declare {} capabilities".format(sender["id"], constraint)
                 else:
-                    warn_message += " sender {}: SHOULD declare its capabilities".format(sender["id"])
+                    warn_message += "|" + "sender {}: SHOULD declare its capabilities".format(sender["id"])
 
             if len(usb_senders) > 0:
                 if warn_message != "":
@@ -312,9 +308,7 @@ class MatroxUsbTest(GenericTest):
     def test_05(self, test):
         """USB Sender manifests have the required parameters"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         for resource_type in ["senders", "flows"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -411,7 +405,7 @@ class MatroxUsbTest(GenericTest):
     def test_06(self, test):
         """USB Receivers have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         valid, result = self.get_is04_resources("receivers")
         if not valid:
@@ -429,7 +423,7 @@ class MatroxUsbTest(GenericTest):
                               and "media_types" in receiver["caps"]
                               and "application/usb" in receiver["caps"]["media_types"]]
 
-            # A mux Receiver not having constraints sets cannot be assumed as supporting USB
+            # a mux receiver cannot have a constraint set with media_type set to application/usb
             for receiver in [receiver for receiver in self.is04_resources["receivers"].values()
                               if receiver["format"] == "urn:x-nmos:format:mux"]:
                 if "constraint_sets" in receiver["caps"]:
@@ -438,7 +432,7 @@ class MatroxUsbTest(GenericTest):
                             if  "enum" in constraint_set["urn:x-nmos:cap:format:media_type"]:
                                 if  "application/usb" in constraint_set["urn:x-nmos:cap:format:media_type"]["enum"]:
                                     return test.FAIL("receiver {}: of 'mux' format MUST NOT have constraint sets having 'media_type' set to 'application/usb'.".format(receiver["id"]))
-            warn_unrestricted = False
+
             warn_message = ""
 
             for receiver in usb_receivers:
@@ -477,11 +471,9 @@ class MatroxUsbTest(GenericTest):
                 for constraint_set in usb_constraint_sets:
                     for constraint, target in recommended_constraints.items():
                         if constraint not in constraint_set:
-                            if not warn_unrestricted:
-                                warn_unrestricted = True
-                                warn_message = "receiver {}: SHOULD indicate the supported {} using the " \
+                                warn_message += "|" + "receiver {}: SHOULD indicate the supported {} using the " \
                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
-            if warn_unrestricted:
+            if warn_message != "":
                 return test.WARNING(warn_message)
 
             if len(usb_receivers) > 0:
@@ -495,7 +487,7 @@ class MatroxUsbTest(GenericTest):
     def test_07(self, test):
         """USB Receiver parameter constraints have valid values"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         valid, result = self.get_is04_resources("receivers")
         if not valid:
@@ -522,8 +514,8 @@ class MatroxUsbTest(GenericTest):
 
                 # check required attributes are present
                 if "constraint_sets" not in receiver["caps"]:
-                    # FAIL reported by test_05
-                    continue
+                    return test.FAIL("Receiver {} MUST indicate constraints in accordance with BCP-004-01 using "
+                                     "the 'caps' attribute 'constraint_sets'.".format(receiver["id"]))
 
                 # exclude constraint sets for other media types
                 usb_constraint_sets = [constraint_set for constraint_set in receiver["caps"]["constraint_sets"]
@@ -533,8 +525,8 @@ class MatroxUsbTest(GenericTest):
                                             and "application/usb" in constraint_set[media_type_constraint]["enum"]))]
 
                 if len(usb_constraint_sets) == 0:
-                    # FAIL reported by test_05
-                    continue
+                    return test.FAIL("Receiver {} MUST indicate constraints in accordance with BCP-004-01 using "
+                                     "the 'caps' attribute 'constraint_sets'.".format(receiver["id"]))
 
                 # check recommended attributes are present
                 for constraint_set in usb_constraint_sets:
@@ -544,7 +536,7 @@ class MatroxUsbTest(GenericTest):
                         if not ok:
                             return test.FAIL("receiver {}: invalid {} capabilities, error {}.".format(receiver["id"], constraint, msg))
                     else:
-                        warn_message += " receiver {}: SHOULD declare {} capabilities.".format(receiver["id"], constraint)
+                        warn_message += "|" + "receiver {}: SHOULD declare {} capabilities.".format(receiver["id"], constraint)
                         continue
 
             if len(usb_receivers) > 0:
@@ -558,14 +550,14 @@ class MatroxUsbTest(GenericTest):
 
         return test.UNCLEAR("No USB Receiver resources were found on the Node")
 
-    def do_test_node_api_v1_1(self, test):
+    def do_test_node_api_v1_3(self, test):
         """
         Precondition check of the API version.
-        Raises an NMOSTestException when the Node API version is less than v1.1
+        Raises an NMOSTestException when the Node API version is less than v1.3
         """
         api = self.apis[NODE_API_KEY]
-        if self.is04_utils.compare_api_version(api["version"], "v1.1") < 0:
-            raise NMOSTestException(test.NA("This test cannot be run against Node API below version v1.1."))
+        if self.is04_utils.compare_api_version(api["version"], "v1.3") < 0:
+            raise NMOSTestException(test.NA("This test cannot be run against Node API below version v1.3."))
 
 def check_grouphint(gh):
 
