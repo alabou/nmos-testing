@@ -88,7 +88,6 @@ AttributeReceiverId                     = "urn:x-matrox:receiver_id"
 AttributeSynchronousMedia               = "urn:x-matrox:synchronous_media"
 AttributeParameterSetsTransportMode     = "urn:x-matrox:parameter_sets_transport_mode"
 AttributeParameterSetsFlowMode          = "urn:x-matrox:parameter_sets_flow_mode"
-
 AttributeAudioLayers                    = "urn:x-matrox:audio_layers"
 AttributeVideoLayers                    = "urn:x-matrox:video_layers"
 AttributeDataLayers                     = "urn:x-matrox:data_layers"
@@ -233,7 +232,7 @@ class MatroxCapabilitiesTest(GenericTest):
             else:
                 return test.FAIL("Node API did not respond as expected: {}".format(result))
         else:
-            return test.FAIL("Node API must be running v1.3 or greater to fully implement BCP-006-01")
+            return test.FAIL("Node API must be running v1.3 or greater to fully implement this specification")
 
     def test_02(self, test):
 
@@ -257,7 +256,7 @@ class MatroxCapabilitiesTest(GenericTest):
             reg_schema_obj = json.load(f)
         reg_schema = load_resolved_schema(api["spec_path"], schema_obj=reg_schema_obj)
 
-        warning = None
+        warning = ""
 
         for receiver in self.is04_resources["receivers"].values():
             if "constraint_sets" in receiver["caps"]:
@@ -266,7 +265,9 @@ class MatroxCapabilitiesTest(GenericTest):
                 except ValidationError as e:
                     return test.FAIL("Receiver {} does not comply with chema".format(receiver["id"]))
 
-                layers = []
+                audio_layers = []
+                video_layers = []
+                data_layers = []
 
                 for constraint_set in receiver["caps"]["constraint_sets"]:
                     try:
@@ -274,6 +275,12 @@ class MatroxCapabilitiesTest(GenericTest):
                     except ValidationError as e:
                         return test.FAIL("Receiver {} constraint_sets do not comply with schema".format(receiver["id"]))
 
+                    for param_constraint in constraint_set:
+                        if not param_constraint.startswith("urn:x-matrox:cap:meta:") and not param_constraint.startswith("urn:x-nmos:cap:meta:"):
+                            if "minimum" in param_constraint and "maximum" in param_constraint:
+                                if compare_min_larger_than_max(param_constraint):
+                                    warning += "|" + "Receiver {} paremeter constraint {} has an invalid empty range".format(receiver["id"], param_constraint)
+                                        
                     # unless the receiver is of format mux, sub-flow capabilities should not be used
                     if receiver["format"] != FormatMux:
                         if (CapMetaFormat in constraint_set) or (CapMetaLayer in constraint_set):
@@ -283,18 +290,36 @@ class MatroxCapabilitiesTest(GenericTest):
                             if (CapMetaFormat not in constraint_set) or (CapMetaLayer not in constraint_set):
                                 return test.FAIL("Receiver {} sub-Flow/sub-Stream require both {} and {}".format(receiver["id"], CapMetaFormat, CapMetaLayer))
                             if CapFormatMediaType not in constraint_set or constraint_set[CapFormatMediaType] in receiver["caps"]["media_types"]:
-                                warning = "Receiver {} sub-Flow/sub-Stream constraint_sets should have a media_type capability which is not part of the media_types array {}.".format(receiver["id"], receiver["caps"]["media_types"])
+                                warning += "|" + "Receiver {} sub-Flow/sub-Stream constraint_sets should have a media_type capability which is not part of the media_types array {}.".format(receiver["id"], receiver["caps"]["media_types"])
                             if constraint_set[CapMetaFormat] not in (FormatAudio, FormatVideo, FormatData):
-                                warning = "Receiver {} sub-Flow/sub-Stream constraint_sets should have an audio, video or data format.".format(receiver["id"])
+                                warning += "|" + "Receiver {} sub-Flow/sub-Stream constraint_sets should have an audio, video or data format.".format(receiver["id"])
                             for param_constraint in constraint_set:
                                 if param_constraint.startswith("urn:x-matrox:cap:transport:") or param_constraint.startswith("urn:x-nmos:cap:transport:"):
                                     return test.FAIL("Receiver {} sub-Flow/sub-Stream cannot have transport capabilities".format(receiver["id"]))
                                 
-                            append_if_not_exists(layers, constraint_set[CapMetaLayer]) # because of preferences alternatives
-            else:
-                warning = "Receiver {} not having constraint_sets".format(receiver["id"])
+                            if constraint_set[CapMetaFormat] == FormatAudio:
+                                append_if_not_exists(audio_layers, constraint_set[CapMetaLayer])
+                            elif constraint_set[CapMetaFormat] == FormatVideo:
+                               append_if_not_exists(video_layers, constraint_set[CapMetaLayer])
+                            elif constraint_set[CapMetaFormat] == FormatData:
+                                append_if_not_exists(data_layers, constraint_set[CapMetaLayer])
+                            else:
+                                return test.FAIL("Receiver {} constraint set format is invalid".format(receiver["id"]))
 
-        if warning is not None:
+                # Note: the Node caps cannot have non-contiguous layers but once processed by a controller in accordance
+                #       with layer mapping, the receiver caps can have non-contiguous layers. Here we enforece the Receiver's
+                #       declaration.
+                if not is_consecutive_from_zero(audio_layers):
+                    return test.FAIL("Receiver {} audio sub-srteams have invalid layers sequence {}".format(sender["id"], audio_layers))
+                if not is_consecutive_from_zero(video_layers):
+                    return test.FAIL("Receiver {} video sub-streams have invalid layers sequence {}".format(sender["id"], video_layers))
+                if not is_consecutive_from_zero(data_layers):
+                    return test.FAIL("Receiver {} data sub-streams have invalid layers sequence {}".format(sender["id"], data_layers))
+                
+            else:
+                warning += "|" + "Receiver {} not having constraint_sets".format(receiver["id"])
+
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -326,7 +351,15 @@ class MatroxCapabilitiesTest(GenericTest):
             if AttributeLayer not in parent_flow:
                 raise NMOSTestException("parent layer not found")
 
-            layers.append(parent_flow[AttributeLayer])
+            layer = parent_flow[AttributeLayer]
+
+            if not check_layer(layer):
+                raise NMOSTestException("parent layer is invalid")
+
+            if layer in layers:
+                raise NMOSTestException("parent layer already exists")
+
+            layers.append(layer)
 
         return layers            
 
@@ -343,7 +376,21 @@ class MatroxCapabilitiesTest(GenericTest):
             return None
 
         layer_compatibility_groups = []
-        intersection = 0xffffffffffffffff
+
+        # init with MUX
+        if AttributeLayerCompatibilityGroups not in flow:
+            groups = list(range(64))
+        else:
+            groups = flow[AttributeLayerCompatibilityGroups]
+            if not check_layer_compatibility_groups(groups):
+                raise NMOSTestException("mux layer_compatibility_groups is invalid")
+
+        mask = 0
+        for v in groups:
+            mask |= 1 << v
+        mask = 0xffffffffffffffff ^ mask
+
+        intersection = mask
 
         for parent_id in flow["parents"]:
 
@@ -363,7 +410,9 @@ class MatroxCapabilitiesTest(GenericTest):
                 groups = list(range(64))
             else:
                 groups = parent_flow[AttributeLayerCompatibilityGroups]
-                
+                if not check_layer_compatibility_groups(groups):
+                    raise NMOSTestException("parent layer_compatibility_groups is invalid")
+
             mask = 0
             for v in groups:
                 mask |= 1 << v
@@ -405,7 +454,7 @@ class MatroxCapabilitiesTest(GenericTest):
             reg_schema_obj = json.load(f)
         reg_schema = load_resolved_schema(api["spec_path"], schema_obj=reg_schema_obj)
 
-        warning = None
+        warning = ""
 
         for sender in self.is04_resources["senders"].values():
 
@@ -429,13 +478,19 @@ class MatroxCapabilitiesTest(GenericTest):
                     except ValidationError as e:
                         return test.FAIL("Sender {} constraint_sets do not comply with schema".format(sender["id"]))
 
+                    for param_constraint in constraint_set:
+                        if not param_constraint.startswith("urn:x-matrox:cap:meta:") and not param_constraint.startswith("urn:x-nmos:cap:meta:"):
+                            if "minimum" in param_constraint and "maximum" in param_constraint:
+                                if compare_min_larger_than_max(param_constraint):
+                                    warning += "|" + "Sender {} paremeter constraint {} has an invalid empty range".format(sender["id"], param_constraint)
+
                     format = getFormatFromTransport(sender["transport"])
 
                     if format == FormatUnknown:
                         if sender["flow_id"] in self.is04_resources["flows"]:
                             format = self.is04_resources["flows"][sender["flow_id"]]["format"]
                         else:
-                            warning = "Sender {} Flow {} not found in Flows".format(sender["id"], sender["flow_id"])
+                            warning += "|" + "Sender {} Flow {} not found in Flows".format(sender["id"], sender["flow_id"])
                             continue # continue ITERATION
                             
                     if format != FormatMux:
@@ -446,9 +501,9 @@ class MatroxCapabilitiesTest(GenericTest):
                             if (CapMetaFormat not in constraint_set) or (CapMetaLayer not in constraint_set):
                                 return test.FAIL("Sender {} sub-Flow/sub-Stream require both {} and {}".format(sender["id"], CapMetaFormat, CapMetaLayer))
                             if CapFormatMediaType not in constraint_set:
-                                warning = "Sender {} sub-Flow/sub-Stream constraint_sets should have a media_type capability which is not part of the media_types array {}.".format(sender["id"], sender["caps"]["media_types"])
+                                warning += "|" + "Sender {} sub-Flow/sub-Stream constraint_sets should have a media_type capability which is not part of the media_types array {}.".format(sender["id"], sender["caps"]["media_types"])
                             if constraint_set[CapMetaFormat] not in (FormatAudio, FormatVideo, FormatData):
-                                warning = "Sender {} sub-Flow/sub-Stream constraint_sets should have an audio, video or data format.".format(sender["id"])
+                                warning += "|" + "Sender {} sub-Flow/sub-Stream constraint_sets should have an audio, video or data format.".format(sender["id"])
                             for param_constraint in constraint_set:
                                 if param_constraint.startswith("urn:x-matrox:cap:transport:") or param_constraint.startswith("urn:x-nmos:cap:transport:"):
                                     return test.FAIL("Sender {} sub-Flow/sub-Stream cannot have transport capabilities".format(sender["id"]))
@@ -468,9 +523,9 @@ class MatroxCapabilitiesTest(GenericTest):
                                 return test.FAIL("Sender {} sub-Flows of format {} have an invalid layer_compatibility_group null intersection".format(sender["id"], constraint_set[CapMetaFormat]))
                             
             else:
-                warning = "Sender {} not having constraint_sets".format(sender["id"])
+                warning += "|" + "Sender {} not having constraint_sets".format(sender["id"])
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
             return test.PASS()
@@ -487,7 +542,7 @@ class MatroxCapabilitiesTest(GenericTest):
         if not valid:
             return test.FAIL(result)
 
-        warning = None
+        warning = ""
 
         for sender in self.is04_resources["senders"].values():
 
@@ -497,13 +552,13 @@ class MatroxCapabilitiesTest(GenericTest):
                 if sender["flow_id"] in self.is04_resources["flows"]:
                     format = self.is04_resources["flows"][sender["flow_id"]]["format"]
                 else:
-                    warning = "Sender {} Flow {} not found in Flows".format(sender["id"], sender["flow_id"])
+                    warning += "|" + "Sender {} Flow {} not found in Flows".format(sender["id"], sender["flow_id"])
                     continue # continue ITERATION
 
             flow_id = sender["flow_id"]
 
             if flow_id not in self.is04_resources["flows"]:
-                warning = "Sender {} Flow {} not found in Flows".format(sender["id"], flow_id)
+                warning += "|" + "Sender {} Flow {} not found in Flows".format(sender["id"], flow_id)
                 continue
             
             flow = self.is04_resources["flows"][flow_id]
@@ -514,18 +569,33 @@ class MatroxCapabilitiesTest(GenericTest):
             # Make sure there is no sub-Flow specific attributes
             if AttributeLayer in flow:
                 return test.FAIL("Sender {} has invalid sub-Flow attributes".format(sender["id"]))
-            
+
             if format != FormatMux:
 
                 # Make sure there is no mux Flow specific attributes
                 if (AttributeAudioLayers in flow) or (AttributeVideoLayers in flow) or (AttributeDataLayers in flow):
                     return test.FAIL("Sender {} has invalid mux Flow attributes".format(sender["id"]))
-
+                
+                if AttributeLayerCompatibilityGroups in flow:
+                   return test.FAIL("Sender {} has invalid sub-Flow attributes".format(sender["id"]))
             else:
 
-                audio_intersection = 0xffffffffffffffff
-                video_intersection = 0xffffffffffffffff
-                data_intersection = 0xffffffffffffffff
+                if AttributeLayerCompatibilityGroups not in flow:
+                    groups = list(range(64))
+                else:
+                    groups = flow[AttributeLayerCompatibilityGroups]
+                    if not check_layer_compatibility_groups(groups):
+                        raise NMOSTestException("layer_compatibility_groups is invalid")
+
+                mask = 0
+                for v in groups:
+                    mask |= 1 << v
+                mask = 0xffffffffffffffff ^ mask
+
+                # Init with mux compatibility_groups
+                audio_intersection = mask
+                video_intersection = mask
+                data_intersection = mask
 
                 audio_layers = []
                 video_layers = []
@@ -534,7 +604,7 @@ class MatroxCapabilitiesTest(GenericTest):
                 for parent_id in flow["parents"]:
 
                     if parent_id not in self.is04_resources["flows"]:
-                        warning = "Sender {} parent flow not found".format(sender["id"])
+                        warning += "|" + "Sender {} parent flow not found".format(sender["id"])
                         continue
                     
                     parent_flow = self.is04_resources["flows"][parent_id]
@@ -555,6 +625,8 @@ class MatroxCapabilitiesTest(GenericTest):
                         groups = list(range(64))
                     else:
                         groups = parent_flow[AttributeLayerCompatibilityGroups]
+                        if not check_layer_compatibility_groups(groups):
+                            raise NMOSTestException("parent layer_compatibility_groups is invalid")
 
                     mask = 0
                     for v in groups:
@@ -607,7 +679,47 @@ class MatroxCapabilitiesTest(GenericTest):
                 if len(data_layers) != flow[AttributeDataLayers]:
                     return test.FAIL("Sender {} mux Flow data_layers attribute not matching sub-Flows".format(sender["id"]))
 
-        if warning is not None:
+        if warning != "":
             return test.WARNING(warning)
         else:
-            return test.PASS()        
+            return test.PASS()
+        
+def check_layer_compatibility_groups(lcg):
+    if not isinstance(lcg, list):
+        return False
+    if len(lcg) == 0:
+        return False
+    for i in lcg:
+        if not isinstance(i, int):
+            return False
+        if i < 0 or i > 63:
+            return False
+    return True
+
+def check_layer(l):
+    if not isinstance(l, int):
+        return False
+    if l < 0:
+        return False
+
+    return True
+
+def compare_min_larger_than_max(param_constraint):
+    
+    min_val = param_constraint["minimum"]
+    max_val = param_constraint["maximum"]
+
+    if isinstance(min_val, int) and isinstance(max_val, int):
+        return min_val > max_val
+    elif isinstance(min_val, float) and isinstance(max_val, float):
+        return min_val > max_val
+    elif isinstance(min_val, (int, float)) and isinstance(max_val, (int, float)):
+        return float(min_val) > float(max_val)
+    elif isinstance(min_val, dict) and isinstance(max_val, dict):
+        min_num = min_val["numerator"]
+        max_num = max_val["numerator"]
+        min_den = min_val.get("denominator", 1)
+        max_den = max_val.get("denominator", 1)
+        return (min_num*max_den) > (max_num*min_den)
+        
+    return False

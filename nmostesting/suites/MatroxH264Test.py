@@ -126,14 +126,12 @@ class MatroxH264Test(GenericTest):
             else:
                 return test.FAIL("Node API did not respond as expected: {}".format(result))
         else:
-            return test.FAIL("Node API must be running v1.3 or greater to fully implement BCP-006-01")
+            return test.FAIL("Node API must be running v1.3 or greater to fully implement this specification")
 
     def test_02(self, test):
         """H.264 Flows have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         reg_api = self.apis[FLOW_REGISTER_KEY]
 
@@ -163,32 +161,20 @@ class MatroxH264Test(GenericTest):
                 # check required attributes are present. constant_bit_rate is not verified because it has a
                 # default value of false, making it optional.
                 if "components" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the color (sub-)sampling using "
-                                         "the 'components' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the color (sub-)sampling using "
+                                        "the 'components' attribute.".format(flow["id"]))
 
                 if "profile" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the encoding profile using "
-                                         "the 'profile' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the encoding profile using "
+                                        "the 'profile' attribute.".format(flow["id"]))
 
                 if "level" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the encoding level using "
-                                         "the 'level' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the encoding level using "
+                                        "the 'level' attribute.".format(flow["id"]))
 
                 if "bit_rate" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the target bit rate of the codestream using "
-                                         "the 'bit_rate' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the target bit rate of the codestream using "
+                                        "the 'bit_rate' attribute.".format(flow["id"]))
 
                 # check values of all additional attributes against the schema
                 # e.g. 'components', 'profile', 'level', 'bit_rate', 'constant_bit_rate'
@@ -217,7 +203,7 @@ class MatroxH264Test(GenericTest):
     def test_03(self, test):
         """H.264 Sources have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         for resource_type in ["flows", "sources"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -255,9 +241,7 @@ class MatroxH264Test(GenericTest):
     def test_04(self, test):
         """H.264 Senders have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         reg_api = self.apis[SENDER_REGISTER_KEY]
 
@@ -312,9 +296,9 @@ class MatroxH264Test(GenericTest):
                 if rfc6184:
                     # check recommended attributes are present
                     if "st2110_21_sender_type" not in sender:
-                        if v1_3 and not warn_st2110_22:
+                        if not warn_st2110_22:
                             warn_st2110_22 = True
-                            warn_message = "Sender {} MUST indicate the ST 2110-21 Sender Type using " \
+                            warn_message += "|" + "Sender {} MUST indicate the ST 2110-21 Sender Type using " \
                                         "the 'st2110_21_sender_type' attribute if it is compliant with ST 2110-22." \
                                         .format(sender["id"])
 
@@ -323,15 +307,13 @@ class MatroxH264Test(GenericTest):
                     # information in all the scenarios.
                     if "st2110_21_sender_type" in sender:
                         if "bit_rate" not in sender:
-                            if v1_3:
-                                return test.FAIL("Sender {} MUST indicate the Sender bit rate using " \
-                                            "the 'bit_rate' attribute when conforming to ST 2110-22." \
-                                            .format(sender["id"]))
+                            return test.FAIL("Sender {} MUST indicate the Sender bit rate using " \
+                                        "the 'bit_rate' attribute when conforming to ST 2110-22." \
+                                        .format(sender["id"]))
                     if "bit_rate" in sender:
-                        if v1_3:
-                            if flow_map[sender["flow_id"]]["bit_rate"] >= sender["bit_rate"]:
-                                return test.FAIL("Sender {} MUST derive bit rate from Flow bit rate" \
-                                            .format(sender["id"]))
+                        if flow_map[sender["flow_id"]]["bit_rate"] >= sender["bit_rate"]:
+                            return test.FAIL("Sender {} MUST derive bit rate from Flow bit rate" \
+                                        .format(sender["id"]))
 
             if warn_na:
                 return test.NA("Additional Sender attributes such as 'st2110_21_sender_type' are required "
@@ -350,9 +332,7 @@ class MatroxH264Test(GenericTest):
     def test_05(self, test):
         """H.264 Sender manifests have the required parameters"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         for resource_type in ["senders", "flows"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -443,7 +423,7 @@ class MatroxH264Test(GenericTest):
                         if not self.check_sdp_profile_level(profile_level_id, flow["profile"], flow["level"]):
                             return test.FAIL("SDP '{}' for Sender {} does not match profile and/or level attributes in its Flow {}"
                                                 .format(name, sender["id"], flow["id"]))
-                    elif v1_3:
+                    else:
                         return test.FAIL("SDP '{}' for Sender {} is present but associated profile and/or level attributes are missing in its Flow {}"
                                             .format("profile-level-id", sender["id"], flow["id"]))
 
@@ -494,7 +474,7 @@ class MatroxH264Test(GenericTest):
                             if sdp_format_params[name] != sender[nmos_name]:
                                 return test.FAIL("SDP '{}' for Sender {} does not match {} in the Sender"
                                                  .format(name, sender["id"], nmos_name))
-                        elif v1_3:
+                        else:
                             return test.FAIL("SDP '{}' for Sender {} is present but {} is missing in the Sender"
                                              .format(name, sender["id"], nmos_name))
                     elif nmos_name in sender:
@@ -530,7 +510,7 @@ class MatroxH264Test(GenericTest):
                             if value != sender[nmos_name]:
                                 return test.FAIL("SDP '{}' for Sender {} does not match {} in the Sender"
                                                 .format(name, sender["id"], nmos_name))
-                        elif v1_3:
+                        else:
                             return test.FAIL("SDP '{}' for Sender {} is present but {} is missing in the Sender"
                                             .format(name, sender["id"], nmos_name))
 
@@ -553,7 +533,7 @@ class MatroxH264Test(GenericTest):
     def test_06(self, test):
         """H.264 Receivers have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         valid, result = self.get_is04_resources("receivers")
         if not valid:
@@ -603,7 +583,6 @@ class MatroxH264Test(GenericTest):
                                 if  "video/H264" in constraint_set["urn:x-nmos:cap:format:media_type"]["enum"]:
                                     h264_receivers.append(receiver)
 
-            warn_unrestricted = False
             warn_message = ""
 
             for receiver in h264_receivers:
@@ -647,44 +626,34 @@ class MatroxH264Test(GenericTest):
                 for constraint_set in h264_constraint_sets:
                     for constraint, target in recommended_constraints.items():
                         if constraint not in constraint_set:
-                            if not warn_unrestricted:
-                                warn_unrestricted = True
-                                warn_message = "Receiver {} SHOULD indicate the supported H.264 {} using the " \
-                                               "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                            warn_message += "|" + "Receiver {} SHOULD indicate the supported H.264 {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if rfc6184:
                         for constraint, target in recommended_rfc6184_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported H.264 {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported H.264 {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if rfc2250:
                         for constraint, target in recommended_rfc2250_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported H.264 {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported H.264 {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if other_video:
                         for constraint, target in recommended_other_video_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported H.264 {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported H.264 {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if other_mux:
                         for constraint, target in recommended_other_mux_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported H.264 {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported H.264 {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
-            if warn_unrestricted:
+            if warn_message != "":
                 return test.WARNING(warn_message)
 
             if len(h264_receivers) > 0:
@@ -698,7 +667,7 @@ class MatroxH264Test(GenericTest):
     def test_07(self, test):
         """H.264 Receiver parameter constraints have valid values"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         valid, result = self.get_is04_resources("receivers")
         if not valid:
@@ -781,8 +750,8 @@ class MatroxH264Test(GenericTest):
 
                 # check required attributes are present
                 if "constraint_sets" not in receiver["caps"]:
-                    # FAIL reported by test_05
-                    continue
+                    return test.FAIL("Receiver {} MUST indicate constraints in accordance with BCP-004-01 using "
+                                     "the 'caps' attribute 'constraint_sets'.".format(receiver["id"]))
 
                 # exclude constraint sets for other media types
                 h264_constraint_sets = [constraint_set for constraint_set in receiver["caps"]["constraint_sets"]
@@ -799,8 +768,8 @@ class MatroxH264Test(GenericTest):
                                 h264_constraint_sets.append(constraint_set)
 
                 if len(h264_constraint_sets) == 0:
-                    # FAIL reported by test_05
-                    continue
+                    return test.FAIL("Receiver {} MUST indicate constraints in accordance with BCP-004-01 using "
+                                     "the 'caps' attribute 'constraint_sets'.".format(receiver["id"]))
 
                 # check recommended attributes are present
                 for constraint_set in h264_constraint_sets:
@@ -886,14 +855,14 @@ class MatroxH264Test(GenericTest):
 
         return components == ""
 
-    def do_test_node_api_v1_1(self, test):
+    def do_test_node_api_v1_3(self, test):
         """
         Precondition check of the API version.
-        Raises an NMOSTestException when the Node API version is less than v1.1
+        Raises an NMOSTestException when the Node API version is less than v1.3
         """
         api = self.apis[NODE_API_KEY]
-        if self.is04_utils.compare_api_version(api["version"], "v1.1") < 0:
-            raise NMOSTestException(test.NA("This test cannot be run against Node API below version v1.1."))
+        if self.is04_utils.compare_api_version(api["version"], "v1.3") < 0:
+            raise NMOSTestException(test.NA("This test cannot be run against Node API below version v1.3."))
 
     def is_sender_using_other_transports(self, sender, flow_map):
         if not sender["transport"] in {"urn:x-nmos:transport:rtp",

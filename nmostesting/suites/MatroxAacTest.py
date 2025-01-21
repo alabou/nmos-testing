@@ -151,14 +151,12 @@ class MatroxAacTest(GenericTest):
             else:
                 return test.FAIL("Node API did not respond as expected: {}".format(result))
         else:
-            return test.FAIL("Node API must be running v1.3 or greater to fully implement BCP-006-01")
+            return test.FAIL("Node API must be running v1.3 or greater to fully implement this specification")
 
     def test_02(self, test):
         """AAC Flows have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         reg_api = self.apis[FLOW_REGISTER_KEY]
 
@@ -188,25 +186,16 @@ class MatroxAacTest(GenericTest):
                 # check required attributes are present. constant_bit_rate is not verified because it has a
                 # default value of false, making it optional.
                 if "profile" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the encoding profile using "
-                                         "the 'profile' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the encoding profile using "
+                                        "the 'profile' attribute.".format(flow["id"]))
 
                 if "level" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the encoding level using "
-                                         "the 'level' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the encoding level using "
+                                        "the 'level' attribute.".format(flow["id"]))
 
                 if "bit_rate" not in flow:
-                    if v1_3:
-                        return test.FAIL("Flow {} MUST indicate the target bit rate of the codestream using "
-                                         "the 'bit_rate' attribute.".format(flow["id"]))
-                    else:
-                        warn_na = True
+                    return test.FAIL("Flow {} MUST indicate the target bit rate of the codestream using "
+                                        "the 'bit_rate' attribute.".format(flow["id"]))
 
                 # check values of all additional attributes against the schema
                 # e.g. 'profile', 'level', 'bit_rate', 'constant_bit_rate'
@@ -235,7 +224,7 @@ class MatroxAacTest(GenericTest):
     def test_03(self, test):
         """AAC Sources have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         for resource_type in ["flows", "sources"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -273,9 +262,7 @@ class MatroxAacTest(GenericTest):
     def test_04(self, test):
         """AAC Senders have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         reg_api = self.apis[SENDER_REGISTER_KEY]
 
@@ -333,10 +320,9 @@ class MatroxAacTest(GenericTest):
                     # because there is not such requirement in RFC6184 and it is not current practice to provide such
                     # information in all the scenarios.
                     if "bit_rate" in sender:
-                        if v1_3:
-                            if flow_map[sender["flow_id"]]["bit_rate"] >= sender["bit_rate"]:
-                                return test.FAIL("Sender {} MUST derive bit rate from Flow bit rate" \
-                                            .format(sender["id"]))
+                        if flow_map[sender["flow_id"]]["bit_rate"] >= sender["bit_rate"]:
+                            return test.FAIL("Sender {} MUST derive bit rate from Flow bit rate" \
+                                        .format(sender["id"]))
 
             if len(aac_senders) > 0:
                 return test.PASS()
@@ -349,9 +335,7 @@ class MatroxAacTest(GenericTest):
     def test_05(self, test):
         """AAC Sender manifests have the required parameters"""
 
-        self.do_test_node_api_v1_1(test)
-
-        v1_3 = self.is04_utils.compare_api_version(self.apis[NODE_API_KEY]["version"], "v1.3") >= 0
+        self.do_test_node_api_v1_3(test)
 
         for resource_type in ["senders", "flows", "sources"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -442,7 +426,7 @@ class MatroxAacTest(GenericTest):
                         if not self.check_sdp_profile_level(profile_level_id, flow["profile"], flow["level"]):
                             return test.FAIL("SDP '{}' for Sender {} does not match profile and/or level attributes in its Flow {}"
                                                 .format(name, sender["id"], flow["id"]))
-                    elif v1_3:
+                    else:
                         return test.FAIL("SDP '{}' for Sender {} is present but associated profile and/or level attributes are missing in its Flow {}"
                                             .format("profile-level-id", sender["id"], flow["id"]))
 
@@ -522,7 +506,7 @@ class MatroxAacTest(GenericTest):
     def test_06(self, test):
         """AAC Receivers have the required attributes"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         valid, result = self.get_is04_resources("receivers")
         if not valid:
@@ -578,7 +562,6 @@ class MatroxAacTest(GenericTest):
                                 if  "audio/mpeg4-generic" in constraint_set["urn:x-nmos:cap:format:media_type"]["enum"] or "audio/MP4A-LATM" in constraint_set["urn:x-nmos:cap:format:media_type"]["enum"] or "audio/MP4A-ADTS" in constraint_set["urn:x-nmos:cap:format:media_type"]["enum"]:
                                     aac_receivers.append(receiver)
 
-            warn_unrestricted = False
             warn_message = ""
 
             for receiver in aac_receivers:
@@ -623,52 +606,40 @@ class MatroxAacTest(GenericTest):
                 for constraint_set in aac_constraint_sets:
                     for constraint, target in recommended_constraints.items():
                         if constraint not in constraint_set:
-                            if not warn_unrestricted:
-                                warn_unrestricted = True
-                                warn_message = "Receiver {} SHOULD indicate the supported AAC {} using the " \
-                                               "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                            warn_message += "|" + "Receiver {} SHOULD indicate the supported AAC {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if rfc6416:
                         for constraint, target in recommended_rfc6416_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported AAC {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported AAC {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if rfc3640:
                         for constraint, target in recommended_rfc3640_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported AAC {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported AAC {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if rfc2250:
                         for constraint, target in recommended_rfc2250_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported AAC {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported AAC {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if other_audio:
                         for constraint, target in recommended_other_audio_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported AAC {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported AAC {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
                     if other_mux:
                         for constraint, target in recommended_other_mux_constraints.items():
                             if constraint not in constraint_set:
-                                if not warn_unrestricted:
-                                    warn_unrestricted = True
-                                    warn_message = "Receiver {} SHOULD indicate the supported AAC {} using the " \
-                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
+                                warn_message += "|" + "Receiver {} SHOULD indicate the supported AAC {} using the " \
+                                            "'{}' parameter constraint.".format(receiver["id"], target, constraint)
 
-            if warn_unrestricted:
+            if warn_message != "":
                 return test.WARNING(warn_message)
 
             if len(aac_receivers) > 0:
@@ -682,7 +653,7 @@ class MatroxAacTest(GenericTest):
     def test_07(self, test):
         """AAC Receiver parameter constraints have valid values"""
 
-        self.do_test_node_api_v1_1(test)
+        self.do_test_node_api_v1_3(test)
 
         valid, result = self.get_is04_resources("receivers")
         if not valid:
@@ -737,8 +708,8 @@ class MatroxAacTest(GenericTest):
 
                 # check required attributes are present
                 if "constraint_sets" not in receiver["caps"]:
-                    # FAIL reported by test_05
-                    continue
+                    return test.FAIL("Receiver {} MUST indicate constraints in accordance with BCP-004-01 using "
+                                     "the 'caps' attribute 'constraint_sets'.".format(receiver["id"]))
 
                 # exclude constraint sets for other media types
                 aac_constraint_sets = [constraint_set for constraint_set in receiver["caps"]["constraint_sets"]
@@ -755,8 +726,8 @@ class MatroxAacTest(GenericTest):
                                 aac_constraint_sets.append(constraint_set)
 
                 if len(aac_constraint_sets) == 0:
-                    # FAIL reported by test_05
-                    continue
+                    return test.FAIL("Receiver {} MUST indicate constraints in accordance with BCP-004-01 using "
+                                     "the 'caps' attribute 'constraint_sets'.".format(receiver["id"]))
 
                 # check recommended attributes are present
                 for constraint_set in aac_constraint_sets:
@@ -797,14 +768,14 @@ class MatroxAacTest(GenericTest):
                 pass
         return payload_type
 
-    def do_test_node_api_v1_1(self, test):
+    def do_test_node_api_v1_3(self, test):
         """
         Precondition check of the API version.
-        Raises an NMOSTestException when the Node API version is less than v1.1
+        Raises an NMOSTestException when the Node API version is less than v1.3
         """
         api = self.apis[NODE_API_KEY]
-        if self.is04_utils.compare_api_version(api["version"], "v1.1") < 0:
-            raise NMOSTestException(test.NA("This test cannot be run against Node API below version v1.1."))
+        if self.is04_utils.compare_api_version(api["version"], "v1.3") < 0:
+            raise NMOSTestException(test.NA("This test cannot be run against Node API below version v1.3."))
 
     def is_sender_using_other_transports(self, sender, flow_map):
         if not sender["transport"] in {"urn:x-nmos:transport:rtp",
