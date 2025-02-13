@@ -63,7 +63,7 @@ CapFormatAudioLayers                    = "urn:x-matrox:cap:format:audio_layers"
 CapFormatDataLayers                     = "urn:x-matrox:cap:format:data_layers"
 CapTransportBitRate                     = "urn:x-nmos:cap:transport:bit_rate"
 CapTransportPacketTime                  = "urn:x-nmos:cap:transport:packet_time"
-CapTransportMaxPacketTtime              = "urn:x-nmos:cap:transport:max_packet_time"
+CapTransportMaxPacketTime               = "urn:x-nmos:cap:transport:max_packet_time"
 CapTransportSenderType                  = "urn:x-nmos:cap:transport:st2110_21_sender_type"
 CapTransportPacketTransmissionMode      = "urn:x-nmos:cap:transport:packet_transmission_mode"
 CapTransportParameterSetsFlowMode       = "urn:x-matrox:cap:transport:parameter_sets_flow_mode"
@@ -92,6 +92,11 @@ AttributeAudioLayers                    = "urn:x-matrox:audio_layers"
 AttributeVideoLayers                    = "urn:x-matrox:video_layers"
 AttributeDataLayers                     = "urn:x-matrox:data_layers"
 AttributeConstantBitRate                = "urn:x-matrox:constant_bit_rate"
+
+# Generic capabilities from any namespace
+def extract_after_cap(s):
+    match = re.search(r'^urn:(x-nmos|x-[a-z]+):cap:(.*)', s)
+    return match.group(2) if match else None
 
 def is_consecutive_from_zero(a):
     # Check if the length of arr matches the max element + 1 and that all elements from 0 to max are present
@@ -174,8 +179,8 @@ class MatroxCapabilitiesTest(GenericTest):
             raise NMOSTestException(message)
 
         # The following call to is05_utils.get_transporttype does not validate against the IS-05 schemas,
-        # which is good fow allowing extended transport. The transporttype-response-schema.json schema is
-        # broken as it does not allow additional transport, nor x-nmos ones, nor vendor spcecific ones.
+        # which is good for allowing extended transport. The transporttype-response-schema.json schema is
+        # broken as it does not allow additional transport, nor x-nmos ones, nor vendor specific ones.
         try:
             for resource in resources.json():
                 resource_id = resource.rstrip("/")
@@ -269,18 +274,48 @@ class MatroxCapabilitiesTest(GenericTest):
                 video_layers = []
                 data_layers = []
 
+                try:
+                    caps_version = receiver["caps"]["version"]
+                    core_version = receiver["version"]
+                    
+                    if self.is04_utils.compare_resource_version(caps_version, core_version) > 0:
+                        return test.FAIL("Receiver {} caps version is later than resource version".format(receiver["id"]))
+
+                except ValidationError as e:
+                    return test.FAIL("Receiver {} do not comply with schema".format(receiver["id"]))
+
+                has_label = None
+                warn_label = False
+
                 for constraint_set in receiver["caps"]["constraint_sets"]:
                     try:
                         self.validate_schema(constraint_set, reg_schema)
                     except ValidationError as e:
                         return test.FAIL("Receiver {} constraint_sets do not comply with schema".format(receiver["id"]))
 
+                    has_current_label = "urn:x-nmos:cap:meta:label" in constraint_set
+
+                    # Ensure consistent labeling across all constraint_sets
+                    if has_label is None:
+                        has_label = has_current_label
+                    elif has_label != has_current_label:
+                        warn_label = True
+
+                    has_pattern_attribute = False
                     for param_constraint in constraint_set:
-                        if not param_constraint.startswith("urn:x-matrox:cap:meta:") and not param_constraint.startswith("urn:x-nmos:cap:meta:"):
+                        # enumeration do not allow empty arrays by schema, disallow empty range by test
+                        if not extract_after_cap(param_constraint).startswith("meta:"):
+                            has_pattern_attribute = True
                             if "minimum" in param_constraint and "maximum" in param_constraint:
                                 if compare_min_larger_than_max(param_constraint):
-                                    warning += "|" + "Receiver {} paremeter constraint {} has an invalid empty range".format(receiver["id"], param_constraint)
-                                        
+                                    warning += "|" + "Receiver {} parameter constraint {} has an invalid empty range".format(receiver["id"], param_constraint)
+
+                        if param_constraint.startswith("urn:x-nmos:") and param_constraint not in reg_schema_obj["properties"]:
+                            warning += "|" + "Receiver {} parameter constraint {} is not registered ".format(receiver["id"], param_constraint)
+
+                    if not has_pattern_attribute:
+                        return test.FAIL("Receiver {} has an illegal constraint set without any parameter attribute".format(receiver["id"]))
+
                     # unless the receiver is of format mux, sub-flow capabilities should not be used
                     if receiver["format"] != FormatMux:
                         if (CapMetaFormat in constraint_set) or (CapMetaLayer in constraint_set):
@@ -310,12 +345,15 @@ class MatroxCapabilitiesTest(GenericTest):
                 #       with layer mapping, the receiver caps can have non-contiguous layers. Here we enforece the Receiver's
                 #       declaration.
                 if not is_consecutive_from_zero(audio_layers):
-                    return test.FAIL("Receiver {} audio sub-srteams have invalid layers sequence {}".format(sender["id"], audio_layers))
+                    return test.FAIL("Receiver {} audio sub-srteams have invalid layers sequence {}".format(receiver["id"], audio_layers))
                 if not is_consecutive_from_zero(video_layers):
-                    return test.FAIL("Receiver {} video sub-streams have invalid layers sequence {}".format(sender["id"], video_layers))
+                    return test.FAIL("Receiver {} video sub-streams have invalid layers sequence {}".format(receiver["id"], video_layers))
                 if not is_consecutive_from_zero(data_layers):
-                    return test.FAIL("Receiver {} data sub-streams have invalid layers sequence {}".format(sender["id"], data_layers))
+                    return test.FAIL("Receiver {} data sub-streams have invalid layers sequence {}".format(receiver["id"], data_layers))
                 
+                if warn_label:
+                    warning += "|" + "Receiver {} constraint_sets should either 'urn:x-nmos:cap:meta:label' for all constraint sets or none".format(receiver["id"])
+
             else:
                 warning += "|" + "Receiver {} not having constraint_sets".format(receiver["id"])
 
@@ -471,18 +509,47 @@ class MatroxCapabilitiesTest(GenericTest):
                     self.validate_schema(sender, schema)
                 except ValidationError as e:
                     return test.FAIL("Sender {} does not comply with chema".format(sender["id"]))
+                try:
+                    caps_version = sender["caps"]["version"]
+                    core_version = sender["version"]
+                    
+                    if self.is04_utils.compare_resource_version(caps_version, core_version) > 0:
+                        return test.FAIL("Sender {} caps version is later than resource version".format(sender["id"]))
 
+                except ValidationError as e:
+                    return test.FAIL("Sender {} do not comply with schema".format(sender["id"]))
+
+                has_label = None
+                warn_label = False
+                
                 for constraint_set in sender["caps"]["constraint_sets"]:
                     try:
                         self.validate_schema(constraint_set, reg_schema)
                     except ValidationError as e:
                         return test.FAIL("Sender {} constraint_sets do not comply with schema".format(sender["id"]))
 
+                    has_current_label = "urn:x-nmos:cap:meta:label" in constraint_set
+
+                    # Ensure consistent labeling across all constraint_sets
+                    if has_label is None:
+                        has_label = has_current_label
+                    elif has_label != has_current_label:
+                        warn_label = True
+                        
+                    has_pattern_attribute = False
                     for param_constraint in constraint_set:
-                        if not param_constraint.startswith("urn:x-matrox:cap:meta:") and not param_constraint.startswith("urn:x-nmos:cap:meta:"):
+                        # enumeration do not allow empty arrays by schema, disallow empty range by test
+                        if not extract_after_cap(param_constraint).startswith("meta:"):
+                            has_pattern_attribute = True
                             if "minimum" in param_constraint and "maximum" in param_constraint:
                                 if compare_min_larger_than_max(param_constraint):
-                                    warning += "|" + "Sender {} paremeter constraint {} has an invalid empty range".format(sender["id"], param_constraint)
+                                    warning += "|" + "Sender {} parameter constraint {} has an invalid empty range".format(sender["id"], param_constraint)
+
+                        if param_constraint.startswith("urn:x-nmos:") and param_constraint not in reg_schema_obj["properties"]:
+                            warning += "|" + "Sender {} parameter constraint {} is not registered ".format(sender["id"], param_constraint)
+
+                    if not has_pattern_attribute:
+                        return test.FAIL("Sender {} has an illegal constraint set without any parameter attribute".format(sender["id"]))
 
                     format = getFormatFromTransport(sender["transport"])
 
@@ -522,6 +589,9 @@ class MatroxCapabilitiesTest(GenericTest):
                             if intersection == 0:
                                 return test.FAIL("Sender {} sub-Flows of format {} have an invalid layer_compatibility_group null intersection".format(sender["id"], constraint_set[CapMetaFormat]))
                             
+                if warn_label:
+                    warning += "|" + "Sender {} constraint_sets should either 'urn:x-nmos:cap:meta:label' for all constraint sets or none".format(sender["id"])
+
             else:
                 warning += "|" + "Sender {} not having constraint_sets".format(sender["id"])
 
