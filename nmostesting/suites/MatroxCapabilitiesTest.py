@@ -77,6 +77,7 @@ CapTransportSynchronousMedia            = "urn:x-matrox:cap:transport:synchronou
 
 CapMetaLabel                            = "urn:x-nmos:cap:meta:label"
 CapMetaFormat                           = "urn:x-matrox:cap:meta:format"
+CapMetaLayerEnabled                     = "urn:x-matrox:cap:meta:layer_enabled"
 CapMetaLayer                            = "urn:x-matrox:cap:meta:layer"
 CapMetaLayerCompatibilityGroups         = "urn:x-matrox:cap:meta:layer_compatibility_groups"
 CapMetaEnabled                          = "urn:x-nmos:cap:meta:enabled"
