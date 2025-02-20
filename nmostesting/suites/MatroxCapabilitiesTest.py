@@ -95,7 +95,7 @@ AttributeDataLayers                     = "urn:x-matrox:data_layers"
 AttributeConstantBitRate                = "urn:x-matrox:constant_bit_rate"
 
 # Generic capabilities from any namespace
-def extract_after_cap(s):
+def cap_without_namespace(s):
     match = re.search(r'^urn:(x-nmos|x-[a-z]+):cap:(.*)', s)
     return match.group(2) if match else None
 
@@ -305,7 +305,7 @@ class MatroxCapabilitiesTest(GenericTest):
                     has_pattern_attribute = False
                     for param_constraint in constraint_set:
                         # enumeration do not allow empty arrays by schema, disallow empty range by test
-                        if not extract_after_cap(param_constraint).startswith("meta:"):
+                        if not cap_without_namespace(param_constraint).startswith("meta:"):
                             has_pattern_attribute = True
                             if "minimum" in param_constraint and "maximum" in param_constraint:
                                 if compare_min_larger_than_max(param_constraint):
@@ -540,7 +540,7 @@ class MatroxCapabilitiesTest(GenericTest):
                     has_pattern_attribute = False
                     for param_constraint in constraint_set:
                         # enumeration do not allow empty arrays by schema, disallow empty range by test
-                        if not extract_after_cap(param_constraint).startswith("meta:"):
+                        if not cap_without_namespace(param_constraint).startswith("meta:"):
                             has_pattern_attribute = True
                             if "minimum" in param_constraint and "maximum" in param_constraint:
                                 if compare_min_larger_than_max(param_constraint):
