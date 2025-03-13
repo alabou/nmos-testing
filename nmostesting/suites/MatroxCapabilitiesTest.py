@@ -97,7 +97,7 @@ AttributeConstantBitRate                = "urn:x-matrox:constant_bit_rate"
 # Generic capabilities from any namespace
 def cap_without_namespace(s):
     match = re.search(r'^urn:(x-nmos|x-[a-z]+):cap:(.*)', s)
-    return match.group(2) if match else None
+    return match.group(1) if match else None
 
 def is_consecutive_from_zero(a):
     # Check if the length of arr matches the max element + 1 and that all elements from 0 to max are present
