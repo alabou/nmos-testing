@@ -87,7 +87,7 @@ from .suites import BCP0060101Test
 from .suites import BCP0060102Test
 from .suites import MatroxTransportsTest
 from .suites import MatroxCapabilitiesTest
-from .suites import MatroxTestSdpTest
+from .suites import MatroxSdpTest
 
 FLASK_APPS = []
 DNS_SERVER = None
@@ -426,8 +426,8 @@ TEST_DEFINITIONS = {
         }],
         "class": MatroxCapabilitiesTest.MatroxCapabilitiesTest
     },    
-   "Matrox-TestSdp": {
-        "name": "Matrox-TestSdp",
+   "Matrox-Sdp": {
+        "name": "Matrox-Sdp",
         "specs": [{
             "spec_key": "is-04",
             "api_key": "query"
@@ -451,7 +451,7 @@ TEST_DEFINITIONS = {
             "spec_key": "bcp-004-01",
             "api_key": "receiver-caps"
         }],
-        "class": MatroxTestSdpTest.MatroxTestSdpTest
+        "class": MatroxSdpTest.MatroxSdpTest
     },    
 }
 
