@@ -1212,14 +1212,16 @@ def main(args):
     validate_args(CMD_ARGS)
 
     # Download up to date versions of each API specification
-    init_spec_cache()
+    if not CONFIG.CACHE_IS_READ_ONLY:
+        
+        init_spec_cache()
 
-    # Identify current testing tool version
-    try:
-        repo = git.Repo(".")
-        TOOL_VERSION = repo.git.rev_parse(repo.head.object.hexsha, short=7)
-    except git.exc.InvalidGitRepositoryError:
-        TOOL_VERSION = "Unknown"
+        # Identify current testing tool version
+        try:
+            repo = git.Repo(".")
+            TOOL_VERSION = repo.git.rev_parse(repo.head.object.hexsha, short=7)
+        except git.exc.InvalidGitRepositoryError:
+            TOOL_VERSION = "Unknown"
 
     # Start the DNS server
     if CONFIG.ENABLE_DNS_SD and CONFIG.DNS_SD_MODE == "unicast":

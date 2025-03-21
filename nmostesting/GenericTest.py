@@ -86,32 +86,34 @@ class GenericTest(object):
 
         test = Test("Test initialisation")
 
-        for api_name, api_data in self.apis.items():
-            if "spec_path" not in api_data or api_data["version"] is None:
-                continue
+        if not CONFIG.CACHE_IS_READ_ONLY:
+            
+            for api_name, api_data in self.apis.items():
+                if "spec_path" not in api_data or api_data["version"] is None:
+                    continue
 
-            repo = git.Repo(api_data["spec_path"])
+                repo = git.Repo(api_data["spec_path"])
 
-            # List remote branches and check there is a v#.#.x or v#.#-dev
-            branches = repo.git.branch('-a')
-            spec_branch = None
-            # The branch for vX.Y is named vX.Y.x after elevation
-            # Before elevation it is vX.Y-dev
-            # Sometimes we want to just specify a branch directly
-            branch_names = [api_data["version"] + ".x", api_data["version"] + "-dev", api_data["version"]]
-            for branch in branch_names:
-                if "remotes/origin/" + branch in branches:
-                    spec_branch = branch
-                    break
+                # List remote branches and check there is a v#.#.x or v#.#-dev
+                branches = repo.git.branch('-a')
+                spec_branch = None
+                # The branch for vX.Y is named vX.Y.x after elevation
+                # Before elevation it is vX.Y-dev
+                # Sometimes we want to just specify a branch directly
+                branch_names = [api_data["version"] + ".x", api_data["version"] + "-dev", api_data["version"]]
+                for branch in branch_names:
+                    if "remotes/origin/" + branch in branches:
+                        spec_branch = branch
+                        break
 
-            if not spec_branch:
-                raise Exception("No branch matching the expected patterns was found in the Git repository")
+                if not spec_branch:
+                    raise Exception("No branch matching the expected patterns was found in the Git repository")
 
-            api_data["spec_branch"] = spec_branch
+                api_data["spec_branch"] = spec_branch
 
-            repo.git.reset('--hard')
-            repo.git.checkout(spec_branch)
-            repo.git.rebase("origin/" + spec_branch)
+                repo.git.reset('--hard')
+                repo.git.checkout(spec_branch)
+                repo.git.rebase("origin/" + spec_branch)
 
         self.parse_RAML()
 

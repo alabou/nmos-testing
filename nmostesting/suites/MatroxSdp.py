@@ -66,6 +66,9 @@ class EnumId:
     def __str__(self) -> str:
         return self.s
 
+    def __hash__(self):
+        return hash(self.s)
+
     def __eq__(self, other) -> bool:
 
         if isinstance(other, EnumId):
@@ -77,7 +80,12 @@ class EnumId:
         
         return False
 
+
 class MatroxSdpEnums(Enum):
+
+    def __hash__(self):
+        return hash(self.value.s)
+
     Audio                                = EnumId("audio")                # media type
     Video                                = EnumId("video")                # media type
     Text                                 = EnumId("text")                 # media type
@@ -220,152 +228,10 @@ class MatroxSdpEnums(Enum):
 
 def init_enums():
     global ALL_ENUMS
-    enums = {
-        "undefined_enum_value_placeholder": "undefined_enum_value_placeholder",
-        "audio": "audio",
-        "video": "video",
-        "text": "text",
-        "application": "application",
-        "message": "message",
-        "local": "local",
-        "localmac": "localmac",
-        "ntp": "ntp",
-        "ptp": "ptp",
-        "sender": "sender",
-        "direct": "direct",
-        "out-of-order-allowed": "out-of-order-allowed",
-        "sequential-only": "sequential-only",
-        "codestream": "codestream",
-        "slice": "slice",
-        "raw": "raw",
-        "jxsv": "jxsv",
-        "smpte291": "smpte291",
-        "L8": "L8",
-        "L16": "L16",
-        "L20": "L20",
-        "L24": "L24",
-        "AM824": "AM824",
-        "H264": "H264",
-        "H265": "H265",
-        "mpeg4-generic": "mpeg4-generic",
-        "MP4A-LATM": "MP4A-LATM",
-        "MP4A-ADTS": "MP4A-ADTS",
-        "MP2T": "MP2T",
-        "RGB": "RGB",
-        "RGBA": "RGBA",
-        "BGR": "BGR",
-        "BGRA": "BGRA",
-        "YCbCr-4:4:4": "YCbCr-4:4:4",
-        "YCbCr-4:2:2": "YCbCr-4:2:2",
-        "YCbCr-4:2:0": "YCbCr-4:2:0",
-        "YCbCr-4:1:1": "YCbCr-4:1:1",
-        "CLYCbCr-4:4:4": "CLYCbCr-4:4:4",
-        "CLYCbCr-4:2:2": "CLYCbCr-4:2:2",
-        "CLYCbCr-4:2:0": "CLYCbCr-4:2:0",
-        "ICtCp-4:4:4": "ICtCp-4:4:4",
-        "ICtCp-4:2:2": "ICtCp-4:2:2",
-        "ICtCp-4:2:0": "ICtCp-4:2:0",
-        "XYZ": "XYZ",
-        "KEY": "KEY",
-        "UNSPECIFIED": "UNSPECIFIED",
-        "BT601-5": "BT601-5",
-        "BT709-2": "BT709-2",
-        "SMPTE240M": "SMPTE240M",
-        "BT601": "BT601",
-        "BT709": "BT709",
-        "BT2020": "BT2020",
-        "BT2100": "BT2100",
-        "ST2065-1": "ST2065-1",
-        "ST2065-3": "ST2065-3",
-        "XYZ": "XYZ",
-        "ALPHA": "ALPHA",
-        "UNSPECIFIED": "UNSPECIFIED",
-        "SDR": "SDR",
-        "PQ": "PQ",
-        "HLG": "HLG",
-        "UNSPECIFIED": "UNSPECIFIED",
-        "LINEAR": "LINEAR",
-        "BT2100LINPQ": "BT2100LINPQ",
-        "BT2100LINHLG": "BT2100LINHLG",
-        "ST2065-1": "ST2065-1",
-        "ST248-1": "ST248-1",
-        "DENSITY": "DENSITY",
-        "ST2115LOGS3": "ST2115LOGS3",
-        "NARROW": "NARROW",
-        "FULL": "FULL",
-        "FULLPROTECT": "FULLPROTECT",
-        "UNSPECIFIED": "UNSPECIFIED",
-        "2110GPM": "2110GPM",
-        "2110BPM": "2110BPM",
-        "2110TPN": "2110TPN",
-        "2110TPNL": "2110TPNL",
-        "2110TPW": "2110TPW",
-        "TCP": "TCP",
-        "UDP": "UDP",
-        "TCP/RTP/AVP": "TCP/RTP/AVP",
-        "RTP/AVP": "RTP/AVP",
-        "json": "json",
-        "usb": "usb",
-        "mp2t": "mp2t",
-        "rtsp": "rtsp",
-        "RTP": "RTP",
-        "RTP_KV": "RTP_KV",
-        "SRT": "SRT",
-        "SRTP": "SRTP",
-        "RTSP": "RTSP",
-        "RTSP_KV": "RTSP_KV",
-        "UDP": "UDP",
-        "UDP_KV": "UDP_KV",
-        "USB": "USB",
-        "USB_KV": "USB_KV",
-        "NULL": "NULL",
-        "AES-128-CTR": "AES-128-CTR",
-        "AES-256-CTR": "AES-256-CTR",
-        "AES-128-CTR_CMAC-64": "AES-128-CTR_CMAC-64",
-        "AES-256-CTR_CMAC-64": "AES-256-CTR_CMAC-64",
-        "AES-128-CTR_CMAC-64-AAD": "AES-128-CTR_CMAC-64-AAD",
-        "AES-256-CTR_CMAC-64-AAD": "AES-256-CTR_CMAC-64-AAD",
-        "AES-128-GMAC-128": "AES-128-GMAC-128",
-        "AES-256-GMAC-128": "AES-256-GMAC-128",
-        "ECDH_AES-128-CTR": "ECDH_AES-128-CTR",
-        "ECDH_AES-256-CTR": "ECDH_AES-256-CTR",
-        "ECDH_AES-128-CTR_CMAC-64": "ECDH_AES-128-CTR_CMAC-64",
-        "ECDH_AES-256-CTR_CMAC-64": "ECDH_AES-256-CTR_CMAC-64",
-        "ECDH_AES-128-CTR_CMAC-64-AAD": "ECDH_AES-128-CTR_CMAC-64-AAD",
-        "ECDH_AES-256-CTR_CMAC-64-AAD": "ECDH_AES-256-CTR_CMAC-64-AAD",
-        "ECDH_AES-128-GMAC-128": "ECDH_AES-128-GMAC-128",
-        "ECDH_AES-256-GMAC-128": "ECDH_AES-256-GMAC-128",
-        "SAMP": "SAMP",
-        "NEW": "NEW",
-        "PRES": "PRES",
-        "Main420.12": "Main420.12",
-        "High420.12": "High420.12",
-        "Main444.12": "Main444.12",
-        "Main4444.12": "Main4444.12",
-        "High444.12": "High444.12",
-        "High4444.12": "High4444.12",
-        "1k-1": "1k-1",
-        "2k-1": "2k-1",
-        "4k-1": "4k-1",
-        "4k-2": "4k-2",
-        "4k-3": "4k-3",
-        "8k-1": "8k-1",
-        "8k-2": "8k-2",
-        "8k-3": "8k-3",
-        "Sublev2bpp": "Sublev2bpp",
-        "Sublev3bpp": "Sublev3bpp",
-        "Sublev4bpp": "Sublev4bpp",
-        "Sublev6bpp": "Sublev6bpp",
-        "Sublev9bpp": "Sublev9bpp",
-        "Sublev12bpp": "Sublev12bpp",
-        "SRST": "SRST",
-        "MRST": "MRST",
-        "MRMT": "MRMT",
-    }
-    for key, value in enums.items():
-        if key in ALL_ENUMS and PANIC_ON_DUPLICATE_ENUM and key != "":
-            raise ValueError(f"duplicate enum {key}")
-        ALL_ENUMS[key] = EnumId(value)
+    for e in MatroxSdpEnums:
+        if e.value.s in ALL_ENUMS and PANIC_ON_DUPLICATE_ENUM and e.value.s != "":
+            raise ValueError(f"duplicate enum {e.value}")
+        ALL_ENUMS[e.value.s] = e.value
 
 init_enums()
 

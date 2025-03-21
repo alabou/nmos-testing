@@ -3,7 +3,7 @@ wtforms
 jsonschema
 zeroconf>=0.75.0
 requests
-netifaces
+psutil
 gitpython
 ramlfications==0.1.9
 websocket-client>=1.0.0,!=1.2.2

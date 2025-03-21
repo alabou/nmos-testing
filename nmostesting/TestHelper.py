@@ -23,7 +23,8 @@ import websockets
 import ssl
 import os
 import jsonref
-import netifaces
+import psutil
+import socket
 import paho.mqtt.client as mqtt
 from copy import copy
 from pathlib import Path
@@ -153,20 +154,49 @@ def has_jsonref(json):
     return False
 
 
+# def get_default_ip():
+#     """Get this machine's preferred IPv4 address"""
+#     if CONFIG.BIND_INTERFACE is None:
+#         default_gw = netifaces.gateways()['default']
+#         if netifaces.AF_INET in default_gw:
+#             preferred_interface = default_gw[netifaces.AF_INET][1]
+#         else:
+#             interfaces = netifaces.interfaces()
+#             preferred_interface = next((i for i in interfaces if i != 'lo'), interfaces[0])
+#     else:
+#         preferred_interface = CONFIG.BIND_INTERFACE
+#     return netifaces.ifaddresses(preferred_interface)[netifaces.AF_INET][0]['addr']
+
 def get_default_ip():
-    """Get this machine's preferred IPv4 address"""
-    if CONFIG.BIND_INTERFACE is None:
-        default_gw = netifaces.gateways()['default']
-        if netifaces.AF_INET in default_gw:
-            preferred_interface = default_gw[netifaces.AF_INET][1]
-        else:
-            interfaces = netifaces.interfaces()
-            preferred_interface = next((i for i in interfaces if i != 'lo'), interfaces[0])
-    else:
+    """Get this machine's preferred IPv4 address using psutil."""
+    if CONFIG.BIND_INTERFACE is not None:
+        # Use the specified interface
         preferred_interface = CONFIG.BIND_INTERFACE
-    return netifaces.ifaddresses(preferred_interface)[netifaces.AF_INET][0]['addr']
-
-
+        try:
+            addrs = psutil.net_if_addrs()[preferred_interface]
+            for addr in addrs:
+                if addr.family == socket.AF_INET:  # IPv4
+                    return addr.address
+            raise KeyError(f"No IPv4 address found for interface {preferred_interface}")
+        except KeyError:
+            raise ValueError(f"Interface {preferred_interface} not found")
+    
+    # Get all network interfaces and their addresses
+    interfaces = psutil.net_if_addrs()
+    
+    # Try to find the interface with the default gateway (approximation)
+    stats = psutil.net_if_stats()
+    for iface, addrs in interfaces.items():
+        # Skip loopback and down interfaces
+        if iface == 'lo' or (iface in stats and not stats[iface].isup):
+            continue
+        for addr in addrs:
+            if addr.family == socket.AF_INET and addr.address != '127.0.0.1':
+                return addr.address
+    
+    # Fallback to localhost if no suitable interface is found
+    return '127.0.0.1'
+   
 def get_mocks_hostname():
     return "mocks." + CONFIG.DNS_DOMAIN if CONFIG.DNS_SD_MODE == "unicast" else "nmos-mocks.local"
 
