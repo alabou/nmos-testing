@@ -50,7 +50,8 @@
             "env": {"PATH":"/home/alabou_ca/.localpython/bin:/home/alabou_ca/.local/bin:/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
         },
         {
-            "python": "/usr/bin/python3",
+            // "python": "/usr/bin/python3",
+            "python": "/home/alabou_ca/.localpython/bin/python3",
             "name": "Python: MatroxSdp",
             "type": "debugpy",
             "request": "launch",
@@ -58,7 +59,8 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": ["suite", "Matrox-Sdp",  "--selection", "test_02", "--host",  "127.0.0.1",  "127.0.0.1", "127.0.0.1", "--port", "8443", "5010", "5010", "--version", "v1.3", "v1.3", "v1.1"],
-            "env": {"PATH":"/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
+            // "env": {"PATH":"/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
+            "env": {"PATH":"/home/alabou_ca/.localpython/bin:/home/alabou_ca/.local/bin:/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
         }
 
     ]

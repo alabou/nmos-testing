@@ -270,7 +270,7 @@ class MatroxSdpTest(GenericTest):
 
     def test_02(self, test):
         """ 
-        Test thet the SDP transport file matches withthe Sender, Flow and Source
+        Test that the SDP transport file matches with the Sender, Flow and Source of the Node
         """
         for resource_type in ["senders", "flows", "sources", "self", "devices"]:
             valid, result = self.get_is04_resources(resource_type)
@@ -320,7 +320,7 @@ class MatroxSdpTest(GenericTest):
                 active = response.json()
 
                 if not active["master_enable"]:
-                    return test.UNCLEAR("Sender {} not active => PLEASE ACTIVATE SENDER to TEST"
+                    return test.UNCLEAR("Sender {} not active => PLEASE ACTIVATE A SENDER to TEST"
                                     .format(sender["id"]))
 
                 # will get back to transport parameters later
@@ -469,7 +469,7 @@ class MatroxSdpTest(GenericTest):
         except KeyError as ex:
             return test.FAIL("Expected attribute not found in IS-04 resource: {}".format(ex))
 
-        return test.UNCLEAR("No H.264 Sender resources were found on the Node")
+        return test.UNCLEAR("No Uncompressed or JPEG-XS video Sender resources were found on the Node")
 
     def prepare_subscription(self, resource_path, params=None, api_ver=None):
         """Prepare an object ready to send as the request body for a Query API subscription"""
