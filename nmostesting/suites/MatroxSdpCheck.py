@@ -324,10 +324,10 @@ def check_sdp_st2110_10(md: MediaDescriptor) -> None:
     
     if not md.ipmx:
         if md.media_clock_type != MatroxSdpEnums.Direct or md.media_clock_offset != 0:
-            raise SdpCheckError("ST2110-10 requires direct=0")
+            raise SdpCheckError("ST2110-10 requires mediaclk direct=0")
     else:
-        if md.media_clock_type != MatroxSdpEnums.Sender or md.media_clock_offset != 0:
-            raise SdpCheckError("IPMX requires sender")
+        if (md.media_clock_type != MatroxSdpEnums.Direct and md.media_clock_type != MatroxSdpEnums.Sender) or (md.media_clock_type == MatroxSdpEnums.Direct and md.media_clock_offset != 0):
+            raise SdpCheckError("IPMX requires mediaclk sender or direct=0")
     
     if md.ts_ref_clock_source is None:
         raise SdpCheckError("ST2110-10 requires ts-refclk")
@@ -484,10 +484,10 @@ def check_sdp_st2110_30(md: MediaDescriptor) -> None:
     
     if not md.ipmx:
         if md.media_clock_type != MatroxSdpEnums.Direct:
-            raise SdpCheckError("ST2110-30 requires mediaclk")
+            raise SdpCheckError("ST2110-30 requires mediaclk direct")
     else:
-        if md.media_clock_type != MatroxSdpEnums.Sender:
-            raise SdpCheckError("ST2110-30 requires mediaclk")
+        if md.media_clock_type != MatroxSdpEnums.Sender and md.media_clock_type != MatroxSdpEnums.Direct:
+            raise SdpCheckError("ST2110-30 requires mediaclk sender or direct")
 
 
 def check_sdp_st2110_31(md: MediaDescriptor) -> None:
@@ -516,10 +516,10 @@ def check_sdp_st2110_31(md: MediaDescriptor) -> None:
     
     if not md.ipmx:
         if md.media_clock_type != MatroxSdpEnums.Direct or md.media_clock_offset != 0:
-            raise SdpCheckError("ST2110-31 requires mediaclk")
+            raise SdpCheckError("ST2110-31 requires mediaclk direct=0")
     else:
-        if md.media_clock_type != MatroxSdpEnums.Sender or md.media_clock_offset != 0:
-            raise SdpCheckError("ST2110-31 requires mediaclk")
+        if (md.media_clock_type != MatroxSdpEnums.Direct and md.media_clock_type != MatroxSdpEnums.Sender) or (md.media_clock_type == MatroxSdpEnums.Direct and md.media_clock_offset != 0):
+            raise SdpCheckError("IPMX requires mediaclk sender or direct=0")
 
 
 def check_sdp_st2110_40(md: MediaDescriptor) -> None:

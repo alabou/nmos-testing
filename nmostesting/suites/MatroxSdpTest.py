@@ -1,4 +1,4 @@
-# Copyright (C) 2024 Matrox Graphics Inc.
+# Copyright (C) 2025 Matrox Graphics Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -425,7 +425,7 @@ class MatroxSdpTest(GenericTest):
                     if clock["name"] == clock_name:
                         clock_found = True
                         if clock["ref_type"] == "ptp":
-                            if sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or sdp.primary_media.ts_ref_clock_ptp_gmid != clock["gmid"] or sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]:
+                            if sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize() or sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]:
                                 return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, version {} do not match Node clock {}"
                                                 .format(sender["id"], sdp.primary_media.ts_ref_clock_source, sdp.primary_media.ts_delay, sdp.primary_media.ts_ref_clock_ptp_gmid, sdp.primary_media.ts_ref_clock_ptp_version, clock))
                         else:
@@ -465,37 +465,37 @@ class MatroxSdpTest(GenericTest):
                     try:                    
                         check_sdp_rfc4175(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed RFC 4175 check: {e.message}")
+                        return test.FAIL("Sender {} failed RFC 4175 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_10(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-10 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-10 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_21(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-21 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-21 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_20(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-20 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-20 check: {}".format(sender["id"], e.message))
 
                 elif flow["media_type"] == "video/jxsv":
                     try:                    
                         check_sdp_rfc9134(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed RFC 9134 check: {e.message}")
+                        return test.FAIL("Sender {} failed RFC 9134 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_10(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-10 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-10 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_21(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-21 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-21 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_22(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-22 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-22 check: {}".format(sender["id"], e.message))
            
                 else:
                     return test.FAIL("Sender {} Flow {} has an unexpected media type {}"
@@ -684,7 +684,7 @@ class MatroxSdpTest(GenericTest):
                     if clock["name"] == clock_name:
                         clock_found = True
                         if clock["ref_type"] == "ptp":
-                            if sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or sdp.primary_media.ts_ref_clock_ptp_gmid != clock["gmid"] or sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]:
+                            if sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize() or sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]:
                                 return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, version {} do not match Node clock {}"
                                                 .format(sender["id"], sdp.primary_media.ts_ref_clock_source, sdp.primary_media.ts_delay, sdp.primary_media.ts_ref_clock_ptp_gmid, sdp.primary_media.ts_ref_clock_ptp_version, clock))
                         else:
@@ -717,29 +717,29 @@ class MatroxSdpTest(GenericTest):
                     try:                    
                         check_sdp_rfc3551(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed RFC 3551 check: {e.message}")
+                        return test.FAIL("Sender {} failed RFC 3551 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_10(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-10 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-10 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_30(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-30 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-30 check: {}".format(sender["id"], e.message))
 
                 elif flow["media_type"] == "audio/AM824":
                     try:                    
                         check_sdp_rfc3551(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed RFC 3551 check: {e.message}")
+                        return test.FAIL("Sender {} failed RFC 3551 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_10(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-10 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-10 check: {}".format(sender["id"], e.message))
                     try:                    
                         check_sdp_st2110_31(sdp.primary_media)
                     except SdpCheckError as e:
-                        return test.FAIL("Sender {} failed ST 2110-31 check: {e.message}")
+                        return test.FAIL("Sender {} failed ST 2110-31 check: {}".format(sender["id"], e.message))
            
                 else:
                     return test.FAIL("Sender {} Flow {} has an unexpected media type {}"
