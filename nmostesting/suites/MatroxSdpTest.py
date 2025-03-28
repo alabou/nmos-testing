@@ -12,6 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# NMOS Testing messages displayed to a user for a test result
+#
+# PASS => "Pass"
+#
+# WARNING => "Warning"
+#   Not a failure, but the API being tested is responding or configured in a way which is
+#
+# FAIL => "Fail"
+#   Required feature of the specification has been found to be implemented incorrectly
+#
+# MANUAL => "Manual"
+#   Test suite does not currently test this feature, so it must be tested manually
+#
+# NA => "Not Applicable"
+#   Test is not applicable, e.g. due to the version of the specification being tested
+#
+# OPTIONAL => "Not Implemented"
+#   Recommended/optional feature of the specifications has been found to be not implemented. Detail message should explain the effect of this feature being unimplemented
+#
+# DISABLED => "Test Disabled"
+#   Test is disabled due to test suite configuration; change the config or test manually
+#
+# UNCLEAR => "Could Not Test"
+#   Test was not run due to prior responses from the API, which may be OK, or indicate a fault
+import time
 import json
 import re
 import io
@@ -321,12 +346,8 @@ class MatroxSdpTest(GenericTest):
                 # The IS-05 active transport parameters provide an array of such along with the master_enable.
                 active = response.json()
 
-                if len(sender_tested) == 0:
-                    if not active["master_enable"]:
-                        return test.UNCLEAR("Sender {} not active => PLEASE ACTIVATE A SENDER to TEST"
-                                        .format(sender["id"]))
-                else:
-                    continue # if one sender was active we will test it
+                if not active["master_enable"]:
+                    continue
 
                 sender_tested.append(sender["id"])
 
@@ -501,6 +522,9 @@ class MatroxSdpTest(GenericTest):
                     return test.FAIL("Sender {} Flow {} has an unexpected media type {}"
                                     .format(sender["id"], flow["id"], flow["media_type"]))
 
+            if len(sender_tested) == 0:
+                return test.UNCLEAR("No ACTIVE Uncompressed or JPEG-XS video Sender found on the Node => PLEASE ACTIVATE A SENDER to TEST")
+            
             if len(video_senders) > 0:
                 return test.PASS("Senders {} have been tested".format(sender_tested))
 
@@ -564,12 +588,8 @@ class MatroxSdpTest(GenericTest):
                 # The IS-05 active transport parameters provide an array of such along with the master_enable.
                 active = response.json()
 
-                if len(sender_tested) == 0:
-                    if not active["master_enable"]:
-                        return test.UNCLEAR("Sender {} not active => PLEASE ACTIVATE A SENDER to TEST"
-                                        .format(sender["id"]))
-                else:
-                    continue # if one sender was active we will test it
+                if not active["master_enable"]:
+                    continue
 
                 sender_tested.append(sender["id"])
 
@@ -745,6 +765,9 @@ class MatroxSdpTest(GenericTest):
                     return test.FAIL("Sender {} Flow {} has an unexpected media type {}"
                                     .format(sender["id"], flow["id"], flow["media_type"]))
 
+            if len(sender_tested) == 0:
+                return test.UNCLEAR("No ACTIVE PCM or ST-2110-31 audio Sender found on the Node => PLEASE ACTIVATE A SENDER to TEST")
+
             if len(audio_senders) > 0:
                 return test.PASS("Senders {} have been tested".format(sender_tested))
 
@@ -752,6 +775,122 @@ class MatroxSdpTest(GenericTest):
             return test.FAIL("Expected attribute not found in IS-04 resource: {}".format(ex))
 
         return test.UNCLEAR("No PCM or ST-2110-31 audio Sender resources were found on the Node")
+
+    def test_04(self, test):
+        """ 
+        Test that the device discovers the registry and register its Node and Device resources in it. Using these
+        resource we will verify that the IS-04 and IS-05 API support the v1.2 and v1.1 version of those API (the
+        device can support additional versions).
+        """
+        REGISTRY_TIMEOUT = 10 #seconds
+
+        reg_api = self.apis["schemas"]
+        reg_path = reg_api["spec_path"] + "/schemas"
+
+        valid, result = self.get_is04_resources("self")
+        if not valid:
+            return test.FAIL(result)
+
+        valid, result = self.get_is04_resources("devices")
+        if not valid:
+            return test.FAIL(result)
+
+        device_map = {device["id"]: device for device in self.is04_resources["devices"].values()}
+        node_map = {node["id"]: node for node in self.is04_resources["self"].values()}
+
+        node = next(iter(node_map.values()))
+        node_id = next(iter(node_map.keys()))
+
+        try:
+
+            # Register to get resource updated for devices
+            sub_json = self.prepare_subscription("/devices")
+            resp_json = self.post_subscription(test, sub_json)
+            websocket = WebsocketWorker(resp_json["ws_href"])
+
+            websocket.start()
+
+            sleep(CONFIG.WS_MESSAGE_TIMEOUT)
+
+            found_devices_time_start = time.monotonic()
+
+            while True:
+
+                sleep(0.5)
+
+                if time.monotonic() - found_devices_time_start > REGISTRY_TIMEOUT:
+                    return test.FAIL("Node {} Could not find the Node's devices {} in the registry prior to a timeout of {} seconds".format(node_id, list(device_map.keys()), REGISTRY_TIMEOUT))
+
+                if websocket.did_error_occur():
+                    return test.FAIL("Node {} Error opening websocket: {}".format(node_id, websocket.get_error_message()))
+
+                received_messages = websocket.get_messages()
+
+                # Verify data inside messages
+                grain_data = list()
+
+                for curr_msg in received_messages:
+                    json_msg = json.loads(curr_msg)
+                    grain_data.extend(json_msg["grain"]["data"])
+
+                found_devices = list()
+
+                for curr_data in grain_data:
+
+		            # case has Pre && has Post:
+			        # => CREATE / UPDATE
+                    # case has Pre == nil && not has Post:
+			        # => DELETE
+                    # case not has Pre && has Post:
+			        # => CREATE
+            		# case not haas Pre != nil && not has Post:
+			        # => NOP
+                    if "pre" not in curr_data or "post" not in curr_data:
+                        continue
+
+                    pre_data = json.dumps(curr_data["pre"], sort_keys=True)
+                    post_data = json.dumps(curr_data["post"], sort_keys=True)
+
+                    if curr_data['path'] in device_map.keys():
+                        found_devices.append(curr_data['path'])
+                        break
+
+                if all(key in found_devices for key in device_map.keys()):
+                    break
+
+            # Now for each device check the NOs API implemented and their version
+            found_is04 = False
+            found_is05 = False
+            found_is11 = False
+
+            if "v1.3" in node["api"]["versions"]:
+                found_is04 = True
+
+            for device_id in found_devices:
+
+                device = device_map[device_id]
+
+                found_is05 = False
+                found_is11 = False
+
+                for control in device["controls"]:
+                    if control["type"] == "urn:x-nmos:control:sr-ctrl/v1.1":
+                        found_is05 = True
+                    if control["type"] == "urn:x-nmos:control:stream-compat/v1.0":
+                        found_is11 = True
+
+                if not found_is05:
+                    return test.FAIL("Node {} IS-05 API version v1.1 not found in Device's controls {}".format(node_id, device["controls"]))
+                if not found_is11:
+                    return test.FAIL("Node {} IS-11 API version v1.0 not found in Device's controls {}".format(node_id, device["controls"]))
+
+            if not found_is04:
+                return test.FAIL("Node {} IS-04 API version v1.3 not found in Node API supported versions {}".format(node_id, node["api"]["versions"]))
+
+            return test.PASS("Devices {} have been tested".format(found_devices))
+
+        except Exception as e:
+            return test.FAIL("Unexpected error type '{}' and message '{}'".format(type(e).__name__, str(e)))
 
     def prepare_subscription(self, resource_path, params=None, api_ver=None):
         """Prepare an object ready to send as the request body for a Query API subscription"""
@@ -816,7 +955,6 @@ class MatroxSdpTest(GenericTest):
             return r.json()
         except json.JSONDecodeError:
             raise NMOSTestException(test.FAIL("Non-JSON response returned for Query API subscription request"))
-
 
 def GetSdpSamplingAsComponents(sdp : MatroxSdp):
 

@@ -1213,7 +1213,7 @@ def main(args):
 
     # Download up to date versions of each API specification
     if not CONFIG.CACHE_IS_READ_ONLY:
-        
+
         init_spec_cache()
 
         # Identify current testing tool version
@@ -1234,7 +1234,8 @@ def main(args):
         zc.register_service(primary_auth_info)
 
     # Start the HTTP servers
-    start_web_servers()
+    if not CONFIG.DISABLE_ALL_FLASK_SERVERS:
+        start_web_servers()
 
     print(" * Testing tool running on 'http://{}:{}'. Version '{}'"
           .format(get_default_ip(), core_app.config['PORT'], TOOL_VERSION))

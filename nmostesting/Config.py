@@ -70,7 +70,7 @@ TESTING_FACADE_PORT = 5001
 
 # Path to store the specification file cache in. Relative to the base of the testing repository.
 CACHE_PATH = 'cache'
-CACHE_IS_READ_ONLY = False
+CACHE_IS_READ_ONLY = True
 
 # Timeout for any HTTP requests
 HTTP_TIMEOUT = 1
@@ -193,6 +193,9 @@ MQTT_PASSWORD = None
 
 # Bash shell to use for running testssl.sh
 TEST_SSL_BASH = "bash"
+
+# For some tests we do not need the various FLASK_APPS servers
+DISABLE_ALL_FLASK_SERVERS = True
 
 # Definition of each API specification and its versions.
 SPECIFICATIONS = {
