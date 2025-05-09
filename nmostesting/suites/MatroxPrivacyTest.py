@@ -65,7 +65,26 @@ sdp_privacy_key_generator = 'key_generator'
 sdp_privacy_key_version = 'key_version'
 sdp_privacy_key_id = 'key_id'
 
-privacy_capability = "urn:x-matrox:cap:transport:privacy"
+privacy_capability = "cap:transport:privacy"
+
+def urn_without_namespace(s):
+    match = re.search(r'^urn:[a-z0-9][a-z0-9-]+:(.*)', s)
+    return match.group(1) if match else None
+
+def get_key_value(obj, name):
+    regex = re.compile(r'^urn:[a-z0-9][a-z0-9-]+:' + name + r'$')
+    for key, value in obj.items():
+        if regex.fullmatch(key):
+            return value
+    return obj[name]  # final try without a namespace
+
+
+def has_key(obj, name):
+    regex = re.compile(r'^urn:[a-z0-9][a-z0-9-]+:' + name + r'$')
+    for key in obj.keys():
+        if regex.fullmatch(key):
+            return True
+    return name in obj  # final try without a namespace
 
 class MatroxPrivacyTest(GenericTest):
     """
@@ -311,8 +330,8 @@ class MatroxPrivacyTest(GenericTest):
                     # check sender capability if present
                     if "constraint_sets" in sender["caps"]:
                         for constraint_set in sender["caps"]["constraint_sets"]:
-                            if privacy_capability in constraint_set:
-                                capability = constraint_set[privacy_capability]
+                            if has_key(constraint_set, privacy_capability):
+                                capability = get_key_value(constraint_set, privacy_capability)
                                 if "enum" in capability:
                                     enums = capability["enum"]
                                     if len(enums) != 1:
@@ -627,8 +646,8 @@ class MatroxPrivacyTest(GenericTest):
                     # check receiver capability if present
                     if "constraint_sets" in receiver["caps"]:
                         for constraint_set in receiver["caps"]["constraint_sets"]:
-                            if privacy_capability in constraint_set:
-                                capability = constraint_set[privacy_capability]
+                            if has_key(constraint_set, privacy_capability):
+                                capability = get_key_value(constraint_set, privacy_capability)
                                 if "enum" in capability:
                                     enums = capability["enum"]
                                     if len(enums) != 1:
@@ -1736,11 +1755,11 @@ class MatroxPrivacyTest(GenericTest):
             for sdp_line in sdp_lines:
                 extmap = re.search(r"^a=extmap:[0-9]+/([a-z]+) (.+)$", sdp_line)
                 if extmap:
-                    if extmap.group(1) != "sendonly" and (extmap.group(2) == "urn:ietf:params:rtp-hdrext:PEP-Full-IV-Counter" or extmap.group(2) != "urn:ietf:params:rtphdrext:PEP-Short-IV-Counter"):
+                    if extmap.group(1) != "sendonly" and (extmap.group(2) == "urn:ietf:params:rtp-hdrext:PEP-Full-IV-Counter" or extmap.group(2) != "urn:ietf:params:rtphdrext:PEP-Short-IV-Counter" or xtmap.group(2) == "urn:ietf:params:rtp-hdrext:HDCP-Full-IV-Counter-metadata" or extmap.group(2) != "urn:ietf:params:rtphdrext:HDCP-Short-IV-Counter-metadata"):
                         return False, "{} {} : extmap attribute is invalid, direction is {} and mus tbe sendonly.".format(identity, sender_receiver["id"], extmap.group(1))
-                    if extmap.group(2) == "urn:ietf:params:rtp-hdrext:PEP-Full-IV-Counter":
+                    if extmap.group(2) == "urn:ietf:params:rtp-hdrext:PEP-Full-IV-Counter" or extmap.group(2) == "urn:ietf:params:rtp-hdrext:HDCP-Full-IV-Counter-metadata":
                         found_full = True
-                    if extmap.group(2) == "urn:ietf:params:rtp-hdrext:PEP-Short-IV-Counter":
+                    if extmap.group(2) == "urn:ietf:params:rtp-hdrext:PEP-Short-IV-Counter" or extmap.group(2) == "urn:ietf:params:rtp-hdrext:HDCP-Short-IV-Counter-metadata":
                         found_short = True
 
             # This is a SHOULD for VSF/PEP specification made MUST by the NMOS specification to enhance interoperability.

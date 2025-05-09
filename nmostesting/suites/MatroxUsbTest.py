@@ -24,6 +24,26 @@ SENDER_REGISTER_KEY = "sender-register"
 
 media_type_constraint = "urn:x-nmos:cap:format:media_type"
 
+def urn_without_namespace(s):
+    match = re.search(r'^urn:[a-z0-9][a-z0-9-]+:(.*)', s)
+    return match.group(1) if match else None
+
+def get_key_value(obj, name):
+    regex = re.compile(r'^urn:[a-z0-9][a-z0-9-]+:' + name + r'$')
+    for key, value in obj.items():
+        if regex.fullmatch(key):
+            return value
+    return obj[name]  # final try without a namespace
+
+
+def has_key(obj, name):
+    regex = re.compile(r'^urn:[a-z0-9][a-z0-9-]+:' + name + r'$')
+    for key in obj.keys():
+        if regex.fullmatch(key):
+            return True
+    return name in obj  # final try without a namespace
+
+
 class MatroxUsbTest(GenericTest):
     """
     Runs Node Tests covering 'Matrox With USB'
@@ -208,8 +228,8 @@ class MatroxUsbTest(GenericTest):
                                      .format(source["id"]))
 
                 # Check that the optional 'usb_devices' attribute has proper structure
-                if "urn:x-matrox:usb_devices" in source:
-                    ok, msg = check_usb_devices_attribute(source["urn:x-matrox:usb_devices"])
+                if has_key(source, "usb_devices"):
+                    ok, msg = check_usb_devices_attribute(get_key_value(source, "usb_devices"))
                     if not ok:
                         return test.FAIL("source {}: invalid 'usb_devices' attribute, error {}".format(source["id"]), msg)
 
@@ -252,8 +272,8 @@ class MatroxUsbTest(GenericTest):
                     return test.FAIL("sender {}: MUST indicate the 'transport' attribute."
                                      .format(sender["id"]))
 
-                if sender["transport"] != "urn:x-matrox:transport:usb":
-                    return test.FAIL("sender {}: 'transport' attribute MUST indicate 'urn:x-matrox:transport:usb'"
+                if urn_without_namespace(sender["transport"]) != "transport:usb":
+                    return test.FAIL("sender {}: 'transport' attribute MUST indicate 'urn:*:transport:usb'"
                                      .format(sender["id"]))
 
                 # check values of all additional attributes against the schema
@@ -284,9 +304,9 @@ class MatroxUsbTest(GenericTest):
                         usb_constraint_sets.append(constraint_set)
 
                     for constraint_set in usb_constraint_sets:
-                        constraint = "urn:x-matrox:cap:transport:usb_class"
-                        if constraint in constraint_set:
-                            ok, msg = check_usb_class_capability(constraint_set[constraint])
+                        constraint = "urn:x-nmos:cap:transport:usb_class"
+                        if has_key(constraint_set, constraint):
+                            ok, msg = check_usb_class_capability(get_key_value(constraint_set, constraint))
                             if not ok:
                                 return test.FAIL("sender {}: invalid {} capabilities, error {}".format(sender["id"], constraint, msg))
                         else:
@@ -330,8 +350,8 @@ class MatroxUsbTest(GenericTest):
                     return test.FAIL("sender {}: MUST indicate the 'transport' attribute."
                                      .format(sender["id"]))
 
-                if sender["transport"] != "urn:x-matrox:transport:usb":
-                    return test.FAIL("sender {}: transport attribute MUST indicate the 'urn:x-matrox:transport:usb'"
+                if urn_without_namespace(sender["transport"]) != "transport:usb":
+                    return test.FAIL("sender {}: transport attribute MUST indicate the 'urn:*:transport:usb'"
                                      .format(sender["id"]))
 
                 if "manifest_href" not in sender:
@@ -414,7 +434,7 @@ class MatroxUsbTest(GenericTest):
         media_type_constraint = "urn:x-nmos:cap:format:media_type"
 
         recommended_constraints = {
-            "urn:x-matrox:cap:transport:usb_class": "USB class",
+            "urn:x-nmos:cap:transport:usb_class": "USB class",
         }
 
         try:
@@ -442,8 +462,8 @@ class MatroxUsbTest(GenericTest):
                     return test.FAIL("receiver {}: MUST indicate the 'transport' attribute."
                                      .format(receiver["id"]))
 
-                if receiver["transport"] != "urn:x-matrox:transport:usb":
-                    return test.FAIL("receiver {}: 'transport' attribute MUST indicate 'urn:x-matrox:transport:usb'.".format(receiver["id"]))
+                if urn_without_namespace(receiver["transport"]) != "transport:usb":
+                    return test.FAIL("receiver {}: 'transport' attribute MUST indicate 'urn:*:transport:usb'.".format(receiver["id"]))
 
                 if "urn:x-nmos:tag:grouphint/v1.0" in receiver["tags"]:
                     grouphint = receiver["tags"]["urn:x-nmos:tag:grouphint/v1.0"]
@@ -470,7 +490,7 @@ class MatroxUsbTest(GenericTest):
                 # check recommended attributes are present
                 for constraint_set in usb_constraint_sets:
                     for constraint, target in recommended_constraints.items():
-                        if constraint not in constraint_set:
+                        if not has_key(constraint_set, constraint):
                                 warn_message += "|" + "receiver {}: SHOULD indicate the supported {} using the " \
                                                "'{}' parameter constraint.".format(receiver["id"], target, constraint)
             if warn_message != "":
@@ -530,9 +550,9 @@ class MatroxUsbTest(GenericTest):
 
                 # check recommended attributes are present
                 for constraint_set in usb_constraint_sets:
-                    constraint = "urn:x-matrox:cap:transport:usb_class"
-                    if constraint in constraint_set:
-                        ok, msg = check_usb_class_capability(constraint_set[constraint])
+                    constraint = "urn:x-nmos:cap:transport:usb_class"
+                    if has_key(constraint_set, constraint):
+                        ok, msg = check_usb_class_capability(get_key_value(constraint_set, constraint))
                         if not ok:
                             return test.FAIL("receiver {}: invalid {} capabilities, error {}.".format(receiver["id"], constraint, msg))
                     else:
@@ -615,7 +635,7 @@ def check_usb_devices_attribute(usb_devices):
 
 def check_usb_class_capability(usb_class_capability):
 
-    if "enum" in usb_class_capability and  all(isinstance(c, int) and 0 <= c <= 255 for c in usb_class_capability["enum"]):
+    if "enum" in usb_class_capability and not all(isinstance(c, int) and 0 <= c <= 255 for c in usb_class_capability["enum"]):
         return False, "MUST be integers in the range 0 to 255"
     if "minimum" in usb_class_capability and (not isinstance(usb_class_capability["minimum"], int) or usb_class_capability["minimum"] < 0 or usb_class_capability["minimum"] > 255):
         return False, "MUST be integers in the range 0 to 255"
@@ -626,4 +646,4 @@ def check_usb_class_capability(usb_class_capability):
     if "maximum" in usb_class_capability and not "minimum" in usb_class_capability:
         return False, "MUST be integers in the range 0 to 255"
 
-    return True
+    return True, ""
