@@ -1371,7 +1371,7 @@ class MatroxPrivacyTest(GenericTest):
                 if not isinstance(c, str):
                     return False, "{} {} : {} constraint value must be string".format(identity, sender_receiver["id"], privacy_ecdh_curve)
                 if c not in allowed_curves:
-                    return False, "{} {} : {} constraint value must be one of {}".format(identity, sender_receiver["id"], privacy_ecdh_curve, allowed_modes)
+                    return False, "{} {} : {} constraint value must be one of {}".format(identity, sender_receiver["id"], privacy_ecdh_curve, allowed_curves)
 
             # If NULL is allowed, it must be the only one allowed            
             if "NULL" in enums:
