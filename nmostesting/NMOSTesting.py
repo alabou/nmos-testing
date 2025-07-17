@@ -449,8 +449,6 @@ TEST_DEFINITIONS = {
         }],
         "class": BCP00604Test.BCP00604Test
     },
-}
-
    "Matrox-Transports": {
         "name": "Matrox-Transports",
         "specs": [{
@@ -976,7 +974,7 @@ def parse_arguments():
                               help="describe the available tests for a given suite")
     suite_parser.add_argument('--selection', default=DEFAULT_ARGS["selection"],
                               help="select a specific test to run, otherwise 'all' will be tested")
-    suite_parser.add_argument('--tests', default=None, nargs="*",
+    suite_parser.add_argument('--tests', default=[], nargs="*",
                               help="select many specific tests to run, otherwise --selection will be tested")
     suite_parser.add_argument('--host', default=DEFAULT_ARGS["host"], nargs="*",
                               help="space separated hostnames or IPs of the APIs under test")
@@ -1143,7 +1141,7 @@ def run_noninteractive_tests(args):
         endpoints.append({"host": args.host[i], "port": args.port[i], "version": args.version[i],
                           "selector": selector, "urlpath": urlpath})
     try:
-        if args.tests is None:
+        if len(args.tests) == 0:
             results = run_tests(args.suite, endpoints, [args.selection])
         else:
             results = run_tests(args.suite, endpoints, args.tests)
@@ -1284,7 +1282,7 @@ def run_api_tests(args, data_format):
         endpoints.append({"host": args.host[i], "port": args.port[i], "version": args.version[i],
                           "selector": selector, "urlpath": urlpath})
 
-    if args.tests is None:
+    if len(args.tests) == 0:
         results = run_tests(args.suite, endpoints, [args.selection])
     else:
         results = run_tests(args.suite, endpoints, args.tests)
