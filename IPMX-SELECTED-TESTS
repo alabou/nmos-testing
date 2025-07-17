@@ -1,0 +1,27 @@
+IPMX SELECTED TESTS
+
+IS-04-01:
+
+auto test_04 test_07 test_08 test_09 test_10 test_11 test_17 test_18 test_19 test_20 test_20_01 test_23 test_24 test_24_01 test_25 test_26 test_28
+
+IS-04-03:
+test_01
+
+IS-05-01:
+
+SDPoker tested separately
+
+auto test_09 test_09_01 test_10 test_11 test_11_01 test_11_02 test_12 test_12_01 test_12_02 test_13 test_14 test_31 test_32 test_40 test_15 test_17 test_19 test_22 test_23 test_23_01 test_25 test_38 test_42 test_16 test_18 test_20 test_21 test_24 test_24_01 test_26 test_39 test_27 test_28 test_29 test_30 test_34 test_36 test_35 test_37
+
+IS-05-02:
+
+auto test_09 test_10 test_11 test_12 test_13 test_14 test_15 test_16 test_17 test_18
+
+BCP-004-01:
+
+auto test_01 test_20
+
+BCP-004-02:
+
+auto test_01 test_20
+

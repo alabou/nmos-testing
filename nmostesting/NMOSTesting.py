@@ -898,6 +898,8 @@ def parse_arguments():
                               help="describe the available tests for a given suite")
     suite_parser.add_argument('--selection', default=DEFAULT_ARGS["selection"],
                               help="select a specific test to run, otherwise 'all' will be tested")
+    suite_parser.add_argument('--tests', default=None, nargs="*",
+                              help="select many specific tests to run, otherwise --selection will be tested")
     suite_parser.add_argument('--host', default=DEFAULT_ARGS["host"], nargs="*",
                               help="space separated hostnames or IPs of the APIs under test")
     suite_parser.add_argument('--port', default=DEFAULT_ARGS["port"], nargs="*", type=int,
@@ -938,6 +940,10 @@ def validate_args(args, access_type="cli"):
                 msg += test_description + '\n'
         elif getattr(args, "selection", "all") not in enumerate_tests(TEST_DEFINITIONS[args.suite]["class"]):
             msg = "ERROR: Test with name '{}' does not exist in test suite '{}'".format(args.selection,
+                                                                                        args.suite)
+            return_type = ExitCodes.ERROR
+        elif not all(x in enumerate_tests(TEST_DEFINITIONS[args.suite]["class"]) for x in args.tests):
+            msg = "ERROR: Test with names '{}' does not exist in test suite '{}'".format(args.tests,
                                                                                         args.suite)
             return_type = ExitCodes.ERROR
         elif not args.host or not args.port or not args.version:
@@ -1045,7 +1051,10 @@ def run_noninteractive_tests(args):
         endpoints.append({"host": args.host[i], "port": args.port[i], "version": args.version[i],
                           "selector": selector})
     try:
-        results = run_tests(args.suite, endpoints, [args.selection])
+        if args.tests is None:
+            results = run_tests(args.suite, endpoints, [args.selection])
+        else:
+            results = run_tests(args.suite, endpoints, args.tests)
         if args.output:
             exit_code = write_test_results(results, endpoints, args)
         else:
@@ -1178,7 +1187,12 @@ def run_api_tests(args, data_format):
             selector = args.selector[i]
         endpoints.append({"host": args.host[i], "port": args.port[i], "version": args.version[i],
                           "selector": selector})
-    results = run_tests(args.suite, endpoints, [args.selection])
+
+    if args.tests is None:
+        results = run_tests(args.suite, endpoints, [args.selection])
+    else:
+        results = run_tests(args.suite, endpoints, args.tests)
+
     if data_format == "xml":
         formatted_test_results = format_test_results(results, endpoints, "junit", args)
         return TestSuite.to_xml_string([formatted_test_results], prettyprint=True)

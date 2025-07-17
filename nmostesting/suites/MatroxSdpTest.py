@@ -677,14 +677,22 @@ class MatroxSdpTest(GenericTest):
                                      .format(sender["id"], sender["flow_id"], channels_count, sdp_channels_count))
 
                 # Check sample rate num, den
-                rate_num = flow["grain_rate"]["numerator"]
-                rate_den = flow["grain_rate"]["denominator"]
+                rate_num = flow["sample_rate"]["numerator"]
+                rate_den = flow["sample_rate"]["denominator"]
                 sdp_rate_num = sdp.primary_media.sample_rate
                 sdp_rate_den = 1
 
                 if sdp_rate_num != rate_num or sdp_rate_den != rate_den:
                     return test.FAIL("Sender {} Flow {} sample rate num {}, den {} mismatch with SDP num {}, den {}"
                                      .format(sender["id"], sender["flow_id"], rate_num, rate_den, sdp_rate_num, sdp_rate_den))
+
+                # The grain_rate if any must match the required sample rate
+                if "grain_rate" in flow:
+                    grain_rate_num = flow["grain_rate"]["numerator"]
+                    grain_rate_den = flow["grain_rate"]["denominator"]
+                    if (grain_rate_num != rate_num or grain_rate_den != rate_den):
+                        return test.FAIL("Sender {} Flow {} sample rate num {}, den {} mismatch with grain_rate num {}, den {}"
+                                        .format(sender["id"], sender["flow_id"], rate_num, rate_den, grain_rate_num, grain_rate_den))
 
                 # Check that IPMX "measured" parameters are defined
                 if sdp.primary_media.measured_sample_rate == 0:

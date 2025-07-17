@@ -115,6 +115,10 @@ class GenericTest(object):
                 repo.git.checkout(spec_branch)
                 repo.git.rebase("origin/" + spec_branch)
 
+        else:
+            for api_name, api_data in self.apis.items():
+                api_data["spec_branch"] = "CURRENT"
+
         self.parse_RAML()
 
         self.result.append(test.NA(""))

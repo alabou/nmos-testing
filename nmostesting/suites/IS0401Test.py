@@ -229,7 +229,8 @@ class IS0401Test(GenericTest):
 
             if CONFIG.DNS_SD_MODE == "multicast":
                 for info in registry_mdns[3:]:
-                    self.zc.register_service(info, strict=self._strict_service_name(info))
+                    # self.zc.register_service(info, strict=self._strict_service_name(info))
+                    self.zc.register_service(info)
 
             # Kill registries one by one to collect data around failover
             self.invalid_registry.disable()
@@ -1458,7 +1459,8 @@ class IS0401Test(GenericTest):
 
         if CONFIG.DNS_SD_MODE == "multicast":
             # Advertise a registry at pri 0 and allow the Node to do a basic registration
-            self.zc.register_service(registry_info, strict=self._strict_service_name(registry_info))
+            # self.zc.register_service(registry_info, strict=self._strict_service_name(registry_info))
+            self.zc.register_service(registry_info)
 
         # Wait for n seconds after advertising the service for the first POST and then DELETE from a Node
         self.primary_registry.wait_for_registration(CONFIG.DNS_SD_ADVERT_TIMEOUT)
@@ -1521,64 +1523,65 @@ class IS0401Test(GenericTest):
 
         grouphint = "urn:x-nmos:tag:grouphint/v1.0"
 
-        found_groups = False
-        found_senders_receivers = False
-        groups = {"node": {}, "device": {}}
-        for resource_name in ["senders", "receivers"]:
-            valid, response = self.do_request("GET", self.node_url + resource_name)
-            if valid and response.status_code == 200:
-                try:
-                    for resource in response.json():
-                        found_senders_receivers = True
-                        if resource["device_id"] not in groups["device"]:
-                            groups["device"][resource["device_id"]] = {}
-                        for tag_name, tag_value in resource["tags"].items():
-                            if tag_name != grouphint:
-                                continue
-                            if not isinstance(tag_value, list) or len(tag_value) == 0:
-                                return test.FAIL("Group tag for {} {} is not an array or has too few items"
-                                                 .format(resource_name.capitalize().rstrip("s"), resource["id"]))
-                            found_groups = True
-                            for group_def in tag_value:
-                                group_params = group_def.split(":")
-                                group_scope = "device"
+        for target in ["senders", "receivers"]:
+            found_groups = False
+            found_senders_receivers = False
+            groups = {"node": {}, "device": {}}
+            for resource_name in [target]:
+                valid, response = self.do_request("GET", self.node_url + resource_name)
+                if valid and response.status_code == 200:
+                    try:
+                        for resource in response.json():
+                            found_senders_receivers = True
+                            if resource["device_id"] not in groups["device"]:
+                                groups["device"][resource["device_id"]] = {}
+                            for tag_name, tag_value in resource["tags"].items():
+                                if tag_name != grouphint:
+                                    continue
+                                if not isinstance(tag_value, list) or len(tag_value) == 0:
+                                    return test.FAIL("Group tag for {} {} is not an array or has too few items"
+                                                    .format(resource_name.capitalize().rstrip("s"), resource["id"]))
+                                found_groups = True
+                                for group_def in tag_value:
+                                    group_params = group_def.split(":")
+                                    group_scope = "device"
 
-                                # Perform basic validation on the group syntax
-                                if len(group_params) < 2:
-                                    return test.FAIL("Group syntax for {} {} has too few parameters"
-                                                     .format(resource_name.capitalize().rstrip("s"), resource["id"]))
-                                elif len(group_params) > 3:
-                                    return test.FAIL("Group syntax for {} {} has too many parameters"
-                                                     .format(resource_name.capitalize().rstrip("s"), resource["id"]))
-                                elif len(group_params) == 3:
-                                    if group_params[2] not in ["device", "node"]:
-                                        return test.FAIL("Group syntax for {} {} uses an invalid group scope: {}"
-                                                         .format(resource_name.capitalize().rstrip("s"), resource["id"],
-                                                                 group_params[2]))
-                                    group_scope = group_params[2]
+                                    # Perform basic validation on the group syntax
+                                    if len(group_params) < 2:
+                                        return test.FAIL("Group syntax for {} {} has too few parameters"
+                                                        .format(resource_name.capitalize().rstrip("s"), resource["id"]))
+                                    elif len(group_params) > 3:
+                                        return test.FAIL("Group syntax for {} {} has too many parameters"
+                                                        .format(resource_name.capitalize().rstrip("s"), resource["id"]))
+                                    elif len(group_params) == 3:
+                                        if group_params[2] not in ["device", "node"]:
+                                            return test.FAIL("Group syntax for {} {} uses an invalid group scope: {}"
+                                                            .format(resource_name.capitalize().rstrip("s"), resource["id"],
+                                                                    group_params[2]))
+                                        group_scope = group_params[2]
 
-                                # Ensure we have a reference to the group name stored
-                                if group_scope == "node":
-                                    if group_params[0] not in groups["node"]:
-                                        groups["node"][group_params[0]] = {}
-                                    group_ref = groups["node"][group_params[0]]
-                                elif group_scope == "device":
-                                    if group_params[0] not in groups["device"][resource["device_id"]]:
-                                        groups["device"][resource["device_id"]][group_params[0]] = {}
-                                    group_ref = groups["device"][resource["device_id"]][group_params[0]]
+                                    # Ensure we have a reference to the group name stored
+                                    if group_scope == "node":
+                                        if group_params[0] not in groups["node"]:
+                                            groups["node"][group_params[0]] = {}
+                                        group_ref = groups["node"][group_params[0]]
+                                    elif group_scope == "device":
+                                        if group_params[0] not in groups["device"][resource["device_id"]]:
+                                            groups["device"][resource["device_id"]][group_params[0]] = {}
+                                        group_ref = groups["device"][resource["device_id"]][group_params[0]]
 
-                                # Check for duplicate roles within groups
-                                if group_params[1] in group_ref:
-                                    return test.FAIL("Duplicate role found in group {} for resources {} and {}"
-                                                     .format(group_params[0], resource["id"],
-                                                             group_ref[group_params[1]]))
-                                else:
-                                    group_ref[group_params[1]] = resource["id"]
+                                    # Check for duplicate roles within groups
+                                    if group_params[1] in group_ref:
+                                        return test.FAIL("Duplicate role found in group {} for resources {} and {}"
+                                                        .format(group_params[0], resource["id"],
+                                                                group_ref[group_params[1]]))
+                                    else:
+                                        group_ref[group_params[1]] = resource["id"]
 
-                except json.JSONDecodeError:
-                    return test.FAIL("Non-JSON response returned from Node API")
-                except KeyError as e:
-                    return test.FAIL("Unable to find expected key: {}".format(e))
+                    except json.JSONDecodeError:
+                        return test.FAIL("Non-JSON response returned from Node API")
+                    except KeyError as e:
+                        return test.FAIL("Unable to find expected key: {}".format(e))
 
         if not found_senders_receivers:
             return test.UNCLEAR("No Sender or Receiver resources were found on the Node")
@@ -2163,7 +2166,8 @@ class IS0401Test(GenericTest):
 
         if CONFIG.DNS_SD_MODE == "multicast":
             # Advertise a registry at pri 0 and allow the Node to do a basic registration
-            self.zc.register_service(registry_info, strict=self._strict_service_name(registry_info))
+            # self.zc.register_service(registry_info, strict=self._strict_service_name(registry_info))
+            self.zc.register_service(registry_info)
 
         # Wait for n seconds after advertising the service for the first POST from a Node
         self.primary_registry.wait_for_registration(CONFIG.DNS_SD_ADVERT_TIMEOUT)
