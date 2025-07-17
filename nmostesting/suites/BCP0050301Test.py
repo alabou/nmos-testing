@@ -386,6 +386,12 @@ class BCP0050301Test(GenericTest):
                     # check sender capability if present
                     if "constraint_sets" in sender["caps"]:
                         for constraint_set in sender["caps"]["constraint_sets"]:
+
+                            # Ignore disabled constraint sets
+                            if ("urn:x-nmos:cap:meta:enabled" in constraint_set and
+                                    not constraint_set["urn:x-nmos:cap:meta:enabled"]):
+                                continue
+
                             if has_key(constraint_set, privacy_capability):
                                 capability = get_key_value(constraint_set, privacy_capability)
                                 if "enum" in capability:
@@ -887,6 +893,12 @@ class BCP0050301Test(GenericTest):
                     # check receiver capability if present
                     if "constraint_sets" in receiver["caps"]:
                         for constraint_set in receiver["caps"]["constraint_sets"]:
+
+                            # Ignore disabled constraint sets
+                            if ("urn:x-nmos:cap:meta:enabled" in constraint_set and
+                                    not constraint_set["urn:x-nmos:cap:meta:enabled"]):
+                                continue
+
                             if has_key(constraint_set, privacy_capability):
                                 capability = get_key_value(constraint_set, privacy_capability)
                                 if "enum" in capability:

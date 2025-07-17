@@ -84,7 +84,7 @@ class GenericTest(object):
             self.omit_paths = omit_paths
         self.disable_auto = disable_auto
 
-        test = Test("Test initialisation")
+        test = Test("Test initialization")
 
         if not CONFIG.CACHE_IS_READ_ONLY:
             
