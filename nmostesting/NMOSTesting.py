@@ -88,6 +88,7 @@ from .suites import BCP00301Test
 from .suites import BCP0050101Test
 from .suites import BCP0060101Test
 from .suites import BCP0060102Test
+from .suites import BCP0050201Test
 from .suites import BCP00604Test
 
 from .suites import BCP0040201Test
@@ -435,6 +436,33 @@ TEST_DEFINITIONS = {
             "disable_fields": ["host", "port"]
         }],
         "class": BCP0060102Test.BCP0060102Test
+    },
+    "BCP-005-02": {
+        "name": "BCP-005-02 IPMX/HKEP",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        }, {
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "caps-register"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }, {
+            "spec_key": "bcp-004-02",
+            "api_key": "sender-caps"
+        }],
+        "class": BCP0050201Test.BCP0050201Test
     },
     "BCP-006-04": {
         "name": "BCP-006-04 NMOS With MPEG TS",
