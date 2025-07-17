@@ -90,6 +90,8 @@ from .suites import BCP0060101Test
 from .suites import BCP0060102Test
 from .suites import BCP00604Test
 
+from .suites import BCP0040201Test
+from .suites import BCP0040101Test
 from .suites import MatroxTransportsTest
 from .suites import MatroxCapabilitiesTest
 from .suites import MatroxSdpTest
@@ -449,6 +451,62 @@ TEST_DEFINITIONS = {
         }],
         "class": BCP00604Test.BCP00604Test
     },
+    "BCP-004-02": {
+        "name": "Sender Capabilities",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        }, {
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "caps-register"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }, {
+            "spec_key": "bcp-004-02",
+            "api_key": "sender-caps"
+        }],
+        "class": BCP0040201Test.BCP0040201Test
+    },
+    "BCP-004-01": {
+        "name": "Receiver Capabilities",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        }, {
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "caps-register"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }, {
+            "spec_key": "bcp-004-02",
+            "api_key": "sender-caps"
+        }],
+        "class": BCP0040101Test.BCP0040101Test
+    },
+}
+
    "Matrox-Transports": {
         "name": "Matrox-Transports",
         "specs": [{
@@ -805,20 +863,21 @@ def init_spec_cache():
             continue
         if not os.path.exists(path):
 
-            if not "url" in repo_data or repo_data["url"] is None:
+            if "url" not in repo_data or repo_data["url"] is None:
                 repo_url = 'https://github.com/AMWA-TV/'
             else:
                 repo_url = repo_data["url"]
-            if not "branch" in repo_data or repo_data["branch"] is None:
+            if "branch" not in repo_data or repo_data["branch"] is None:
                 repo_branch = None
             else:
                 repo_branch = repo_data["branch"]
 
-            print(" * Initialising repository '{}'".format(repo_data["repo"]))
+            print(" * Initialising repository '{}' from branch '{}' at url '{}'".format(
+                repo_data["repo"], repo_branch, repo_url))
 
             repo = git.Repo.clone_from(repo_url + repo_data["repo"] + '.git', path)
 
-            if not repo_branch is None:
+            if repo_branch is not None:
                 repo.git.checkout(repo_branch)
                 print(repo.git.status())
 

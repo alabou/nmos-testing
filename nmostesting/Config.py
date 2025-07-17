@@ -386,10 +386,23 @@ SPECIFICATIONS = {
         "default_version": "v1.0",
         "apis": {}
     },
+    "bcp-004-02": {
+        "repo": "bcp-004-02",
+        "branch": "v1.0-dev",
+        "versions": ["v1.0-dev"],
+        "default_version": "v1.0-dev",
+        "apis": {
+            "sender-caps": {
+                "name": "Sender Capabilities"
+            }
+        }
+    },
     "nmos-parameter-registers": {
         "repo": "nmos-parameter-registers",
-        "versions": ["main"],
-        "default_version": "main",
+        "url": "https://github.com/alabou/",
+        "branch": "bcp-004-02",
+        "versions": ["bcp-004-02"],
+        "default_version": "bcp-004-02",
         "apis": {
             "caps-register": {
                 "name": "Capabilities Register"
@@ -434,3 +447,4 @@ try:
         sys.exit(-1)
 except ImportError:
     pass
+
