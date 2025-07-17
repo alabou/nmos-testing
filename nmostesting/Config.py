@@ -400,9 +400,9 @@ SPECIFICATIONS = {
     "nmos-parameter-registers": {
         "repo": "nmos-parameter-registers",
         "url": "https://github.com/alabou/",
-        "branch": "bcp-005-02",
-        "versions": ["bcp-005-02"],
-        "default_version": "bcp-005-02",
+        "branch": "bcp-005-03",
+        "versions": ["bcp-005-03"],
+        "default_version": "bcp-005-03",
         "apis": {
             "caps-register": {
                 "name": "Capabilities Register"
@@ -412,6 +412,9 @@ SPECIFICATIONS = {
             },
             "sender-register": {
                 "name": "Sender Attributes Register"
+            },
+            "ext-transport-parameters-register": {
+                "name": "EXT transport parameters Register"
             }
         }
     },

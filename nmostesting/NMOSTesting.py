@@ -90,6 +90,7 @@ from .suites import BCP0060101Test
 from .suites import BCP0060102Test
 from .suites import BCP0050201Test
 from .suites import BCP00604Test
+from .suites import BCP0050301Test
 
 from .suites import BCP0040201Test
 from .suites import BCP0040101Test
@@ -478,6 +479,36 @@ TEST_DEFINITIONS = {
             "api_key": "sender-register"
         }],
         "class": BCP00604Test.BCP00604Test
+    },
+    "BCP-005-03": {
+        "name": "IPMX/PEP",
+        "specs": [{
+            "spec_key": "is-04",
+            "api_key": "node"
+        }, {
+            "spec_key": "is-05",
+            "api_key": "connection"
+        }],
+        "extra_specs": [{
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "flow-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "sender-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "caps-register"
+        }, {
+            "spec_key": "nmos-parameter-registers",
+            "api_key": "ext-transport-parameters-register"
+        }, {
+            "spec_key": "bcp-004-01",
+            "api_key": "receiver-caps"
+        }, {
+            "spec_key": "bcp-004-02",
+            "api_key": "sender-caps"
+        }],
+        "class": BCP0050301Test.BCP0050301Test
     },
     "BCP-004-02": {
         "name": "Sender Capabilities",
@@ -990,7 +1021,7 @@ def format_test_results(results, endpoints, format, args):
             num_extra_dots = max_name_len - len(test_result.name)
             test_state = str(TestStates.DISABLED if test_result.name in ignored_tests else test_result.state)
             formatted += "{} ...{} {}\r\n".format(test_result.name, ("." * num_extra_dots), test_state)
-            formatted += test_result.detail + "\r\n"
+            formatted += "{}\r\n".format(test_result.detail)
         formatted += "----------------------------\r\n"
         formatted += "Ran {} tests in ".format(len(results["result"])) + "{0:.3f}s".format(total_time) + "\r\n"
     return formatted
