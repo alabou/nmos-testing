@@ -1,4 +1,5 @@
 # Copyright (C) 2025 Matrox Graphics Inc.
+# Copyright (C) 2025 Advanced Media Workflow Association
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# python3 nmos-test.py suite BCP-004-02 --host 127.0.0.1 127.0.0.1 --port 5058 5058 --version v1.3 v1.1
 
 import json
 import re
@@ -25,6 +25,7 @@ from ..IS04Utils import IS04Utils
 from ..IS05Utils import IS05Utils
 from ..TestHelper import load_resolved_schema
 from ..TestHelper import check_content_type
+from ..TestResult import Test
 
 from pathlib import Path
 
@@ -70,6 +71,7 @@ class BCP0040201Test(GenericTest):
             "transport_files": {}}
         self.is04_utils = IS04Utils(self.node_url)
         self.is05_utils = IS05Utils(self.connection_url)
+        self.test = Test("default")
 
     # Utility function from IS0502Test
     def get_is04_resources(self, resource_type):
@@ -88,7 +90,7 @@ class BCP0040201Test(GenericTest):
         schema = self.get_schema(NODE_API_KEY, "GET", "/" + path_url, resources.status_code)
         valid, message = self.check_response(schema, "GET", resources)
         if not valid:
-            raise NMOSTestException(message)
+            raise NMOSTestException(self.test.FAIL(message))
 
         try:
             for resource in resources.json():
@@ -116,7 +118,7 @@ class BCP0040201Test(GenericTest):
         schema = self.get_schema(CONNECTION_API_KEY, "GET", "/" + path_url, resources.status_code)
         valid, message = self.check_response(schema, "GET", resources)
         if not valid:
-            raise NMOSTestException(message)
+            raise NMOSTestException(self.test.FAIL(message))
 
         # The following call to is05_utils.get_transporttype does not validate against the IS-05 schemas,
         # which is good for allowing extended transport. The transporttype-response-schema.json schema is
@@ -170,6 +172,8 @@ class BCP0040201Test(GenericTest):
     def test_01(self, test):
         """Check that version 1.3 or greater of the Node API is available"""
 
+        self.test = test
+
         api = self.apis[NODE_API_KEY]
         if self.is04_utils.compare_api_version(api["version"], "v1.3") >= 0:
             valid, result = self.do_request("GET", self.node_url)
@@ -182,6 +186,8 @@ class BCP0040201Test(GenericTest):
 
     def test_02(self, test):
         """Check Sender Capabilities"""
+
+        self.test = test
 
         api = self.apis[SENDER_CAPS_KEY]
 
@@ -210,12 +216,12 @@ class BCP0040201Test(GenericTest):
 
             # Make sure Senders do not use the Receiver's specific "media_types" attribute in their caps
             if "media_types" in sender["caps"]:
-                warning += ("|" + "Sender {} caps has an unnecessary 'media_types' attribute "
+                warning += ("|Sender {} caps has an unnecessary 'media_types' attribute "
                             "that is not used with sender capabilities".format(sender["id"]))
 
             # Make sure Senders do not use the Receiver's specific "event_types" attribute in their caps
             if "event_types" in sender["caps"]:
-                warning += ("|" + "Sender {} caps has an unnecessary 'event_types' attribute "
+                warning += ("|Sender {} caps has an unnecessary 'event_types' attribute "
                             "that is not used with sender capabilities".format(sender["id"]))
 
             if "constraint_sets" in sender["caps"]:
@@ -272,7 +278,7 @@ class BCP0040201Test(GenericTest):
                             # Capabilities register
                             if param_constraint.startswith(
                                     "urn:x-nmos:") and param_constraint not in reg_schema_obj["properties"]:
-                                warning += ("|" + "Sender {} parameter constraint {}"
+                                warning += ("|Sender {} parameter constraint {}"
                                             " is not registered ".format(sender["id"], param_constraint))
 
                         except BaseException:
@@ -286,7 +292,7 @@ class BCP0040201Test(GenericTest):
                                 sender["id"]))
 
                 if warn_label:
-                    warning += ("|" + "Sender {} constraint_sets should either 'urn:x-nmos:cap:meta:label' "
+                    warning += ("|Sender {} constraint_sets should either 'urn:x-nmos:cap:meta:label' "
                                 "for all constraint sets or none".format(sender["id"]))
 
         if no_constraint_sets:

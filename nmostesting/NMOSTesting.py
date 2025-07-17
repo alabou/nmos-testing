@@ -48,7 +48,7 @@ from requests.compat import json
 from . import Config as CONFIG
 from .DNS import DNS
 from .GenericTest import NMOSInitException
-from . import ControllerTest
+from . import TestingFacadeUtils
 from .TestResult import TestStates
 from .TestHelper import get_default_ip
 from .NMOSUtils import DEFAULT_ARGS
@@ -114,7 +114,7 @@ core_app.config['TEST_ACTIVE'] = False
 core_app.config['PORT'] = CONFIG.PORT_BASE
 core_app.config['SECURE'] = False
 core_app.register_blueprint(NODE_API)  # Dependency for IS0401Test
-core_app.register_blueprint(ControllerTest.TEST_API)
+core_app.register_blueprint(TestingFacadeUtils.TEST_API)
 FLASK_APPS.append(core_app)
 
 for instance in range(NUM_REGISTRIES):
@@ -223,7 +223,7 @@ TEST_DEFINITIONS = {
     "IS-04-04": {
         "name": "IS-04 Controller",
         "specs": [{
-            "spec_key": "controller-tests",
+            "spec_key": "testing-facade",
             "api_key": "testquestion"
         }, {
             "spec_key": "is-04",
@@ -254,7 +254,7 @@ TEST_DEFINITIONS = {
     "IS-05-03": {
         "name": "IS-05 Controller",
         "specs": [{
-            "spec_key": "controller-tests",
+            "spec_key": "testing-facade",
             "api_key": "testquestion"
         }, {
             "spec_key": "is-04",
@@ -378,7 +378,7 @@ TEST_DEFINITIONS = {
             "api_key": "controlframework",
             "disable_fields": ["host", "port", "urlpath"]
         }, {
-            "spec_key": "controller-tests",
+            "spec_key": "testing-facade",
             "api_key": "testquestion",
             "disable_fields": ["urlpath"] if CONFIG.MS05_INTERACTIVE_TESTING else ["host", "port", "urlpath"]
         }],
@@ -423,7 +423,7 @@ TEST_DEFINITIONS = {
     "BCP-006-01-02": {
         "name": "BCP-006-01 Controller",
         "specs": [{
-            "spec_key": "controller-tests",
+            "spec_key": "testing-facade",
             "api_key": "testquestion"
         }, {
             "spec_key": "is-04",
@@ -505,8 +505,6 @@ TEST_DEFINITIONS = {
         }],
         "class": BCP0040101Test.BCP0040101Test
     },
-}
-
    "Matrox-Transports": {
         "name": "Matrox-Transports",
         "specs": [{
@@ -862,25 +860,9 @@ def init_spec_cache():
         if repo_data["repo"] is None:
             continue
         if not os.path.exists(path):
-
-            if "url" not in repo_data or repo_data["url"] is None:
-                repo_url = 'https://github.com/AMWA-TV/'
-            else:
-                repo_url = repo_data["url"]
-            if "branch" not in repo_data or repo_data["branch"] is None:
-                repo_branch = None
-            else:
-                repo_branch = repo_data["branch"]
-
-            print(" * Initialising repository '{}' from branch '{}' at url '{}'".format(
-                repo_data["repo"], repo_branch, repo_url))
-
+            repo_url = repo_data.get("url", "https://github.com/AMWA-TV/")
+            print(" * Initialising repository '{}' at url '{}'".format(repo_data["repo"], repo_url))
             repo = git.Repo.clone_from(repo_url + repo_data["repo"] + '.git', path)
-
-            if repo_branch is not None:
-                repo.git.checkout(repo_branch)
-                print(repo.git.status())
-
             update_last_pull = True
         else:
             repo = git.Repo(path)

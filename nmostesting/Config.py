@@ -380,12 +380,6 @@ SPECIFICATIONS = {
             }
         }
     },
-    "bcp-005-01": {
-        "repo": "bcp-005-01",
-        "versions": ["v1.0"],
-        "default_version": "v1.0",
-        "apis": {}
-    },
     "bcp-004-02": {
         "repo": "bcp-004-02",
         "branch": "v1.0-dev",
@@ -396,6 +390,12 @@ SPECIFICATIONS = {
                 "name": "Sender Capabilities"
             }
         }
+    },
+    "bcp-005-01": {
+        "repo": "bcp-005-01",
+        "versions": ["v1.0"],
+        "default_version": "v1.0",
+        "apis": {}
     },
     "nmos-parameter-registers": {
         "repo": "nmos-parameter-registers",
@@ -447,4 +447,3 @@ try:
         sys.exit(-1)
 except ImportError:
     pass
-
