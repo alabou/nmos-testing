@@ -46,4 +46,8 @@ IS-11:
 
 all
 
+MatroxSdpTest:
 
+test_02 test_03 test_04
+
+EXAMPLE: python3 nmos-test.py suite Matrox-Sdp --tests test_02 test_03 test_04 --host 127.0.0.1 127.0.0.1 127.0.0.1 --port 8443 5010 5010 --version v1.3 v1.3 v1.1
