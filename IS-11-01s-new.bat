@@ -1,1 +1,0 @@
-python nmos-test.py suite IS-11-01 --tests all --host %IPMX_SENDER_ADDRESS% %IPMX_SENDER_ADDRESS% %IPMX_SENDER_ADDRESS% --port %IPMX_SENDER_PORT% %IPMX_SENDER_PORT% %IPMX_SENDER_CONNECTION_PORT% --version v1.0 v1.3 v1.1 --senders IPMX_VENDOR_%IPMX_VENDOR%\ipmx-test-senders.guid --receivers IPMX_VENDOR_%IPMX_VENDOR%\ipmx-test-receivers-NONE.guid
