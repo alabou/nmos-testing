@@ -946,7 +946,7 @@ def run_tests(test, endpoints, test_selection=["all"]):
                 "selector": endpoints[index]["selector"],
                 "urlpath": endpoints[index]["urlpath"],
                 "spec": None,  # Used inside GenericTest
-                "spec_path": CONFIG.CACHE_PATH + '/' + spec_key
+                "spec_path": os.path.join(CONFIG.CACHE_PATH, spec_key)
             }
             if CONFIG.SPECIFICATIONS[spec_key]["repo"] is not None \
                     and api_key in CONFIG.SPECIFICATIONS[spec_key]["apis"]:
@@ -962,7 +962,7 @@ def run_tests(test, endpoints, test_selection=["all"]):
             apis[api_key] = {
                 "version": CONFIG.SPECIFICATIONS[spec_key]["default_version"],  # For now
                 "spec": None,  # Used inside GenericTest
-                "spec_path": CONFIG.CACHE_PATH + '/' + spec_key
+                "spec_path": os.path.join(CONFIG.CACHE_PATH, spec_key)
             }
             # extra path metadata used by nmos-feature-sets-register
             if "repo_paths" in CONFIG.SPECIFICATIONS[spec_key]["apis"][api_key]:
@@ -1003,7 +1003,7 @@ def init_spec_cache():
 
     # Prevent re-pulling of the spec repos too frequently
     time_now = datetime.now()
-    last_pull_file = os.path.join(CONFIG.CACHE_PATH + "/last_pull")
+    last_pull_file = os.path.join(CONFIG.CACHE_PATH, "last_pull")
     last_pull_time = time_now - timedelta(hours=1)
     update_last_pull = False
     if os.path.exists(last_pull_file):
@@ -1014,7 +1014,7 @@ def init_spec_cache():
             print(" * ERROR: Unable to load last pull time for cache: {}".format(e))
 
     for repo_key, repo_data in CONFIG.SPECIFICATIONS.items():
-        path = os.path.join(CONFIG.CACHE_PATH + '/' + repo_key)
+        path = os.path.join(CONFIG.CACHE_PATH, repo_key)
         if repo_data["repo"] is None:
             continue
         if not os.path.exists(path):

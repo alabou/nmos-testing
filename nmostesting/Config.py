@@ -419,11 +419,10 @@ SPECIFICATIONS = {
         }
     },
     "bcp-007-02": {
-        "repo": "proposal_bcp-007-02",
-        "url": "https://github.com/alabou/",
-        "branch": "main",
-        "versions": ["main"],
-        "default_version": "main",
+        "repo": "bcp-007-02",
+        "branch": "v1.0-dev",
+        "versions": ["v1.0-dev"],
+        "default_version": "v1.0-dev",
         "apis": {
             "usb-transport": {
                 "name": "USB Transport Parameters Schemas"
