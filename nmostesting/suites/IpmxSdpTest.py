@@ -1438,9 +1438,25 @@ class IpmxSdpTest(GenericTest):
         except Exception as e:
             return test.FAIL("Error during test 08: {}".format(e))
 
-    def test_10_local(self, test):
+    def test_100(self, test):
         """
-        Pre-Test to get a PCAP capture of a video sender along with its SDP transport file.
+        Pre-Test to get a PCAP capture of a video sender along with its SDP transport file. The selection
+        between the LOCAL or VB440 mode is based on an IPMX_VENDOR_PCAP_CAPTURE environment variable.
+        """
+        self.test = test
+        
+        pcap_capture_vendor = os.environ.get('IPMX_VENDOR_PCAP_CAPTURE')
+
+        if os.environ.get('IPMX_VENDOR_PCAP_CAPTURE') == 'LOCAL':
+            return self.test_101(test)
+        elif os.environ.get('IPMX_VENDOR_PCAP_CAPTURE') == 'VB440':
+            return self.test_102(test)
+        else:
+            return test.FAIL("Invalid IPMX_VENDOR_PCAP_CAPTURE environment variable: {}".format(pcap_capture_vendor))
+
+    def test_101(self, test):
+        """
+        Pre-Test to get a << LOCAL >> PCAP capture of a video sender along with its SDP transport file.
         """
 
         self.test = test
@@ -1595,24 +1611,15 @@ class IpmxSdpTest(GenericTest):
                     print("Joining multicast group for sender {}: {}:{} from source {}"
                           .format(sender["id"], multicast_ip, port, source_ip))
 
-                    # Try IGMP v3 with source filtering first
                     try:
-                        multicast_socket, interface_name = MulticastUtils.join_multicast_group_igmpv3(
-                            multicast_ip, source_ip, port
+                        multicast_socket, interface_name = MulticastUtils.join_multicast_group_simple(
+                            multicast_ip, port
                         )
-                        print("Successfully joined multicast group {} with source filtering for {}"
-                              .format(multicast_ip, source_ip))
-                    except MulticastJoinError:
-                        # Fallback to simple multicast join
-                        try:
-                            multicast_socket, interface_name = MulticastUtils.join_multicast_group_simple(
-                                multicast_ip, port
-                            )
-                            print("Successfully joined multicast group {} (fallback mode)"
-                                  .format(multicast_ip))
-                        except MulticastJoinError as e:
-                            return test.FAIL("Sender {} failed to join multicast stream, error: {}"
-                                             .format(sender["id"], e))
+                        print("Successfully joined multicast group {} (ASM mode)"
+                                .format(multicast_ip))
+                    except MulticastJoinError as e:
+                        return test.FAIL("Sender {} failed to join multicast stream, error: {}"
+                                            .format(sender["id"], e))
 
                 except Exception as e:
                     return test.FAIL("Sender {} failed to join multicast stream, error: {}"
@@ -1649,12 +1656,15 @@ class IpmxSdpTest(GenericTest):
                     if platform.system() == "Windows":
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.bat")
                         pcap_full_path = os.path.join(output_dir, pcap_filename)
-                        tcpdump_process = subprocess.Popen([capture_script, pcap_full_path, multicast_ip, str(port), ifelse(format == "video", "2110-20", "2110-20")])
+                        # print(f"Windows Interfaces {MulticastUtils.get_windows_adapters()}")
+                        npf = MulticastUtils.get_windows_interface_NPF(interface_name)
+                        print(f"NPF is '{npf}' from {interface_name}")
+                        tcpdump_process = subprocess.Popen([capture_script, pcap_full_path, multicast_ip, str(port), format, npf])
                     else:
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.sh")
                         pcap_full_path = os.path.join(output_dir, pcap_filename)
                         # Run through bash explicitly to avoid exec format errors
-                        tcpdump_process = subprocess.Popen(["bash", capture_script, pcap_full_path, multicast_ip, str(port), ifelse(format == "video", "2110-20", "2110-20")])
+                        tcpdump_process = subprocess.Popen(["bash", capture_script, pcap_full_path, multicast_ip, str(port), format])
 
                     print("Started packet capture: {}".format(pcap_filename))
 
@@ -1747,9 +1757,9 @@ class IpmxSdpTest(GenericTest):
 
         return test.UNCLEAR("No Sender resources were found on the Node")
 
-    def test_10(self, test):
+    def test_102(self, test):
         """
-        Pre-Test to get a PCAP capture using VB440 of a video sender along with its SDP transport file.
+        Pre-Test to get a << VB440 >> PCAP capture of a video sender along with its SDP transport file.
         """
         self.test = test
 
