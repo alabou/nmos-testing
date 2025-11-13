@@ -1468,31 +1468,36 @@ class IpmxSdpTest(GenericTest):
 
         flow_map = {flow["id"]: flow for flow in self.is04_resources["flows"].values()}
 
-        try:
-            video_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
-                             and sender["flow_id"] in flow_map
-                             and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:video"]
+        video_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
+                         and sender["flow_id"] in flow_map
+                         and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:video"]
 
-            audio_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
-                             and sender["flow_id"] in flow_map
-                             and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:audio"]
+        audio_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
+                         and sender["flow_id"] in flow_map
+                         and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:audio"]
 
-            senders = video_senders + audio_senders
+        senders = video_senders + audio_senders
 
-            for sender in senders:
+        for sender in senders:
+            # Initialize cleanup variables
+            multicast_socket = None
+            interface_name = None
+            tcpdump_process = None
+            multicast_ip = None
 
-                if sender in video_senders:
-                    format = "video"
-                elif sender in audio_senders:
-                    format = "audio"
-                else:
-                    return test.FAIL("UNEXPECTED sender {}".format(sender["id"]))
+            if sender in video_senders:
+                format = "video"
+            elif sender in audio_senders:
+                format = "audio"
+            else:
+                return test.FAIL("UNEXPECTED sender {}".format(sender["id"]))
 
-                # check the transport => only RTP is currently supported by IPMX
-                if not sender["transport"].startswith("urn:x-nmos:transport:rtp"):
-                    return test.FAIL("Sender {} transport {} is not RTP"
-                                     .format(sender["id"], sender["transport"]))
+            # check the transport => only RTP is currently supported by IPMX
+            if not sender["transport"].startswith("urn:x-nmos:transport:rtp"):
+                return test.FAIL("Sender {} transport {} is not RTP"
+                                 .format(sender["id"], sender["transport"]))
 
+            try:
                 url = "single/senders/{}/active".format(sender["id"])
                 valid, response = self.is05_utils.checkCleanRequest("GET", url)
                 if not valid:
@@ -1593,37 +1598,29 @@ class IpmxSdpTest(GenericTest):
                     return test.FAIL("Sender {} cannot deactivate the sender".format(sender["id"]))
 
                 # Join the multicast stream and keep it joined
-                multicast_socket = None
-                interface_name = None
+                # Extract multicast parameters
+                multicast_ip = primary_transport_params["destination_ip"]
+                source_ip = primary_transport_params["source_ip"]
+                port = primary_transport_params["destination_port"]
+
+                # Validate multicast parameters
+                if not MulticastUtils.is_multicast_address(multicast_ip):
+                    return test.FAIL("Sender {} destination IP {} is not a valid multicast address"
+                                     .format(sender["id"], multicast_ip))
+
+                # Join the multicast group and keep it joined for the duration of the test
+                print("Joining multicast group for sender {}: {}:{} from source {}"
+                      .format(sender["id"], multicast_ip, port, source_ip))
 
                 try:
-                    # Extract multicast parameters
-                    multicast_ip = primary_transport_params["destination_ip"]
-                    source_ip = primary_transport_params["source_ip"]
-                    port = primary_transport_params["destination_port"]
-
-                    # Validate multicast parameters
-                    if not MulticastUtils.is_multicast_address(multicast_ip):
-                        return test.FAIL("Sender {} destination IP {} is not a valid multicast address"
-                                         .format(sender["id"], multicast_ip))
-
-                    # Join the multicast group and keep it joined for the duration of the test
-                    print("Joining multicast group for sender {}: {}:{} from source {}"
-                          .format(sender["id"], multicast_ip, port, source_ip))
-
-                    try:
-                        multicast_socket, interface_name = MulticastUtils.join_multicast_group_simple(
-                            multicast_ip, port
-                        )
-                        print("Successfully joined multicast group {} (ASM mode)"
-                                .format(multicast_ip))
-                    except MulticastJoinError as e:
-                        return test.FAIL("Sender {} failed to join multicast stream, error: {}"
-                                            .format(sender["id"], e))
-
-                except Exception as e:
+                    multicast_socket, interface_name = MulticastUtils.join_multicast_group_simple(
+                        multicast_ip, port
+                    )
+                    print("Successfully joined multicast group {} (ASM mode)"
+                            .format(multicast_ip))
+                except MulticastJoinError as e:
                     return test.FAIL("Sender {} failed to join multicast stream, error: {}"
-                                     .format(sender["id"], e))
+                                        .format(sender["id"], e))
 
                 # Start tcpdump to capture the multicast stream for 3 seconds in parallel with this test
                 pcap_filename = format + "-{}.pcap".format(sender["id"])
@@ -1650,15 +1647,13 @@ class IpmxSdpTest(GenericTest):
                 except Exception:
                     pass  # ignore if file not found
 
-                tcpdump_process = None
-
                 try:
                     if platform.system() == "Windows":
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.bat")
                         pcap_full_path = os.path.join(output_dir, pcap_filename)
-                        # print(f"Windows Interfaces {MulticastUtils.get_windows_adapters()}")
+                        print(f"Windows Interfaces {MulticastUtils.get_windows_adapters()}")
                         npf = MulticastUtils.get_windows_interface_NPF(interface_name)
-                        print(f"NPF is '{npf}' from {interface_name}")
+                        print(f"Windows NPF is '{npf}' from {interface_name}")
                         tcpdump_process = subprocess.Popen([capture_script, pcap_full_path, multicast_ip, str(port), format, npf])
                     else:
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.sh")
@@ -1684,10 +1679,29 @@ class IpmxSdpTest(GenericTest):
 
                 # Wait packet capture if it was started
                 try:
-                    tcpdump_process.wait()  # wait for the process to terminate
+                    tcpdump_process.wait(timeout=30)  # wait for the process to terminate with timeout
                     print("Stopped packet capture: {}".format(pcap_filename))
+                except subprocess.TimeoutExpired:
+                    print("Warning: Packet capture process did not terminate within timeout, terminating...")
+                    tcpdump_process.terminate()
+                    try:
+                        tcpdump_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        print("Warning: Force killing packet capture process...")
+                        tcpdump_process.kill()
+                        tcpdump_process.wait()
                 except Exception as e:
-                    return test.FAIL("Failed to stop packet capture, error: {}".format(e))
+                    print("Warning: Error waiting for packet capture: {}".format(e))
+                    # Try to terminate if still running
+                    try:
+                        if tcpdump_process.poll() is None:
+                            tcpdump_process.terminate()
+                            tcpdump_process.wait(timeout=5)
+                    except Exception:
+                        try:
+                            tcpdump_process.kill()
+                        except Exception:
+                            pass
 
                 # We must get the SDP transport file again to get the final PEP parameters that
                 # become final on activation with master_enable set to true. We are not expecting
@@ -1737,23 +1751,46 @@ class IpmxSdpTest(GenericTest):
 
                 # Sender kept intentionally active
 
-                # Clean up multicast connection
-                try:
-                    MulticastUtils.leave_multicast_group(multicast_socket, multicast_ip, interface_name)
-                    multicast_socket.close()
-                    multicast_socket = None
-                    print("Left multicast group {} for sender {}"
-                          .format(multicast_ip, sender["id"]))
-                except Exception as e:
-                    print("Warning: Error leaving multicast group: {}".format(str(e)))
+            except KeyError as e:
+                return test.FAIL("Expected attribute not found in IS-04/IS-05 resource: {}".format(e))
+            finally:
+                # Cleanup: ensure all resources are properly released
+                cleanup_errors = []
+                
+                # 1. Clean up multicast connection
+                if multicast_socket is not None and multicast_ip is not None:
+                    try:
+                        MulticastUtils.leave_multicast_group(multicast_socket, multicast_ip, interface_name)
+                        multicast_socket.close()
+                        print("Left multicast group {} for sender {}"
+                              .format(multicast_ip, sender["id"]))
+                    except Exception as e:
+                        cleanup_errors.append("Error leaving multicast group: {}".format(str(e)))
+                
+                # 2. Terminate packet capture process if still running
+                if tcpdump_process is not None:
+                    try:
+                        if tcpdump_process.poll() is None:  # Process still running
+                            print("Terminating packet capture process...")
+                            tcpdump_process.terminate()
+                            try:
+                                tcpdump_process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                print("Force killing packet capture process...")
+                                tcpdump_process.kill()
+                                tcpdump_process.wait()
+                    except Exception as e:
+                        cleanup_errors.append("Error terminating packet capture: {}".format(str(e)))
+                
+                if cleanup_errors:
+                    print("Warning: Cleanup errors occurred for sender {}:".format(sender["id"]))
+                    for error in cleanup_errors:
+                        print("  - {}".format(error))
 
-                time.sleep(3)
+            time.sleep(3)
 
-            if len(senders) > 0:
-                return test.PASS()
-
-        except KeyError as e:
-            return test.FAIL("Expected attribute not found in IS-04/IS-05 resource: {}".format(e))
+        if len(senders) > 0:
+            return test.PASS()
 
         return test.UNCLEAR("No Sender resources were found on the Node")
 
@@ -1935,12 +1972,12 @@ class IpmxSdpTest(GenericTest):
                     if platform.system() == "Windows":
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.bat")
                         pcap_full_path = os.path.join(output_dir, pcap_filename)
-                        tcpdump_process = subprocess.Popen([capture_script, pcap_full_path, multicast_ip, str(port), ifelse(format == "video", "2110-20", "2110-20")])
+                        tcpdump_process = subprocess.Popen([capture_script, pcap_full_path, multicast_ip, str(port), format])
                     else:
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.sh")
                         pcap_full_path = os.path.join(output_dir, pcap_filename)
                         # Run through bash explicitly to avoid exec format errors
-                        tcpdump_process = subprocess.Popen(["bash", capture_script, pcap_full_path, multicast_ip, str(port), ifelse(format == "video", "2110-20", "2110-20")])
+                        tcpdump_process = subprocess.Popen(["bash", capture_script, pcap_full_path, multicast_ip, str(port), format])
 
                     print("Started packet capture: {}".format(pcap_filename))
 

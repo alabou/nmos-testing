@@ -261,8 +261,13 @@ class MulticastUtils:
     @staticmethod
     def get_windows_interface_NPF(interface_name: str) -> Optional[str]:
         """
-        Get IP address for a Windows interface name using ipconfig
+        Get NPF device path for a Windows interface name or IP address.
+        Returns NPF_Loopback for loopback addresses (127.0.0.1 or localhost).
         """
+        # Handle loopback addresses
+        if interface_name == "127.0.0.1" or interface_name.lower() == "localhost":
+            return "\\Device\\NPF_Loopback"
+        
         try:
             interfaces = MulticastUtils.get_windows_adapters()
 

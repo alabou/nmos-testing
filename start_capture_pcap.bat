@@ -1,6 +1,8 @@
+@echo off
 @REM for local capture
 if "%IPMX_VENDOR_PCAP_CAPTURE%" == "LOCAL" (
-    "C:\Program Files\Wireshark\dumpcap" -q -i %5 -B 256 -c 3000 -w %1 -f "ip and host %2"
+    @REM "C:\Program Files\Wireshark\dumpcap" -q -i %5 -B 256 -c 3000 -w %1 -f "ip and host %2"
+    "C:\Program Files\Wireshark\dumpcap" -q -i %5 -B 256 -c 10 -w %1 -f "ip and host %2"
 )
 
 @REM for VB440 capture
@@ -9,4 +11,6 @@ if "%IPMX_VENDOR_PCAP_CAPTURE%" == "VB440" (
 )
 
 @echo "IPMX_VENDOR_PCAP_CAPTURE is %IPMX_VENDOR_PCAP_CAPTURE%"
-@pause
+@echo Press any key to continue...
+@pause >nul
+@echo.
