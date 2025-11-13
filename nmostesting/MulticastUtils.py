@@ -22,7 +22,57 @@ import re
 import random
 from typing import Optional, Tuple
 from . import Config as CONFIG
+import ctypes
+import psutil
 
+AF_INET = 2
+AF_INET6 = 23
+
+class SOCKET_ADDRESS(ctypes.Structure):
+    _fields_ = [("lpSockaddr", ctypes.c_void_p),
+                ("iSockaddrLength", ctypes.c_int)]
+
+class IP_ADAPTER_UNICAST_ADDRESS(ctypes.Structure):
+    pass
+
+LP_IP_ADAPTER_UNICAST_ADDRESS = ctypes.POINTER(IP_ADAPTER_UNICAST_ADDRESS)
+IP_ADAPTER_UNICAST_ADDRESS._fields_ = [
+    ("Length", ctypes.c_ulong),
+    ("Flags", ctypes.c_ulong),
+    ("Next", LP_IP_ADAPTER_UNICAST_ADDRESS),
+    ("Address", SOCKET_ADDRESS)
+]
+
+class IP_ADAPTER_ADDRESSES(ctypes.Structure):
+    pass
+
+LP_IP_ADAPTER_ADDRESSES = ctypes.POINTER(IP_ADAPTER_ADDRESSES)
+IP_ADAPTER_ADDRESSES._fields_ = [
+    ("Length", ctypes.c_ulong),
+    ("IfIndex", ctypes.c_ulong),
+    ("Next", LP_IP_ADAPTER_ADDRESSES),
+    ("AdapterName", ctypes.c_char_p),
+    ("FirstUnicastAddress", LP_IP_ADAPTER_UNICAST_ADDRESS),
+    ("FirstAnycastAddress", ctypes.c_void_p),  # LP_IP_ADAPTER_ANYCAST_ADDRESS
+    ("FirstMulticastAddress", ctypes.c_void_p),  # LP_IP_ADAPTER_MULTICAST_ADDRESS
+    ("FirstDnsServerAddress", ctypes.c_void_p),  # LP_IP_ADAPTER_DNS_SERVER_ADDRESS
+    ("DnsSuffix", ctypes.c_wchar_p),
+    ("Description", ctypes.c_wchar_p),
+    ("FriendlyName", ctypes.c_wchar_p),
+    ("PhysicalAddress", ctypes.c_ubyte * 8),
+    ("PhysicalAddressLength", ctypes.c_ulong),
+]
+
+GetAdaptersAddresses = ctypes.windll.iphlpapi.GetAdaptersAddresses
+GetAdaptersAddresses.argtypes = [
+    ctypes.c_ulong, ctypes.c_ulong, ctypes.c_void_p,
+    LP_IP_ADAPTER_ADDRESSES, ctypes.POINTER(ctypes.c_ulong)
+]
+
+GAA_FLAG_SKIP_ANYCAST   = 0x2
+GAA_FLAG_SKIP_MULTICAST = 0x4
+GAA_FLAG_SKIP_DNS_SERVER= 0x8
+GAA_FLAG_INCLUDE_PREFIX = 0x10
 
 class MulticastJoinError(Exception):
     """Exception raised when multicast join operations fail"""
@@ -35,7 +85,52 @@ class MulticastUtils:
     # -----------------------------
     # Helpers
     # -----------------------------
-
+    @staticmethod
+    def get_windows_adapters():
+        size = ctypes.c_ulong(16384)
+        while True:
+            buf = ctypes.create_string_buffer(size.value)
+            rc = GetAdaptersAddresses(
+                AF_INET,  # request at least IPv4; we also harvest v6 from the list
+                GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_PREFIX,
+                None,
+                ctypes.cast(buf, LP_IP_ADAPTER_ADDRESSES),
+                ctypes.byref(size)
+            )
+            if rc == 0:
+                break
+            if rc == 111:  # ERROR_BUFFER_OVERFLOW
+                continue
+            raise OSError(f"GetAdaptersAddresses failed: {rc}")
+        adapters = ctypes.cast(buf, LP_IP_ADAPTER_ADDRESSES)
+        res = []
+        while adapters:
+            ad = adapters.contents
+            ips = []
+            uni = ad.FirstUnicastAddress
+            while uni:
+                sa = uni.contents.Address
+                p = ctypes.cast(sa.lpSockaddr, ctypes.POINTER(ctypes.c_ubyte * sa.iSockaddrLength)).contents
+                family = p[0] | (p[1] << 8)
+                if family == AF_INET:
+                    ips.append(socket.inet_ntoa(bytes(p[4:8])))
+                elif family == AF_INET6:
+                    raw = bytes(p[8:24])
+                    ip6 = socket.inet_ntop(socket.AF_INET6, raw)
+                    ips.append(ip6)
+                uni = uni.contents.Next
+            # AdapterName is like b'{GUID}', FriendlyName is human name
+            guid = (ad.AdapterName or b"").decode(errors="ignore").strip()
+            guid = guid.strip("{}")
+            res.append({
+                "name": ad.FriendlyName or "",
+                "guid": guid.upper(),
+                "ips": ips,
+                "if_index": int(ad.IfIndex),
+            })
+            adapters = ad.Next
+        return res
+        
     @staticmethod
     def _set_multicast_if(sock: socket.socket, interface_ip: str) -> None:
         """Set the outgoing/interface for multicast membership ops (best-effort)."""
@@ -117,35 +212,70 @@ class MulticastUtils:
         """
         Get IP address for a Windows interface name using ipconfig
         """
+        if interface_name is None or interface_name == "":
+            return None
+
         try:
-            result = subprocess.run(['ipconfig', '/all'],
-                                    capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                return None
+            interfaces = MulticastUtils.get_windows_adapters()
 
-            output = result.stdout
-            interface_section = None
-            lines = output.split('\n')
+            for interface in interfaces:
+                if interface_name in interface['ips']:
+                    return interface_name  # which is an IP address
+                if interface_name == interface['name']:
+                    return interface['ips'][0]  # return the first one
 
-            for i, line in enumerate(lines):
-                if 'adapter' in line.lower() and interface_name.lower() in line.lower():
-                    interface_section = i
-                    break
-                elif line.strip().startswith(interface_name):
-                    interface_section = i
-                    break
+        except Exception as e:
+            print(f"Warning: Failed to query Windows interface {interface_name}: {e}")
 
-            if interface_section is None:
-                return None
+        return None
 
-            for i in range(interface_section, min(interface_section + 20, len(lines))):
-                line = lines[i].strip()
-                if 'IPv4 Address' in line:
-                    ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-                    if ip_match:
-                        return ip_match.group(1)
-                elif 'adapter' in line.lower() and i > interface_section:
-                    break
+    @staticmethod
+    def get_linux_interface_ip(interface_name: str) -> Optional[str]:
+        """
+        Get IP address for a Linux interface name using psutil
+        """
+        if interface_name is None or interface_name == "":
+            return None
+            
+        try:
+            # Check if interface_name is already an IP address
+            try:
+                ipaddress.ip_address(interface_name)
+                return interface_name
+            except ValueError:
+                pass
+
+            # Get all network interfaces
+            interfaces = psutil.net_if_addrs()
+            
+            if interface_name in interfaces:
+                addrs = interfaces[interface_name]
+                for addr in addrs:
+                    if addr.family == socket.AF_INET:  # IPv4
+                        return addr.address
+        except Exception as e:
+            print(f"Warning: Failed to query Linux interface {interface_name}: {e}")
+
+        return None
+
+    @staticmethod
+    def get_windows_interface_NPF(interface_name: str) -> Optional[str]:
+        """
+        Get NPF device path for a Windows interface name or IP address.
+        Returns NPF_Loopback for loopback addresses (127.0.0.1 or localhost).
+        """
+        # Handle loopback addresses
+        if interface_name == "127.0.0.1" or interface_name.lower() == "localhost":
+            return "\\Device\\NPF_Loopback"
+        
+        try:
+            interfaces = MulticastUtils.get_windows_adapters()
+
+            for interface in interfaces:
+                if interface_name in interface['ips']:
+                    return f"\\Device\\NPF_{{{interface['guid']}}}"
+                if interface_name == interface['name']:
+                    return f"\\Device\\NPF_{{{interface['guid']}}}"
 
         except Exception as e:
             print(f"Warning: Failed to query Windows interface {interface_name}: {e}")
@@ -169,6 +299,10 @@ class MulticastUtils:
             windows_ip = MulticastUtils.get_windows_interface_ip(interface_name)
             if windows_ip:
                 return windows_ip
+        else:
+            linux_ip = MulticastUtils.get_linux_interface_ip(interface_name)
+            if linux_ip:
+                return linux_ip
 
         interface_map = {
             'lo': '127.0.0.1',
@@ -209,6 +343,7 @@ class MulticastUtils:
     @staticmethod
     def resolve_interface_param(interface_param: Optional[str], source_ip: Optional[str] = None) -> str:
         """Resolve interface parameter to IP address with intelligent selection"""
+
         if interface_param is not None:
             try:
                 ipaddress.ip_address(interface_param)
