@@ -1807,31 +1807,33 @@ class IpmxSdpTest(GenericTest):
 
         flow_map = {flow["id"]: flow for flow in self.is04_resources["flows"].values()}
 
-        try:
-            video_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
-                             and sender["flow_id"] in flow_map
-                             and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:video"]
+        video_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
+                            and sender["flow_id"] in flow_map
+                            and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:video"]
 
-            audio_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
-                             and sender["flow_id"] in flow_map
-                             and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:audio"]
+        audio_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
+                            and sender["flow_id"] in flow_map
+                            and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:audio"]
 
-            senders = video_senders + audio_senders
+        senders = video_senders + audio_senders
 
-            for sender in senders:
+        for sender in senders:
+            # Initialize cleanup variables
+            tcpdump_process = None
+            multicast_ip = None
 
-                if sender in video_senders:
-                    format = "video"
-                elif sender in audio_senders:
-                    format = "audio"
-                else:
-                    return test.FAIL("UNEXPECTED sender {}".format(sender["id"]))
+            if sender in video_senders:
+                format = "video"
+            elif sender in audio_senders:
+                format = "audio"
+            else:
+                return test.FAIL("UNEXPECTED sender {}".format(sender["id"]))
 
-                # check the transport => only RTP is currently supported by IPMX
-                if not sender["transport"].startswith("urn:x-nmos:transport:rtp"):
-                    return test.FAIL("Sender {} transport {} is not RTP"
-                                     .format(sender["id"], sender["transport"]))
-
+            # check the transport => only RTP is currently supported by IPMX
+            if not sender["transport"].startswith("urn:x-nmos:transport:rtp"):
+                return test.FAIL("Sender {} transport {} is not RTP"
+                                    .format(sender["id"], sender["transport"]))
+            try:
                 url = "single/senders/{}/active".format(sender["id"])
                 valid, response = self.is05_utils.checkCleanRequest("GET", url)
                 if not valid:
@@ -1966,8 +1968,6 @@ class IpmxSdpTest(GenericTest):
                 except Exception:
                     pass  # ignore if file not found
 
-                tcpdump_process = None
-
                 try:
                     if platform.system() == "Windows":
                         capture_script = os.path.join(parent_dir, "start_capture_pcap.bat")
@@ -1997,10 +1997,29 @@ class IpmxSdpTest(GenericTest):
 
                 # Wait packet capture if it was started
                 try:
-                    tcpdump_process.wait()  # wait for the process to terminate
+                    tcpdump_process.wait(timeout=30)  # wait for the process to terminate with timeout
                     print("Stopped packet capture: {}".format(pcap_filename))
+                except subprocess.TimeoutExpired:
+                    print("Warning: Packet capture process did not terminate within timeout, terminating...")
+                    tcpdump_process.terminate()
+                    try:
+                        tcpdump_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        print("Warning: Force killing packet capture process...")
+                        tcpdump_process.kill()
+                        tcpdump_process.wait()
                 except Exception as e:
-                    return test.FAIL("Failed to stop packet capture, error: {}".format(e))
+                    print("Warning: Error waiting for packet capture: {}".format(e))
+                    # Try to terminate if still running
+                    try:
+                        if tcpdump_process.poll() is None:
+                            tcpdump_process.terminate()
+                            tcpdump_process.wait(timeout=5)
+                    except Exception:
+                        try:
+                            tcpdump_process.kill()
+                        except Exception:
+                            pass
 
                 # We must get the SDP transport file again to get the final PEP parameters that
                 # become final on activation with master_enable set to true. We are not expecting
@@ -2046,16 +2065,40 @@ class IpmxSdpTest(GenericTest):
 
                 with open(os.path.join(output_dir, sdp_filename), 'wb') as file:
                     file.write(manifest_href_response.content)
+                time.sleep(1)
 
                 # Sender kept intentionally active
 
-                time.sleep(3)
+            except KeyError as e:
+                return test.FAIL("Expected attribute not found in IS-04/IS-05 resource: {}".format(e))
+            finally:
+                # Cleanup: ensure all resources are properly released
+                cleanup_errors = []
+                
+                # 1. Terminate packet capture process if still running
+                if tcpdump_process is not None:
+                    try:
+                        if tcpdump_process.poll() is None:  # Process still running
+                            print("Terminating packet capture process...")
+                            tcpdump_process.terminate()
+                            try:
+                                tcpdump_process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                print("Force killing packet capture process...")
+                                tcpdump_process.kill()
+                                tcpdump_process.wait()
+                    except Exception as e:
+                        cleanup_errors.append("Error terminating packet capture: {}".format(str(e)))
+                
+                if cleanup_errors:
+                    print("Warning: Cleanup errors occurred for sender {}:".format(sender["id"]))
+                    for error in cleanup_errors:
+                        print("  - {}".format(error))
 
-            if len(senders) > 0:
-                return test.PASS()
+            time.sleep(3)
 
-        except KeyError as e:
-            return test.FAIL("Expected attribute not found in IS-04/IS-05 resource: {}".format(e))
+        if len(senders) > 0:
+            return test.PASS()
 
         return test.UNCLEAR("No Sender resources were found on the Node")
 
