@@ -87,8 +87,8 @@ from ..MatroxCCF import (
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatComponentDepth,
     CapFormatChannelCount, CapFormatSampleRate, CapTransportBitRate,
     CapFormatVideoLayers, CapMetaFormat, CapMetaLayer,
-    Caps, CapSet, Capability, RangeValue, RangeType, caps_constrict_by_cons, conset_included_in_caps,
-    convert_caps_json_to_caps
+    Caps, CapSet, Capability, RangeValue, RangeType, caps_constrict_by_cons, 
+    conset_included_in_caps, convert_caps_json_to_caps
 )
 
 QUERY_API_KEY = "query"
@@ -2545,7 +2545,7 @@ class IpmxSdpTest(GenericTest):
 
             # Convert sender JSON caps to CCF Caps object
             try:
-                sender_caps = convert_caps_json_to_caps(sender_ccf_caps)
+                sender_caps = convert_caps_json_to_caps(sender_ccf_caps).get() # sort by preference
             except Exception as e:
                 return False, "Sender {} caps JSON to CCF conversion failed: {}".format(sender["id"], e)
 
@@ -2559,11 +2559,25 @@ class IpmxSdpTest(GenericTest):
                     return False, "Sender {} active constraints JSON to CCF conversion failed: {}".format(
                         sender["id"], e)
 
-                try:
-                    sender_caps = caps_constrict_by_cons(sender_caps, sender_cons)
-                except Exception as e:
-                    return False, "Sender {} constriction failed, possibly an empty space: {}".format(
-                        sender["id"], e)
+                # We want to constrain each capset by the IS-11 constraints and keep the original preference
+                # which allow keeing caps that are very similar to the original ones but taking into account
+                # the IS-11 constraints. The default algorithms of CCF do not allow this operation so we must
+                # implement it manually.
+                result_sender_caps = Caps(capsets=[])
+                for capset in sender_caps.capsets:
+                    try:
+                        # Active constraints are already within the caps of the Sender so this operator is ok
+                        caps = caps_constrict_by_cons(Caps(capsets=[capset]), sender_cons)
+                        for cs in caps.capsets:
+                            cs.preference = capset.preference  # keep original preference
+                            result_sender_caps.capsets.append(cs)
+                    except Exception as e:
+                        # It is possible to get empty spaces whch is normal when isolating a single capset
+                        pass
+                sender_caps = result_sender_caps.get()  # sort by preference
+
+                if len(sender_caps.capsets) == 0:
+                    return False, "Sender {} constriction failed, possibly an empty space".format(sender["id"])
 
                 print("SENDER CAPS (constrained by IS-11):\n{}\n".format(str(sender_caps)))
 
