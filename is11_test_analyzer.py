@@ -346,7 +346,7 @@ class IS11TestAnalyzer:
         for test_name in base_edid_tests:
             test_result = self.get_test_result(test_name)
             if test_result and test_result.state not in [TestState.PASS]:
-                failures.append("{test_name} must be PASS for inputs with EDID support "
+                failures.append(f"{test_name} must be PASS for inputs with EDID support "
                                 "(Base EDID support is required)")
 
         # test_01_04 should be Could Not Test (no inputs without EDID support)
@@ -466,7 +466,7 @@ class IS11TestAnalyzer:
                 for test_name in edid_input_tests:
                     test_result = self.get_test_result(test_name)
                     if test_result and test_result.state != TestState.COULD_NOT_TEST:
-                        failures.append("{test_name} must be Could Not Test for sender with "
+                        failures.append(f"{test_name} must be Could Not Test for sender with "
                                         "inputs and no EDID support")
         else:
             # Device has no inputs - all input support tests should be Could Not Test
