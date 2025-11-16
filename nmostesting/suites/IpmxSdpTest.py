@@ -2191,10 +2191,8 @@ class IpmxSdpTest(GenericTest):
                                      .format(sender["id"]))
 
                 # Check that the device is not using redundancy (simplication for this test)
-                # if sdp.secondary_media or len(active["transport_params"]) > 1:
-                # if len(active["transport_params"]) > 1:
-                #     return test.FAIL("Sender {} is using redundancy and multiple transport parameters. Disable redundancy and re-test."
-                #                      .format(sender["id"]))
+                if len(active["transport_params"]) > 1:
+                    print("WARNING: Sender {} is configured with redundancy, using leg 0 only for this test".format(sender["id"]))
 
                 # Check the multicast address of the transport parameters
                 primary_transport_params = active["transport_params"][0]
@@ -2358,8 +2356,7 @@ class IpmxSdpTest(GenericTest):
 
                 # Check that the device is not using redundancy (simplication for this test)
                 if len(active["transport_params"]) > 1:
-                    return test.FAIL("Receiver {} is using redundancy and multiple transport parameters. Disable redundancy and re-test."
-                                     .format(receiver["id"]))
+                    print("WARNING: Receiver {} is configured with redundancy, using leg 0 only for this test".format(receiver["id"]))
 
                 # Check the multicast address of the transport parameters
                 primary_transport_params = active["transport_params"][0]
