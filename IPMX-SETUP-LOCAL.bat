@@ -2,6 +2,10 @@ REM If the IP ADDRESS and PORT of the IS-05 and IS-11 interfaces are the same as
 REM IS-04 interface, then the IP ADDRESS and PORT of the IS-05 and IS-11 interfaces
 REM should be left blank.
 
+REM If the IP ADDRESS and PORT of the IS-05 and IS-11 interfaces are the same as the
+REM IS-04 interface, then the IP ADDRESS and PORT of the IS-05 and IS-11 interfaces
+REM should be left blank.
+
 set IPMX_REGISTRY_ADDRESS=127.0.0.1
 set IPMX_REGISTRY_PORT=8010
 set IPMX_SENDER_ADDRESS=192.168.2.68
