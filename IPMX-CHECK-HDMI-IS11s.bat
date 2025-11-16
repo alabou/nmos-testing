@@ -1,0 +1,1 @@
+python is11_test_analyzer.py --with-inputs --edid-supported --with-senders --without-outputs --without-receivers IPMX_VENDOR_%IPMX_VENDOR%\IS-11-01s.json
