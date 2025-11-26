@@ -157,7 +157,7 @@ class IS11Utils(NMOSUtils, GenericTest):
 
             sender = response
 
-            if sender["transport"] != receiver["transport"]:
+            if sender["transport"].split('.')[0] != receiver["transport"].split('.')[0]:
                 continue
 
             if response["flow_id"] is None:
