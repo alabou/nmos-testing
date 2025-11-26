@@ -391,11 +391,11 @@ class IS11TestAnalyzer:
                 # Device does not support EDID - expect non-HDMI/DisplayPort behavior
                 test_03_00 = self.get_test_result('test_03_00')
                 if test_03_00 and test_03_00.state != TestState.COULD_NOT_TEST:
-                    failures.append("test_03_00 must be Could Not Test for outputs without EDID support")
+                    failures.append("test_03_00 must be Could Not Test for disconnected outputs or outputs without EDID support")
 
                 test_03_01 = self.get_test_result('test_03_01')
-                if test_03_01 and test_03_01.state != TestState.COULD_NOT_TEST:
-                    failures.append("test_03_01 must be Could Not Test for connected outputs")
+                if test_03_01 and test_03_01.state != TestState.PASS:
+                    failures.append("test_03_01 must be PASS for disconnected outputs or outputs without EDID support")
 
     def _validate_sender_tests(self, failures: List[str]):
         """Validate IS-11 sender tests"""
