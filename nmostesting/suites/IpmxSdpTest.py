@@ -275,7 +275,7 @@ class IpmxSdpTest(GenericTest):
 
             found_initial_data_set = False
 
-            while True:
+            while not found_initial_data_set:
                 if websocket.did_error_occur():
                     return test.FAIL("Error opening websocket: {}".format(websocket.get_error_message()))
 
@@ -288,7 +288,6 @@ class IpmxSdpTest(GenericTest):
                     json_msg = json.loads(curr_msg)
                     grain_data.extend(json_msg["grain"]["data"])
 
-                found_data_set = False
                 for curr_data in grain_data:
 
                     # case has Pre && has Post:
@@ -307,13 +306,8 @@ class IpmxSdpTest(GenericTest):
                         continue
 
                     if sender_id == curr_data['path']:
-                        found_data_set = True
+                        found_initial_data_set = True
                         break
-
-                if found_data_set:
-                    if found_initial_data_set:
-                        break
-                    found_initial_data_set = True
 
             # Now check for the SDP transport file every 500 ms for 10 seconds
             iterations = 10000/100
