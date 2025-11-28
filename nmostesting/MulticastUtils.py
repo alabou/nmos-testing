@@ -63,12 +63,6 @@ IP_ADAPTER_ADDRESSES._fields_ = [
     ("PhysicalAddressLength", ctypes.c_ulong),
 ]
 
-GetAdaptersAddresses = ctypes.windll.iphlpapi.GetAdaptersAddresses
-GetAdaptersAddresses.argtypes = [
-    ctypes.c_ulong, ctypes.c_ulong, ctypes.c_void_p,
-    LP_IP_ADAPTER_ADDRESSES, ctypes.POINTER(ctypes.c_ulong)
-]
-
 GAA_FLAG_SKIP_ANYCAST   = 0x2
 GAA_FLAG_SKIP_MULTICAST = 0x4
 GAA_FLAG_SKIP_DNS_SERVER= 0x8
@@ -87,6 +81,11 @@ class MulticastUtils:
     # -----------------------------
     @staticmethod
     def get_windows_adapters():
+        GetAdaptersAddresses = ctypes.windll.iphlpapi.GetAdaptersAddresses
+        GetAdaptersAddresses.argtypes = [
+            ctypes.c_ulong, ctypes.c_ulong, ctypes.c_void_p,
+            LP_IP_ADAPTER_ADDRESSES, ctypes.POINTER(ctypes.c_ulong)
+        ]
         size = ctypes.c_ulong(16384)
         while True:
             buf = ctypes.create_string_buffer(size.value)
