@@ -176,7 +176,7 @@ def try_parse_rtp(b: bytes) -> Optional[Tuple[int, int]]:
     if not b or len(b) < 12:
         return None
     vpxcc = b[0]
-    m_pt = b[1]
+    m_pt = b[1] & 0x7F
     version = (vpxcc >> 6) & 0x03
     if version != 2:
         return None
