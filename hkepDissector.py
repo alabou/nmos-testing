@@ -1020,17 +1020,22 @@ class HKEPDissector:
             if expected_seq is None:
                 expected_seq = seq
                 result = payload
+                expected_seq += len(payload)
             elif seq == expected_seq:
                 # In order - append
                 result += payload
                 expected_seq += len(payload)
             elif seq < expected_seq:
-                # Retransmission or duplicate - skip
-                continue
+                # Retransmission or partial overlap
+                overlap = expected_seq - seq
+                if overlap < len(payload):
+                    # Partial overlap: append only the new suffix
+                    result += payload[overlap:]
+                    expected_seq = seq + len(payload)
+                # else: full retransmission — skip
             else:
-                # Gap - append anyway (might be out of order)
-                result += payload
-                expected_seq = seq + len(payload)
+                # True gap: stop reassembly to avoid inserting incorrect data
+                break
         
         return result
     
@@ -1120,8 +1125,18 @@ class HKEPDissector:
                 current_block.append((seq, length, payload, pkt_num, packet))
                 current_data.extend(payload)
                 expected_seq = seq + len(payload)
+            elif seq < expected_seq:
+                # Retransmission or partial overlap — do not start a new block.
+                overlap = expected_seq - seq
+                if overlap < len(payload):
+                    # Partial overlap: only the new suffix carries unseen bytes.
+                    new_payload = payload[overlap:]
+                    current_block.append((seq + overlap, len(new_payload), new_payload, pkt_num, packet))
+                    current_data.extend(new_payload)
+                    expected_seq = seq + len(payload)
+                # else: full retransmission — already have all these bytes; skip.
             else:
-                # Gap detected - save current block and start new one
+                # True gap (seq > expected_seq) — save current block and start a new one.
                 if current_block:
                     blocks.append((bytes(current_data), current_block))
 
@@ -1783,7 +1798,9 @@ class HKEPDissector:
                                 stream_preinits[stream_key].append((pkt_num, session_key))
                                 break
                 
-                # Also check reassembled blocks for AKE_PreInit
+                # Also check reassembled blocks for AKE_PreInit.
+                # This handles the case where AKE_PreInit is fragmented across multiple TCP segments
+                # and therefore not visible in the individual-packet scan above.
                 contiguous_blocks = self._find_contiguous_blocks(direction_packets)
                 for block_data, block_packets in contiguous_blocks:
                     if len(block_data) < 3:
@@ -1799,6 +1816,11 @@ class HKEPDissector:
                             port_id = hkep_data.get('portId')
                             if receiver_id and node_id and port_id:
                                 pkt_num = msg_result.get('packet_number')
+                                # Skip if the individual-packet scan already registered this
+                                # exact AKE_PreInit, which would otherwise create a spurious
+                                # duplicate exchange with a "_N" suffix.
+                                if pkt_num in preinit_packets:
+                                    break
                                 timestamp = msg_result.get('timestamp', 0)
                                 preinit_packets[pkt_num] = (stream_key, receiver_id, node_id, port_id, timestamp)
                                 # Create exchange and map stream to session
