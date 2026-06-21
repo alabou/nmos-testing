@@ -72,6 +72,7 @@ from ..MatroxSdpCheck import check_sdp_st2110_30
 from ..MatroxSdpCheck import check_sdp_st2110_31
 from ..MatroxSdpCheck import check_sdp_rfc6184
 from ..MatroxSdpCheck import check_sdp_rfc7798
+from ..MatroxSdpCheck import check_sdp_ipmx_usb
 
 from ..MulticastUtils import MulticastUtils, MulticastJoinError
 
@@ -85,11 +86,70 @@ from ..MatroxCCF import (
     FormatVideo, FormatAudio, FormatData, FormatMux,
     CapFormatMediaType, CapFormatGrainRate, CapFormatFrameWidth, CapFormatFrameHeight,
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatComponentDepth,
-    CapFormatChannelCount, CapFormatSampleRate, CapTransportBitRate,
+    CapFormatChannelCount, CapFormatSampleRate, CapTransportBitRate, CapTransportPacketTime,
+    CapFormatProfile, CapFormatLevel, CapFormatSublevel, CapFormatSampleDepth,
     CapFormatVideoLayers, CapMetaFormat, CapMetaLayer,
-    Caps, CapSet, Capability, RangeValue, RangeType, caps_constrict_by_cons, 
-    conset_included_in_caps, convert_caps_json_to_caps
+    Caps, CapSet, ConSet, Con, RangeValue, RangeType, caps_constrict_by_cons,
+    conset_included_in_caps, convert_caps_json_to_caps, make_conset,
+    CapFormatColorSampling
 )
+
+# The following media type, color sampling and codec profile constants are not
+# defined in MatroxCCF, so they are defined locally here with their proper strings.
+VideoRaw = "video/raw"
+VideoJxsv = "video/jxsv"
+VideoH265 = "video/H265"
+VideoH264 = "video/H264"
+
+AudioL16 = "audio/L16"
+AudioL24 = "audio/L24"
+AudioAM824 = "audio/AM824"
+
+SamplingYCbCr_444 = "YCbCr-4:4:4"
+SamplingYCbCr_422 = "YCbCr-4:2:2"
+SamplingYCbCr_420 = "YCbCr-4:2:0"
+SamplingRGB = "RGB"
+
+JxsvProfileHigh444_12 = "High444.12"
+JxsvProfileTDC444_12 = "TDC444.12"
+CodecProfileMain = "Main"
+H265ProfileMain10 = "Main10"
+H264ProfileHigh = "High"
+H265ProfileMain10_444 = "Main10-444"
+H265ProfileMain_444 = "Main-444"
+
+# RangeType for each capability constrained in _verify_sender_ccf_required_capabilities,
+# so make_con() can wrap scalar values into properly-typed RangeValue constraints. The CCF
+# Con/Constraint object does not coerce raw values, and type inference is unsafe for the
+# RATIONAL/FLOAT caps (sample_rate, packet_time) whose values are written as ints below.
+_CON_RANGE_TYPE = {
+    CapFormatMediaType: RangeType.STRING,
+    CapFormatColorSampling: RangeType.STRING,
+    CapFormatProfile: RangeType.STRING,
+    CapFormatComponentDepth: RangeType.INT,
+    CapFormatSampleDepth: RangeType.INT,
+    CapFormatChannelCount: RangeType.INT,
+    CapFormatSampleRate: RangeType.RATIONAL,
+    CapTransportPacketTime: RangeType.FLOAT,
+}
+
+
+def make_con(name, *values):
+    """Build a CCF Con constraint enumerating one or more values for `name`, wrapping
+    them in a RangeValue with the proper RangeType (see _CON_RANGE_TYPE)."""
+    return Con(name=name, value=RangeValue(values=tuple(values), type=_CON_RANGE_TYPE[name]))
+
+
+def alt_conset(label, *cons):
+    """Build an alternative ConSet (preference 100) from Con constraints (see make_con)."""
+    return ConSet(label=label, preference=100, cons=make_conset(*cons))
+
+
+def check_conset(label, capset, *cap_names):
+    """Build the precision-check ConSet (preference 100) from a capset's existing capabilities."""
+    return ConSet(label=label, preference=100,
+                  cons=make_conset(*(capset[name] for name in cap_names)))
+
 
 QUERY_API_KEY = "query"
 NODE_API_KEY = "node"
@@ -432,7 +492,7 @@ class IpmxSdpTest(GenericTest):
                             if sdp.primary_media.ts_ref_clock_source != "localmac":
                                 return test.FAIL("Sender {} SDP media clock source {} do not match Node clock {}"
                                                  .format(sender["id"],
-                                                         sdp.primary_media.sdp.primary_media.ts_ref_clock_source,
+                                                         sdp.primary_media.ts_ref_clock_source,
                                                          clock))
 
                 if not clock_found:
@@ -766,7 +826,7 @@ class IpmxSdpTest(GenericTest):
                             if sdp.primary_media.ts_ref_clock_source != "localmac":
                                 return test.FAIL("Sender {} SDP media clock source {} do not match Node clock {}"
                                                  .format(sender["id"],
-                                                         sdp.primary_media.sdp.primary_media.ts_ref_clock_source,
+                                                         sdp.primary_media.ts_ref_clock_source,
                                                          clock))
 
                 if not clock_found:
@@ -939,9 +999,9 @@ class IpmxSdpTest(GenericTest):
 
             for sender in all_senders:
 
-                # Check the transport => only RTP is currently supported by IPMX
-                if not sender["transport"].startswith("urn:x-nmos:transport:rtp"):
-                    return test.FAIL("Sender {} transport {} is not RTP"
+                # Check the transport => only RTP and USB are currently supported by IPMX
+                if not sender["transport"].startswith("urn:x-nmos:transport:rtp") and not sender["transport"].startswith("urn:x-nmos:transport:usb"):
+                    return test.FAIL("Sender {} transport {} is not RTP and not USB"
                                      .format(sender["id"], sender["transport"]))
 
                 url = "single/senders/{}/active".format(sender["id"])
@@ -1007,6 +1067,19 @@ class IpmxSdpTest(GenericTest):
                 if not compatible:
                     return test.FAIL(error_msg)
 
+                # Derive the media type from the SDP caps (symmetric with the Receiver test).
+                # The SDP conversion stores it as a single-valued media_type capability in the primary capset.
+                sdp_media_type_values = sdp_caps.capsets[0][CapFormatMediaType].value.values
+                if not sdp_media_type_values:
+                    return test.FAIL("Sender {} SDP capabilities do not specify a media type"
+                                     .format(sender["id"]))
+                sdp_media_type = sdp_media_type_values[0]
+
+                # Verify that the sender capabilities expose the required per media_type capabilities
+                compatible, error_msg = self._verify_sender_ccf_required_capabilities(sender, sdp_caps, sdp_media_type)
+                if not compatible:
+                    return test.FAIL(error_msg)
+
             if len(sender_tested) == 0:
                 return test.UNCLEAR("No ACTIVE video, audio, or data Senders found on the Node => "
                                     "PLEASE ACTIVATE A SENDER to TEST")
@@ -1043,9 +1116,9 @@ class IpmxSdpTest(GenericTest):
 
             for receiver in all_receivers:
 
-                # Check the transport => only RTP is currently supported by IPMX
-                if not receiver["transport"].startswith("urn:x-nmos:transport:rtp"):
-                    return test.FAIL("Receiver {} transport {} is not RTP"
+                # Check the transport => only RTP and USB are currently supported by IPMX
+                if not receiver["transport"].startswith("urn:x-nmos:transport:rtp") and not receiver["transport"].startswith("urn:x-nmos:transport:usb"):
+                    return test.FAIL("Receiver {} transport {} is not RTP and not USB"
                                      .format(receiver["id"], receiver["transport"]))
 
                 url = "single/receivers/{}/active".format(receiver["id"])
@@ -1102,6 +1175,20 @@ class IpmxSdpTest(GenericTest):
                 if not compatible:
                     return test.FAIL(error_msg)
 
+                # A Receiver has no Flow, so derive the media type from the SDP caps.
+                # The SDP conversion stores it as a single-valued media_type capability in the primary capset.
+                sdp_media_type_values = sdp_caps.capsets[0][CapFormatMediaType].value.values
+                if not sdp_media_type_values:
+                    return test.FAIL("Receiver {} SDP capabilities do not specify a media type"
+                                     .format(receiver["id"]))
+                sdp_media_type = sdp_media_type_values[0]
+
+                # Verify that the receiver capabilities expose the required per media_type capabilities
+                compatible, error_msg = self._verify_receiver_ccf_required_capabilities(receiver, sdp_caps, sdp_media_type)
+                if not compatible:
+                    return test.FAIL(error_msg)
+
+
             if len(receiver_tested) == 0:
                 return test.UNCLEAR("No ACTIVE video, audio, or data Receivers found on the Node => "
                                     "PLEASE ACTIVATE A RECEIVER to TEST")
@@ -1137,9 +1224,9 @@ class IpmxSdpTest(GenericTest):
                 device = device_map[sender["device_id"]]
                 node = node_map[device["node_id"]]
 
-                # Check the transport => only RTP is currently supported by IPMX
-                if not sender["transport"].startswith("urn:x-nmos:transport:rtp"):
-                    return test.FAIL("Sender {} transport {} is not RTP"
+                # Check the transport => only RTP and USB are currently supported by IPMX
+                if not sender["transport"].startswith("urn:x-nmos:transport:rtp") and not sender["transport"].startswith("urn:x-nmos:transport:usb"):
+                    return test.FAIL("Sender {} transport {} is not RTP and not USB"
                                      .format(sender["id"], sender["transport"]))
 
                 url = "single/senders/{}/active".format(sender["id"])
@@ -1221,9 +1308,9 @@ class IpmxSdpTest(GenericTest):
 
             for receiver in all_receivers:
 
-                # Check the transport => only RTP is currently supported by IPMX
-                if not receiver["transport"].startswith("urn:x-nmos:transport:rtp"):
-                    return test.FAIL("Receiver {} transport {} is not RTP"
+                # Check the transport => only RTP and USB are currently supported by IPMX
+                if not receiver["transport"].startswith("urn:x-nmos:transport:rtp") and not receiver["transport"].startswith("urn:x-nmos:transport:usb"):
+                    return test.FAIL("Receiver {} transport {} is not RTP and not USB"
                                      .format(receiver["id"], receiver["transport"]))
 
                 url = "single/receivers/{}/active".format(receiver["id"])
@@ -1505,6 +1592,7 @@ class IpmxSdpTest(GenericTest):
                 # Start tcpdump to capture the multicast stream for 3 seconds in parallel with this test
                 pcap_filename = format + "-{}.pcap".format(sender["id"])
                 sdp_filename = format + "-{}.sdp".format(sender["id"])
+                caps_filename = format + "-{}.sender.caps.json".format(sender["id"])
 
                 # Get the directory of this script for capture scripts, and use vendor-specific directory for output files
                 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1524,6 +1612,7 @@ class IpmxSdpTest(GenericTest):
                 try:
                     os.remove(os.path.join(output_dir, pcap_filename))
                     os.remove(os.path.join(output_dir, sdp_filename))
+                    os.remove(os.path.join(output_dir, caps_filename))
                 except Exception:
                     pass  # ignore if file not found
 
@@ -1631,6 +1720,9 @@ class IpmxSdpTest(GenericTest):
 
                 with open(os.path.join(output_dir, sdp_filename), 'wb') as file:
                     file.write(manifest_href_response.content)
+
+                with open(os.path.join(output_dir, caps_filename), 'w') as caps_file:
+                    json.dump(sender.get("caps", {}), caps_file, indent=2)
                 time.sleep(1)
 
                 # Sender kept intentionally active
@@ -1830,6 +1922,7 @@ class IpmxSdpTest(GenericTest):
                 # Start tcpdump to capture the multicast stream for 3 seconds in parallel with this test
                 pcap_filename = format + "-{}.pcap".format(sender["id"])
                 sdp_filename = format + "-{}.sdp".format(sender["id"])
+                caps_filename = format + "-{}.sender.caps.json".format(sender["id"])
 
                 # Get the directory of this script for capture scripts, and use vendor-specific directory for output files
                 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1849,6 +1942,7 @@ class IpmxSdpTest(GenericTest):
                 try:
                     os.remove(os.path.join(output_dir, pcap_filename))
                     os.remove(os.path.join(output_dir, sdp_filename))
+                    os.remove(os.path.join(output_dir, caps_filename))
                 except Exception:
                     pass  # ignore if file not found
 
@@ -1953,6 +2047,9 @@ class IpmxSdpTest(GenericTest):
 
                 with open(os.path.join(output_dir, sdp_filename), 'wb') as file:
                     file.write(manifest_href_response.content)
+
+                with open(os.path.join(output_dir, caps_filename), 'w') as caps_file:
+                    json.dump(sender.get("caps", {}), caps_file, indent=2)
                 time.sleep(1)
 
                 # Sender kept intentionally active
@@ -1989,6 +2086,103 @@ class IpmxSdpTest(GenericTest):
             return test.PASS()
 
         return test.UNCLEAR("No Sender resources were found on the Node")
+
+    def test_103(self, test):
+        """
+        Dump the Receiver caps to a file.
+        """
+        self.test = test
+
+        for resource_type in ["receivers", "devices", "self"]:
+            valid, result = self.get_is04_resources(resource_type)
+            if not valid:
+                return test.FAIL(result)
+
+        # Also get IS-05 receiver resources
+        valid, result = self.get_is05_partial_resources("receivers")
+        if not valid:
+            return test.FAIL(result)
+
+        try:
+            video_receivers = [receiver for receiver in self.is04_resources["receivers"].values()
+                               if receiver["format"] == FormatVideo]
+            audio_receivers = [receiver for receiver in self.is04_resources["receivers"].values()
+                               if receiver["format"] == FormatAudio]
+
+            receivers = video_receivers + audio_receivers
+
+            receiver_tested = list()
+
+            for receiver in receivers:
+
+                if receiver in video_receivers:
+                    format = "video"
+                elif receiver in audio_receivers:
+                    format = "audio"
+                else:
+                    return test.FAIL("UNEXPECTED receiver {}".format(receiver["id"]))
+
+                # check the transport => only RTP and USB are currently supported by IPMX
+                if not receiver["transport"].startswith("urn:x-nmos:transport:rtp") and not receiver["transport"].startswith("urn:x-nmos:transport:usb"):
+                    return test.FAIL("Receiver {} transport {} is not RTP and not USB"
+                                     .format(receiver["id"], receiver["transport"]))
+
+                url = "single/receivers/{}/active".format(receiver["id"])
+                valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                if not valid:
+                    return test.FAIL("Receiver {} not responding to IS-05 request"
+                                     .format(receiver["id"]))
+
+                # The IS-05 active transport parameters provide an array of such along with the master_enable.
+                active = response.json()
+
+                if not active["master_enable"]:
+                    continue
+
+                receiver_tested.append(receiver["id"])
+
+                # Get receiver CCF capabilities from IS-04 and convert to CCF Caps
+                receiver_ccf_caps = self._get_receiver_ccf_capabilities(receiver)
+
+                if not receiver_ccf_caps:
+                    # If receiver has no capability constraints it fails
+                    return test.FAIL("Receiver {} has no capability constraints"
+                                     .format(receiver["id"]))
+
+                caps_filename = format + "-{}.receiver.caps.json".format(receiver["id"])
+
+                # Get the directory of this script, and use vendor-specific directory for output files
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                parent_dir = os.path.dirname(os.path.dirname(script_dir))  # parent of parent directory
+
+                # Use IPMX_VENDOR environment variable to determine output directory, fallback to parent_dir if not set
+                ipmx_vendor = os.environ.get('IPMX_VENDOR')
+                if ipmx_vendor and ipmx_vendor != "":
+                    output_dir = f'IPMX_VENDOR_{ipmx_vendor}'
+                    # Ensure output directory exists
+                    if not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                else:
+                    output_dir = parent_dir  # Fallback to original behavior
+
+                # Remove the file from output directory
+                try:
+                    os.remove(os.path.join(output_dir, caps_filename))
+                except Exception:
+                    pass  # ignore if file not found
+
+                with open(os.path.join(output_dir, caps_filename), 'w') as caps_file:
+                    json.dump(receiver.get("caps", {}), caps_file, indent=2)
+
+
+            if len(receiver_tested) == 0:
+                return test.UNCLEAR("No ACTIVE video, audio, or data Receivers found on the Node => "
+                                    "PLEASE ACTIVATE A RECEIVER to TEST")
+
+            return test.PASS()
+
+        except Exception as e:
+            return test.FAIL("Error during test 06: {}".format(e))
 
     def test_11(self, test):
         """
@@ -2396,6 +2590,152 @@ class IpmxSdpTest(GenericTest):
         print()  # Empty line at the end
         return test.PASS()
 
+    def test_14(self, test):
+        """
+        Test that the SDP transport file matches with the USB Sender, Flow and Source of the Node
+        """
+
+        self.test = test
+
+        for resource_type in ["senders", "flows", "sources", "devices", "self"]:
+            valid, result = self.get_is04_resources(resource_type)
+            if not valid:
+                return test.FAIL(result)
+
+        flow_map = {flow["id"]: flow for flow in self.is04_resources["flows"].values()}
+        source_map = {source["id"]: source for source in self.is04_resources["sources"].values()}
+        device_map = {device["id"]: device for device in self.is04_resources["devices"].values()}
+        node_map = {node["id"]: node for node in self.is04_resources["self"].values()}
+
+        try:
+            usb_senders = [sender for sender in self.is04_resources["senders"].values() if sender["flow_id"]
+                           and sender["flow_id"] in flow_map
+                           and flow_map[sender["flow_id"]]["format"] == "urn:x-nmos:format:data"
+                           and flow_map[sender["flow_id"]]["media_type"] == "application/usb"]
+
+            sender_tested = list()
+
+            for sender in usb_senders:
+
+                flow = flow_map[sender["flow_id"]]
+                source = source_map[flow["source_id"]]
+                device = device_map[sender["device_id"]]
+                node = node_map[device["node_id"]]
+
+                # check the transport => only USB is currently supported by IPMX
+                if not sender["transport"].startswith("urn:x-nmos:transport:usb"):
+                    return test.FAIL("Sender {} transport {} is not USB"
+                                     .format(sender["id"], sender["transport"]))
+
+                url = "single/senders/{}/active".format(sender["id"])
+                valid, response = self.is05_utils.checkCleanRequest("GET", url)
+                if not valid:
+                    return test.FAIL("Sender {} not responding to IS-05 request"
+                                     .format(sender["id"]))
+
+                # The IS-05 active transport parameters provide an array of such along with the master_enable.
+                active = response.json()
+
+                if not active["master_enable"]:
+                    continue
+
+                sender_tested.append(sender["id"])
+
+                # The sender being active it must provide an SDP transport file and be accessible
+                if "manifest_href" not in sender:
+                    return test.FAIL("Sender {} MUST provide the 'manifest_href' attribute."
+                                     .format(sender["id"]))
+
+                href = sender["manifest_href"]
+                if not href:
+                    return test.FAIL("Sender {} MUST provide a valid 'manifest_href' attribute."
+                                     .format(sender["id"]))
+
+                manifest_href_valid, manifest_href_response = self.do_request("GET", href)
+                if manifest_href_valid and manifest_href_response.status_code == 200:
+                    pass
+                elif manifest_href_valid and manifest_href_response.status_code == 404:
+                    return test.FAIL("Sender {} cannot GET an SDP transport file {}, got status 404."
+                                     .format(sender["id"], href))
+                else:
+                    return test.FAIL("Sender {} cannot GET an SDP transport file {}, got status {}."
+                                     .format(sender["id"], href, manifest_href_response))
+
+                # Create an SDP object and parse the text into it. There must be at least a primary
+                # media (no redundancy)
+                sdp = MatroxSdp()
+
+                try:
+                    decode_error = sdp.decode(manifest_href_response.text)
+                    if decode_error:
+                        return test.FAIL("Sender {} cannot decode the SDP transport file {}, decode error: {}"
+                                         .format(sender["id"], href, decode_error))
+                except Exception as e:
+                    return test.FAIL("Sender {} cannot decode the SDP transport file {}, raised an exception {}"
+                                     .format(sender["id"], href, e))
+
+                # Make sure the clock matches with the Source and Node
+                clock_name = source["clock_name"]
+                clock_found = False
+
+                for clock in node["clocks"]:
+                    if clock["name"] == clock_name:
+                        clock_found = True
+                        if clock["ref_type"] == "ptp":
+                            if (sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or
+                                sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize() or
+                                    sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]):
+                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, version {}"
+                                                 " do not match Node clock {}"
+                                                 .format(sender["id"], sdp.primary_media.ts_ref_clock_source,
+                                                         sdp.primary_media.ts_delay,
+                                                         sdp.primary_media.ts_ref_clock_ptp_gmid,
+                                                         sdp.primary_media.ts_ref_clock_ptp_version, clock))
+                        else:
+                            if sdp.primary_media.ts_ref_clock_source != "localmac":
+                                return test.FAIL("Sender {} SDP media clock source {} do not match Node clock {}"
+                                                 .format(sender["id"],
+                                                         sdp.primary_media.sdp.primary_media.ts_ref_clock_source,
+                                                         clock))
+
+                if not clock_found:
+                    return test.FAIL("Sender {} Source {} clock name {} not found in Node clocks {}"
+                                     .format(sender["id"], source["id"], clock_name, node["clocks"]))
+
+                # Check the server address of the transport parameters matches with the SDP
+                primary_transport_params = active["transport_params"][0]
+
+                if (primary_transport_params["source_ip"] != sdp.primary_media.connection_address or
+                        primary_transport_params["source_port"] != sdp.primary_media.port):
+                    return test.FAIL("Sender {} source address {} and port {} not matching with sdp address {}"
+                                     " and port {}"
+                                     .format(sender["id"], primary_transport_params["source_ip"],
+                                             primary_transport_params["source_port"],
+                                             sdp.primary_media.connection_address, sdp.primary_media.port))
+
+                # Make sure the number of legs matches with the number of the SDP medias
+                if len(active["transport_params"]) != sdp.media_count:
+                    return test.FAIL("Sender {} legs in transport parameters {} not matching with SDP media count {}"
+                                     .format(sender["id"], len(active["transport_params"]), sdp.media_count))
+
+                # Check the SDP transport file against ST-2110 and RFC requirements
+                try:
+                    check_sdp_ipmx_usb(sdp.primary_media)
+                except SdpCheckError as e:
+                    return test.FAIL("Sender {} failed RFC 3551 check: {}".format(sender["id"], e.message))
+
+            if len(sender_tested) == 0:
+                return test.UNCLEAR("No ACTIVE USB data Sender found on the Node => PLEASE ACTIVATE"
+                                    " A SENDER to TEST")
+
+            if len(usb_senders) > 0:
+                return test.PASS()
+
+        except KeyError as ex:
+            return test.FAIL("Expected attribute not found in IS-04 resource: {}".format(ex))
+
+        return test.UNCLEAR("No USB data Sender resources were found on the Node")
+
     def _get_sender_from_registry(self, sender_id):
         """
         Get sender information from the registry using the query API
@@ -2581,6 +2921,186 @@ class IpmxSdpTest(GenericTest):
         except Exception as e:
             return False, "Sender {} CCF capability verification error: {}".format(sender["id"], e)
 
+    def _verify_sender_ccf_required_capabilities(self, sender, sdp_flow_caps, flow_media_type):
+        """
+        Verify that SDP capabilities reqruiements specific to a given media type are compatible
+        and precisely expressed by the  sender CCF capabilities.
+
+        Args:
+            sender: Sender resource from IS-04
+            sdp_caps: CCF Caps from SDP conversion
+
+        Returns:
+            tuple: (success, error_message) where success is True if compatible,
+                   False with error message if not compatible or error occurred
+        """
+        try:
+            # Get sender CCF capabilities from IS-04 and convert to CCF Caps
+            sender_ccf_caps = self._get_sender_ccf_capabilities(sender)
+
+            if not sender_ccf_caps:
+                # If sender has no capability constraints defined, assume compatibility
+                return True, ""
+
+            # Convert sender JSON caps to CCF Caps object
+            try:
+                sender_caps = convert_caps_json_to_caps(sender_ccf_caps).get() # sort by preference
+            except Exception as e:
+                return False, "Sender {} caps JSON to CCF conversion failed: {}".format(sender["id"], e)
+
+            print("SENDER CAPS:\n{}\n".format(str(sender_caps)))
+
+            # Get the primary capability set from SDP
+            if len(sdp_flow_caps.capsets) == 0:
+                return False, "Sender {} SDP transport file or Flow  produced no capability sets".format(sender["id"])
+
+            primary_capset = sdp_flow_caps.capsets[0]
+
+            print("SDP Transport File or Flow CAPS:\n{}\n".format(str(primary_capset)))
+
+            or_consets = []
+
+            if flow_media_type == "video/raw":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling)
+                or_consets = [
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoRaw),
+                        make_con(CapFormatComponentDepth, 10),
+                        make_con(CapFormatColorSampling, SamplingYCbCr_422)),
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoRaw),
+                        make_con(CapFormatComponentDepth, 8),
+                        make_con(CapFormatColorSampling, SamplingRGB)),
+                ]
+            elif flow_media_type == "video/jxsv":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling,
+                    CapFormatProfile, CapFormatLevel, CapFormatSublevel)
+
+                # If the current stream profile is a TDC profile, as pre TR-10-15 Part 1 the
+                # Sender is requried to also support the base JPEG XS profile.
+                profile_values = primary_capset[CapFormatProfile].value.values
+
+                if profile_values and profile_values[0] == JxsvProfileTDC444_12:
+                    or_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_422),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12, JxsvProfileTDC444_12)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingRGB),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12, JxsvProfileTDC444_12)),
+                    ]
+                else:
+                    or_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_422),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingRGB),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12)),
+                    ]
+            elif flow_media_type == "video/H265":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling,
+                    CapFormatProfile, CapFormatLevel)
+
+                # If the current stream profile is a 444 profile, as pre TR-10-15 Part 2 the
+                # Sender is requried to also support the base HEVC profile.
+                profile_values = primary_capset[CapFormatProfile].value.values
+
+                if profile_values and (profile_values[0] == H265ProfileMain10_444 or profile_values[0] == H265ProfileMain_444):
+                    or_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420, SamplingYCbCr_444),
+                            make_con(CapFormatProfile, CodecProfileMain, H265ProfileMain_444)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420, SamplingYCbCr_444),
+                            make_con(CapFormatProfile, H265ProfileMain10, H265ProfileMain10_444)),
+                    ]
+                else:
+                    or_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                            make_con(CapFormatProfile, CodecProfileMain)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                            make_con(CapFormatProfile, H265ProfileMain10)),
+                    ]
+
+            elif flow_media_type == "video/H264":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling,
+                    CapFormatProfile, CapFormatLevel)
+                or_consets = [
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoH264),
+                        make_con(CapFormatComponentDepth, 8),
+                        make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                        make_con(CapFormatProfile, CodecProfileMain)),
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoH264),
+                        make_con(CapFormatComponentDepth, 8),
+                        make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                        make_con(CapFormatProfile, H264ProfileHigh)),
+                ]
+            elif flow_media_type in ("audio/L16", "audio/L20", "audio/L24"):
+                checkCons = check_conset("Check Audio", primary_capset,
+                    CapFormatMediaType, CapFormatSampleDepth, CapFormatSampleRate,
+                    CapFormatChannelCount, CapTransportPacketTime)
+                # Accept L16/16-bit and L24/24-bit at 48 kHz, for 1, 2 or 8 channels.
+                or_consets = [
+                    alt_conset("Check Audio",
+                        make_con(CapFormatMediaType, media),
+                        make_con(CapFormatSampleDepth, depth),
+                        make_con(CapFormatSampleRate, 48000),
+                        make_con(CapFormatChannelCount, channels),
+                        make_con(CapTransportPacketTime, 1))
+                    for media, depth in ((AudioL16, 16), (AudioL24, 24))
+                    for channels in (1, 2, 8)
+                ]
+            elif flow_media_type == "audio/AM824":
+                checkCons = check_conset("Check Audio", primary_capset,
+                    CapFormatMediaType, CapFormatSampleRate, CapFormatChannelCount,
+                    CapTransportPacketTime)
+                or_consets = [
+                    alt_conset("Check Audio",
+                        make_con(CapFormatMediaType, AudioAM824),
+                        make_con(CapFormatSampleRate, 48000),
+                        make_con(CapFormatChannelCount, 2, 8),
+                        make_con(CapTransportPacketTime, 1))
+                ]
+            else:
+                return False, "Sender {} invalid media type {}".format(sender["id"], flow_media_type)
+
+            if not conset_included_in_caps(checkCons, sender_caps, True):
+                return False, "Sender {} capabilities are not precise. Using INFINITE RANGE or UNSPECIFIED capability".format(sender["id"])
+
+            for or_conset in or_consets:
+                if conset_included_in_caps(or_conset, sender_caps, True):
+                    return True, ""
+
+            return False, "Sender {} capabilities are not precise or not allowing AIMS format alternatives. Using INFINITE RANGE or UNSPECIFIED capability".format(sender["id"])
+
+        except Exception as e:
+            return False, "Sender {} CCF capability verification error: {}".format(sender["id"], e)
+
     def _verify_receiver_ccf_capability_compatibility(self, receiver, sdp_flow_caps):
         """
         Verify that SDP capabilities are compatible with receiver CCF capabilities using proper CCF functions
@@ -2632,6 +3152,192 @@ class IpmxSdpTest(GenericTest):
                         "in receiver CCF constraints".format(receiver["id"])
             except Exception as e:
                 return False, "Receiver {} CCF capability inclusion check failed: {}".format(receiver["id"], e)
+
+        except Exception as e:
+            return False, "Receiver {} CCF capability verification error: {}".format(receiver["id"], e)
+
+    def _verify_receiver_ccf_required_capabilities(self, receiver, sdp_flow_caps, flow_media_type):
+        """
+        Verify that SDP capabilities requirements specific to a given media type are compatible
+        and precisely expressed by the receiver CCF capabilities.
+
+        Unlike the Sender (which only needs to support ONE of the AIMS format alternatives), a
+        Receiver must support ALL of them, so the alternatives are checked with AND semantics.
+
+        Args:
+            receiver: Receiver resource from IS-04
+            sdp_flow_caps: CCF Caps from SDP conversion
+            flow_media_type: media type string derived from the SDP caps
+
+        Returns:
+            tuple: (success, error_message) where success is True if compatible,
+                   False with error message if not compatible or error occurred
+        """
+        try:
+            # Get receiver CCF capabilities from IS-04 and convert to CCF Caps
+            receiver_ccf_caps = self._get_receiver_ccf_capabilities(receiver)
+
+            if not receiver_ccf_caps:
+                # If receiver has no capability constraints defined, assume compatibility
+                return True, ""
+
+            # Convert receiver JSON caps to CCF Caps object
+            try:
+                receiver_caps = convert_caps_json_to_caps(receiver_ccf_caps).get()  # sort by preference
+            except Exception as e:
+                return False, "Receiver {} caps JSON to CCF conversion failed: {}".format(receiver["id"], e)
+
+            print("RECEIVER CAPS:\n{}\n".format(str(receiver_caps)))
+
+            # Get the primary capability set from SDP
+            if len(sdp_flow_caps.capsets) == 0:
+                return False, "Receiver {} SDP transport file or Flow produced no capability sets".format(receiver["id"])
+
+            primary_capset = sdp_flow_caps.capsets[0]
+
+            print("SDP Transport File or Flow CAPS:\n{}\n".format(str(primary_capset)))
+
+            and_consets = []
+
+            if flow_media_type == "video/raw":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling)
+                and_consets = [
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoRaw),
+                        make_con(CapFormatComponentDepth, 10),
+                        make_con(CapFormatColorSampling, SamplingYCbCr_422)),
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoRaw),
+                        make_con(CapFormatComponentDepth, 8),
+                        make_con(CapFormatColorSampling, SamplingRGB)),
+                ]
+            elif flow_media_type == "video/jxsv":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling,
+                    CapFormatProfile, CapFormatLevel, CapFormatSublevel)
+                
+                # If the current stream profile is a TDC profile, as pre TR-10-15 Part 1 the
+                # Sender is requried to also support the base JPEG XS profile.
+                profile_values = primary_capset[CapFormatProfile].value.values
+
+                if profile_values and profile_values[0] == JxsvProfileTDC444_12:
+                    and_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_422),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12, JxsvProfileTDC444_12)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingRGB),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12, JxsvProfileTDC444_12)),
+                    ]
+                else:
+                    and_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_422),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoJxsv),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingRGB),
+                            make_con(CapFormatProfile, JxsvProfileHigh444_12)),
+                    ]
+
+            elif flow_media_type == "video/H265":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling,
+                    CapFormatProfile, CapFormatLevel)
+
+                # If the current stream profile is a 444 profile, as pre TR-10-15 Part 2 the
+                # Sender is requried to also support the base HEVC profile.
+                profile_values = primary_capset[CapFormatProfile].value.values
+
+                if profile_values and (profile_values[0] == H265ProfileMain10_444 or profile_values[0] == H265ProfileMain_444):
+                    and_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420, SamplingYCbCr_444),
+                            make_con(CapFormatProfile, CodecProfileMain, H265ProfileMain_444)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420, SamplingYCbCr_444),
+                            make_con(CapFormatProfile, H265ProfileMain10, H265ProfileMain10_444)),
+                    ]
+                else:
+                    and_consets = [
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                            make_con(CapFormatProfile, CodecProfileMain)),
+                        alt_conset("Check Video",
+                            make_con(CapFormatMediaType, VideoH265),
+                            make_con(CapFormatComponentDepth, 8, 10),
+                            make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                            make_con(CapFormatProfile, H265ProfileMain10)),
+                    ]
+
+            elif flow_media_type == "video/H264":
+                checkCons = check_conset("Check Video", primary_capset,
+                    CapFormatMediaType, CapFormatComponentDepth, CapFormatColorSampling,
+                    CapFormatProfile, CapFormatLevel)
+                and_consets = [
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoH264),
+                        make_con(CapFormatComponentDepth, 8),
+                        make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                        make_con(CapFormatProfile, CodecProfileMain)),
+                    alt_conset("Check Video",
+                        make_con(CapFormatMediaType, VideoH264),
+                        make_con(CapFormatComponentDepth, 8),
+                        make_con(CapFormatColorSampling, SamplingYCbCr_420),
+                        make_con(CapFormatProfile, H264ProfileHigh)),
+                ]
+            elif flow_media_type in ("audio/L16", "audio/L20", "audio/L24"):
+                checkCons = check_conset("Check Audio", primary_capset,
+                    CapFormatMediaType, CapFormatSampleDepth, CapFormatSampleRate,
+                    CapFormatChannelCount, CapTransportPacketTime)
+                # A Receiver must support L16/16-bit and L24/24-bit at 48 kHz, for 1, 2 and 8 channels.
+                and_consets = [
+                    alt_conset("Check Audio",
+                        make_con(CapFormatMediaType, media),
+                        make_con(CapFormatSampleDepth, depth),
+                        make_con(CapFormatSampleRate, 48000),
+                        make_con(CapFormatChannelCount, channels),
+                        make_con(CapTransportPacketTime, 1))
+                    for media, depth in ((AudioL16, 16), (AudioL24, 24))
+                    for channels in (1, 2, 8)
+                ]
+            elif flow_media_type == "audio/AM824":
+                checkCons = check_conset("Check Audio", primary_capset,
+                    CapFormatMediaType, CapFormatSampleRate, CapFormatChannelCount,
+                    CapTransportPacketTime)
+                and_consets = [
+                    alt_conset("Check Audio",
+                        make_con(CapFormatMediaType, AudioAM824),
+                        make_con(CapFormatSampleRate, 48000),
+                        make_con(CapFormatChannelCount, 2, 8),
+                        make_con(CapTransportPacketTime, 1))
+                ]                
+            else:
+                return False, "Receiver {} invalid media type {}".format(receiver["id"], flow_media_type)
+
+            if not conset_included_in_caps(checkCons, receiver_caps, True):
+                return False, "Receiver {} capabilities are not precise. Using INFINITE RANGE or UNSPECIFIED capability".format(receiver["id"])
+
+            # A Receiver must support EVERY AIMS format alternative (AND semantics).
+            for and_conset in and_consets:
+                if not conset_included_in_caps(and_conset, receiver_caps, True):
+                    return False, "Receiver {} capabilities do not support all required AIMS format alternatives. Using INFINITE RANGE or UNSPECIFIED capability".format(receiver["id"])
+
+            return True, ""
 
         except Exception as e:
             return False, "Receiver {} CCF capability verification error: {}".format(receiver["id"], e)

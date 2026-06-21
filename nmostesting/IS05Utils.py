@@ -16,6 +16,7 @@
 
 import re
 import time
+import uuid
 
 from random import randint
 from . import TestHelper
@@ -32,15 +33,19 @@ class IS05Utils(NMOSUtils):
     def __init__(self, url):
         NMOSUtils.__init__(self, url)
 
-    def get_valid_transports(self, api_version):
+    def get_valid_transports(self, api_version, include_transports_without_transport_file=True):
         """Identify the valid transport types for a given version of IS-05"""
         valid_transports = ["urn:x-nmos:transport:rtp",
                             "urn:x-nmos:transport:rtp.mcast",
                             "urn:x-nmos:transport:rtp.ucast",
                             "urn:x-nmos:transport:dash"]
         if self.compare_api_version(api_version, "v1.1") >= 0:
+            valid_transports.append("urn:x-nmos:transport:usb") # IPMX do USB starting at v1.1
+        if self.compare_api_version(api_version, "v1.1") >= 0 and include_transports_without_transport_file:
             valid_transports.append("urn:x-nmos:transport:websocket")
             valid_transports.append("urn:x-nmos:transport:mqtt")
+        if self.compare_api_version(api_version, "v1.2") >= 0 and include_transports_without_transport_file:
+            valid_transports.append("urn:x-nmos:transport:mxl")
         return valid_transports
 
     def check_num_legs(self, url, res_type, uuid):
@@ -305,6 +310,8 @@ class IS05Utils(NMOSUtils):
             return self.generate_connection_uris(port, portId)
         elif transportType == "urn:x-nmos:transport:mqtt":
             return self.generate_broker_topics(port, portId)
+        elif transportType == "urn:x-nmos:transport:mxl":
+            return self.generate_mxl_flow_ids(port, portId)
         else:
             return self.generate_destination_ports(port, portId)
 
@@ -314,6 +321,8 @@ class IS05Utils(NMOSUtils):
             return "connection_uri"
         elif transportType == "urn:x-nmos:transport:mqtt":
             return "broker_topic"
+        elif transportType == "urn:x-nmos:transport:mxl":
+            return "mxl_flow_id"
         else:
             return "destination_port"
 
@@ -384,6 +393,27 @@ class IS05Utils(NMOSUtils):
                         toReturn.append(values[randint(0, len(values) - 1)])
                     else:
                         toReturn.append("test_broker_topic")
+                return True, toReturn
+            except (TypeError, ValueError):
+                return False, "Invalid response from {}, got: {}".format(url, constraints)
+            except KeyError as e:
+                return False, "Expected key '{}' not found in response from {}".format(str(e), url)
+        else:
+            return False, constraints
+
+    def generate_mxl_flow_ids(self, port, portId):
+        """Uses a port's constraints to generate allowable mxl_flow_id values for it"""
+        url = "single/" + port + "s/" + portId + "/constraints/"
+        valid, constraints = self.checkCleanRequestJSON("GET", url)
+        if valid:
+            toReturn = []
+            try:
+                for entry in constraints:
+                    if "enum" in entry['mxl_flow_id']:
+                        values = entry['mxl_flow_id']['enum']
+                        toReturn.append(values[randint(0, len(values) - 1)])
+                    else:
+                        toReturn.append(str(uuid.uuid4()))
                 return True, toReturn
             except (TypeError, ValueError):
                 return False, "Invalid response from {}, got: {}".format(url, constraints)

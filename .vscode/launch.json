@@ -61,7 +61,18 @@
             "justMyCode": true,
             "args": ["suite", "IPMX-Sdp",  "--tests", "test_10", "--host",  "127.0.0.1",  "127.0.0.1", "127.0.0.1", "--port", "8443", "5010", "5010", "--version", "v1.3", "v1.3", "v1.1"],
             "env": {"PATH":"/home/alabou_ca/.localpython/bin:/home/alabou_ca/.local/bin:/sbin:/bin:/usr/bin:/usr/local/bin:/snap/bin"}
+        },
+        {
+            "python": "python",
+            "name": "WINDOWS Python: IpmxSdp",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\nmos-test.py",
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "justMyCode": true,
+            "args": ["suite", "IPMX-Sdp",  "--tests", "test_06", "--host",  "127.0.0.1",  "127.0.0.1", "127.0.0.1", "--port", "8443", "7051", "7051", "--version", "v1.3", "v1.3", "v1.1"],
+            "env": {"PYDEVD_DISABLE_FILE_VALIDATION": "1"}
         }
-
     ]
 }

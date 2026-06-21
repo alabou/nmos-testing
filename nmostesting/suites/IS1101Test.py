@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Note: The IS-11 test suite has been created before BCP-004-02 which
+#       provides Sender Capabilities. The test suite assumes the DuT
+#       supports an alternate audio sampling rate and an alternate 
+#       video grain rate.
+
 from functools import partial
 import time
 import re
@@ -24,6 +29,7 @@ from ..IS04Utils import IS04Utils
 from ..IS05Utils import IS05Utils
 import datetime
 from ..IS11Utils import IS11Utils
+from ..MatroxEdid import parse_edid
 
 COMPAT_API_KEY = "streamcompatibility"
 CONTROLS = "controls"
@@ -2472,13 +2478,34 @@ class IS1101Test(GenericTest):
 
                         print("State: {}".format(state))
 
-                if CONFIG.IS11_SOURCE_EDID_VERIFICATION:
-                    print(f"CHECK THE SOURCE EDID for a preferred refresh rate of {another_refresh_rate}")
-                    input("Press Enter to continue...")
+                # Note that the modification of the EDID preferred mode based on the constraints is
+                # required only if the sender state is active_constraints_violation. A device that
+                # use an internal scaler to comply with the constraints is not required to modify 
+                # its EDID which sometime is the only interoperable choice (ex. Windows 11).
+                if state != "constrained":
+                    if CONFIG.IS11_SOURCE_EDID_VERIFICATION:
+                        print(f"CHECK THE SOURCE EDID for a preferred refresh rate of {another_refresh_rate}")
+                        answer = input("Press Enter if EDID is valid, type NO otherwise: ")
+                        edid_is_compliant = answer.strip().lower() not in ("no", "n")
+                    else:
+                        edid_is_compliant = self.check_edid_preferred_grain_rate(
+                            test, input_id, another_refresh_rate
+                        )
+                        if edid_is_compliant:
+                            print(f"THE SOURCE EDID for a preferred refresh rate of {another_refresh_rate} is VALID")
+                        else:
+                            print(f"THE SOURCE EDID for a preferred refresh rate of {another_refresh_rate} is INVALID")
+
+                # Must come after awaiting_essence and no_essence loop
+                if do_not_accept_constraint:
+                    return test.UNCLEAR("This device cannot constrain the grain_rate")
 
                 # Must come after awaiting_essence and no_essence loop
                 if state == "active_constraints_violation" or do_not_accept_constraint:
-                    return test.UNCLEAR("This device can not constraint grain_rate")
+                    if edid_is_compliant:
+                        return test.UNCLEAR("This device cannot constrain the grain_rate ### but the EDID is VALID ###")
+                    else:
+                        return test.UNCLEAR("This device cannot constrain the grain_rate ### and the EDID is INVALID ###")
 
                 if state != "constrained":
                     return test.FAIL("Expected state of sender {} is \"constrained\", got \"{}\""
@@ -2834,13 +2861,34 @@ class IS1101Test(GenericTest):
                         
                         print("State: {}".format(state))
 
-                if CONFIG.IS11_SOURCE_EDID_VERIFICATION:
-                    print(f"CHECK THE SOURCE EDID for a preferred sample rate of {another_sample_rate}")
-                    input("Press Enter to continue...")
+                # Note that the modification of the EDID preferred mode based on the constraints is
+                # required only if the sender state is active_constraints_violation. A device that
+                # use an internal scaler to comply with the constraints is not required to modify 
+                # its EDID which sometime is the only interoperable choice (ex. Windows 11).
+                if state != "constrained":
+                    if CONFIG.IS11_SOURCE_EDID_VERIFICATION:
+                        print(f"CHECK THE SOURCE EDID for a preferred sample rate of {another_sample_rate}")
+                        answer = input("Press Enter if EDID is valid, type NO otherwise: ")
+                        edid_is_compliant = answer.strip().lower() not in ("no", "n")
+                    else:
+                        edid_is_compliant = self.check_edid_supports_only_audio_sample_rate(
+                            test, input_id, another_sample_rate
+                        )
+                        if edid_is_compliant:
+                            print(f"THE SOURCE EDID for a preferred sample rate of {another_sample_rate} is VALID")
+                        else:
+                            print(f"THE SOURCE EDID for a preferred sample rate of {another_sample_rate} is INVALID")
+
+                # Must come after awaiting_essence and no_essence loop
+                if do_not_accept_constraint:
+                    return test.UNCLEAR("This device cannot constrain the sample_rate")
 
                 # Must come after awaiting_essence and no_essence loop
                 if state == "active_constraints_violation" or do_not_accept_constraint:
-                    return test.UNCLEAR("This device can not constraint sample_rate")
+                    if edid_is_compliant:
+                        return test.UNCLEAR("This device cannot constrain the sample_rate ### but the EDID is VALID ###")
+                    else:
+                        return test.UNCLEAR("This device cannot constrain the sample_rate ### and the EDID is INVALID ###")
 
                 if state != "constrained":
                     return test.FAIL("Expected state of sender {} is \"constrained\", got \"{}\""
@@ -3898,6 +3946,78 @@ class IS1101Test(GenericTest):
             raise NMOSTestException(
                 test.FAIL("Non-JSON response returned from Node API")
             )
+
+    def check_edid_supports_only_audio_sample_rate(self, test, input_id, expected_sample_rate):
+        """Fetch the effective EDID for input_id and verify that the only
+        audio sample rate declared (union across all CTA-861 Short Audio
+        Descriptors) is expected_sample_rate (a dict {"numerator": Hz}).
+        Returns False on any parse/fetch error or when no SAD is present
+        or when the EDID exposes any rate other than the expected one.
+        Prints debug info to the console.
+        """
+        print("[EDID-AUDIO] input_id={} expected={}".format(input_id, expected_sample_rate))
+        try:
+            raw = self.get_effective_edid(test, input_id)
+        except Exception as e:
+            print("[EDID-AUDIO] fetch FAILED: {}".format(e))
+            return False
+        print("[EDID-AUDIO] raw length={} bytes".format(len(raw)))
+        try:
+            edid = parse_edid(raw)
+        except Exception as e:
+            print("[EDID-AUDIO] parse FAILED: {}".format(e))
+            print("[EDID-AUDIO] raw hex={}".format(bytes(raw).hex()))
+            return False
+        print("[EDID-AUDIO] header_ok={} checksums_ok={} ext_count={}".format(
+            edid.is_valid_header(), edid.checksums_ok(), len(edid.extensions)))
+        sads = edid.short_audio_descriptors()
+        print("[EDID-AUDIO] SADs={}".format(sads))
+        rates = edid.audio_sample_rates()
+        expected_hz = expected_sample_rate["numerator"]
+        compliant = rates == [expected_hz]
+        print("[EDID-AUDIO] rates_declared={} expected={} compliant={}".format(
+            rates, [expected_hz], compliant))
+        return compliant
+
+    def check_edid_preferred_grain_rate(self, test, input_id, expected_grain_rate):
+        """Fetch the effective EDID for input_id and check whether its
+        preferred-timing refresh rate exactly matches expected_grain_rate
+        (a dict {"numerator": N, "denominator": D}). Exact match accounts
+        for the EDID's 10 kHz pixel-clock quantization, so 60/1 and
+        60000/1001 are properly distinguished. Returns False on any
+        parse/fetch error or when no preferred timing is present.
+        Prints debug info to the console.
+        """
+        num = expected_grain_rate["numerator"]
+        den = expected_grain_rate["denominator"]
+        print("[EDID-VIDEO] input_id={} expected={}/{} ({:.4f} Hz)".format(
+            input_id, num, den, num / den))
+        try:
+            raw = self.get_effective_edid(test, input_id)
+        except Exception as e:
+            print("[EDID-VIDEO] fetch FAILED: {}".format(e))
+            return False
+        print("[EDID-VIDEO] raw length={} bytes".format(len(raw)))
+        try:
+            edid = parse_edid(raw)
+        except Exception as e:
+            print("[EDID-VIDEO] parse FAILED: {}".format(e))
+            print("[EDID-VIDEO] raw hex={}".format(bytes(raw).hex()))
+            return False
+        print("[EDID-VIDEO] header_ok={} checksums_ok={} ext_count={}".format(
+            edid.is_valid_header(), edid.checksums_ok(), len(edid.extensions)))
+        dtd = edid.preferred_timing_fields()
+        print("[EDID-VIDEO] preferred DTD fields={}".format(dtd))
+        pref = edid.preferred_resolution()
+        print("[EDID-VIDEO] preferred (w,h,fps)={}".format(pref))
+        if dtd is not None:
+            encoded = dtd["pixel_clock_10khz"] * 10_000 * den
+            ideal = dtd["h_total"] * dtd["v_total"] * num
+            print("[EDID-VIDEO] exact-match check: encoded={} ideal={} diff={} tol={}".format(
+                encoded, ideal, encoded - ideal, 10_000 * den))
+        compliant = edid.matches_preferred_grain_rate(num, den)
+        print("[EDID-VIDEO] compliant={}".format(compliant))
+        return compliant
 
     def get_effective_edid(self, test, input_id):
         valid, response = self.do_request("GET", self.compat_url + "inputs/" + input_id + "/edid/effective")

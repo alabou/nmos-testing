@@ -4418,8 +4418,8 @@ The --validate-session-caching option validates session caching consistency:
                         help='Validate all HKEP section 13.3 requirements (RepeaterAuth_Stream_Manage: streamCtr immutability, k bounds)')
     parser.add_argument('--validate-session-caching', action='store_true',
                         help='Validate session caching consistency (sender must cache after RepeaterAuth_Send_Ack, receiver reconnect patterns)')
-    parser.add_argument('--validate-all', action='store_true',
-                        help='Validate all HKEP sections (12.6, 12.7, 13.1, 13.2, 13.3, and session caching)')
+    parser.add_argument('--validate-all', action=argparse.BooleanOptionalAction, default=True,
+                        help='Validate all HKEP sections (12.6, 12.7, 13.1, 13.2, 13.3, and session caching). Enabled by default; use --no-validate-all to disable.')
     parser.add_argument('--ignore-slot-limits', action='store_true',
                         help='Ignore pairingSlots and sessionSlots values from PreInitStatus and assume they are infinite (useful for initial testing when values may be missing or zero)')
     

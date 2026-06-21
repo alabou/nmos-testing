@@ -487,7 +487,7 @@ class IS0401Test(GenericTest):
                     return test.FAIL("{} {} was not found in the registry.".format(res_type.title(), res_id))
                 elif reg_resource != node_resources[res_id]:
                     return test.FAIL("Node API JSON does not match data in registry for "
-                                     "{} {}.".format(res_type.title(), res_id))
+                                     "{} {}. registry {} node {}".format(res_type.title(), res_id, reg_resource, node_resources[res_id]))
 
             return test.PASS()
         except ValueError:
@@ -1202,6 +1202,8 @@ class IS0401Test(GenericTest):
                 return test.FAIL("Unexpected response from the Node API: {}".format(response))
             try:
                 for binder in response.json():
+                    if not IS04Utils.transport_uses_interface_bindings(binder["transport"]):
+                        continue
                     interface_bindings = binder["interface_bindings"]
                     if len(interface_bindings) == 0:
                         return test.FAIL("{} '{}' does not list any interface_bindings"

@@ -1,0 +1,2 @@
+#!/bin/bash
+python3 nmos-test.py suite IS-05-01 --tests auto test_09 test_09_01 test_11 test_11_01 test_11_02 test_13 test_31 test_40 test_15 test_17 test_19 test_22 test_23 test_23_01 test_25 test_38 test_42 test_34 test_36 --host $IPMX_SENDER_IS05_ADDRESS --port $IPMX_SENDER_IS05_PORT --version v1.1 --senders IPMX_VENDOR_$IPMX_VENDOR/ipmx-test-senders.guid --receivers IPMX_VENDOR_$IPMX_VENDOR/ipmx-test-receivers-NONE.guid

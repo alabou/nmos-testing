@@ -84,6 +84,9 @@ MS05_INVASIVE_TESTING = False
 # When True invasive MS-05 tests will use the TestingFacade to allow user interaction
 MS05_INTERACTIVE_TESTING = False
 
+# When True, MS-05 tests exercise all blocks and every class instance rather than sampling or deduplicating by class
+MS05_EXHAUSTIVE_TESTING = False
+
 # Set a Query API hostname/IP and port for use when operating without DNS-SD
 QUERY_API_HOST = "127.0.0.1"
 QUERY_API_PORT = 80
@@ -411,9 +414,8 @@ SPECIFICATIONS = {
     },
     "bcp-004-02": {
         "repo": "bcp-004-02",
-        "branch": "v1.0-dev",
-        "versions": ["v1.0-dev"],
-        "default_version": "v1.0-dev",
+        "versions": ["v1.0"],
+        "default_version": "v1.0",
         "apis": {
             "sender-caps": {
                 "name": "Sender Capabilities"
@@ -454,9 +456,9 @@ SPECIFICATIONS = {
     "nmos-parameter-registers": {
         "repo": "nmos-parameter-registers",
         "url": "https://github.com/alabou/",
-        "branch": "testing-1212",
-        "versions": ["testing-1212"],
-        "default_version": "testing-1212",
+        "branch": "IPMX",
+        "versions": ["IPMX"],
+        "default_version": "IPMX",
         "apis": {
             "caps-register": {
                 "name": "Capabilities Register"

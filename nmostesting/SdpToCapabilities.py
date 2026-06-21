@@ -408,7 +408,7 @@ class SdpToCapabilitiesConverter:
                     CapTransportParameterSetsTransportMode,
                     RangeValue(values=("in_band",), type=RangeType.STRING)
                 )
-            elif media.h264_parameter_sets.has_suffix(","):
+            elif media.h264_parameter_sets.endswith(","):
                 capabilities[CapTransportParameterSetsTransportMode] = Capability(
                     CapTransportParameterSetsTransportMode,
                     RangeValue(values=("in_and_out_of_band",), type=RangeType.STRING)
@@ -471,7 +471,7 @@ class SdpToCapabilitiesConverter:
                     CapTransportParameterSetsTransportMode,
                     RangeValue(values=("in_band",), type=RangeType.STRING)
                 )
-            elif media.h265_vps.has_suffix(",") or media.h265_sps.has_suffix(",") or media.h265_pps.has_suffix(","):
+            elif media.h265_vps.endswith(",") or media.h265_sps.endswith(",") or media.h265_pps.endswith(","):
 
                 capabilities[CapTransportParameterSetsTransportMode] = Capability(
                     CapTransportParameterSetsTransportMode,

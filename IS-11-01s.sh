@@ -1,0 +1,2 @@
+#!/bin/bash
+python3 nmos-test.py suite IS-11-01 --output IPMX_VENDOR_$IPMX_VENDOR/IS-11-01s.json --print-with-output True --tests all --host $IPMX_SENDER_IS11_ADDRESS $IPMX_SENDER_ADDRESS $IPMX_SENDER_IS05_ADDRESS --port $IPMX_SENDER_IS11_PORT $IPMX_SENDER_PORT $IPMX_SENDER_IS05_PORT --version v1.0 v1.3 v1.1 --senders IPMX_VENDOR_$IPMX_VENDOR/ipmx-test-senders.guid --receivers IPMX_VENDOR_$IPMX_VENDOR/ipmx-test-receivers-NONE.guid

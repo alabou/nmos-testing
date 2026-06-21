@@ -271,6 +271,7 @@ class MatroxSdpEnums(Enum):
     JxsvProfileMain444_12  = EnumId("Main444.12")
     JxsvProfileMain4444_12 = EnumId("Main4444.12")
     JxsvProfileHigh444_12  = EnumId("High444.12")
+    JxsvProfileTDC444_12   = EnumId("TDC444.12")
     JxsvProfileHigh4444_12 = EnumId("High4444.12")
     JxsvLevel1k1           = EnumId("1k-1")
     JxsvLevel2k1           = EnumId("2k-1")
@@ -286,6 +287,15 @@ class MatroxSdpEnums(Enum):
     JxsvSublevel6bpp       = EnumId("Sublev6bpp")
     JxsvSublevel9bpp       = EnumId("Sublev9bpp")
     JxsvSublevel12bpp      = EnumId("Sublev12bpp")
+    # JPEG XS FBB (frame buffer) levels (ISO/IEC 21122-2,
+    # draft-ietf-avtcore-rtp-jpegxs-3ed-02 §7.1)
+    JxsvFbblevelUnrestricted = EnumId("Unrestricted")
+    JxsvFbblevelFull         = EnumId("FbblevFull")
+    JxsvFbblevel3bpp         = EnumId("Fbblev3bpp")
+    JxsvFbblevel4_5bpp       = EnumId("Fbblev4.5bpp")
+    JxsvFbblevel8bpp         = EnumId("Fbblev8bpp")
+    JxsvFbblevel12bpp        = EnumId("Fbblev12bpp")
+
     H265TxModeSRST = EnumId("SRST")
     H265TxModeMRST = EnumId("MRST")
     H265TxModeMRMT = EnumId("MRMT")
@@ -301,7 +311,7 @@ class MatroxSdpEnums(Enum):
     H265ProfileMain12 = EnumId("Main12")
     H265ProfileMain10_422 = EnumId("Main10-422")
     H265ProfileMain12_422 = EnumId("Main12-422")
-    H265ProfileMain_444 = EnumId("Main444")
+    H265ProfileMain_444 = EnumId("Main-444")
     H265ProfileMain10_444 = EnumId("Main10-444")
     H265ProfileMain12_444 = EnumId("Main12-444")
     H265ProfileMainIntra = EnumId("MainIntra")
@@ -537,6 +547,7 @@ class MediaDescriptor:
         self.profile: Optional[EnumId] = None
         self.level: Optional[EnumId] = None
         self.sub_level: Optional[EnumId] = None
+        self.fbb_level: Optional[EnumId] = None
         self.jxsv_trans_mode: Optional[EnumId] = None
         self.jxsv_packet_mode: Optional[EnumId] = None
         # H264/H265 Shared
@@ -627,7 +638,7 @@ class MatroxSdp:
         self.is_origin_ipv6: bool = False
         self.origin_address: str = ""
         # Session Name
-        self.session_name: str = ""
+        self.session_name: Optional[str] = None
         # Session Information
         self.session_information: str = ""
         # Timing
@@ -936,6 +947,8 @@ class MatroxSdp:
             return self.process_frame_rate(value)
         elif attr_str == "extmap":
             return self.process_extmap(value)
+        elif attr_str == "setup":
+            return self.process_setup(value)
         else:
             print(f"Warning: attribute '{attr_str}' unknown and ignored")
         return None
@@ -1426,6 +1439,16 @@ class MatroxSdp:
         self.current_media.media_name = value.decode('utf-8')
         return None
 
+    def process_setup(self, value: Optional[bytes]) -> Optional[str]:
+        """a=setup: RFC 4145 connection role. The writer emits "passive" for
+        TCP-based transports (e.g. USB, RTSP); accept the standard roles. There
+        is no model field - the node is always the passive (listening) side -
+        so this validates the role and otherwise ignores it."""
+        role = value.decode('utf-8') if value else ""
+        if role not in ("active", "passive", "actpass", "holdconn"):
+            return f"invalid setup attribute '{role}'"
+        return None
+
     def process_p_time(self, value: bytes) -> Optional[str]:
         if not self.in_media_section:
             return "unexpected ptime attribute"
@@ -1702,6 +1725,13 @@ class MatroxSdp:
         self.current_media.sub_level = enum
         return None
 
+    def process_parameter_fbblevel(self, value: bytes) -> Optional[str]:
+        enum, err = lookup_enum(value.decode('utf-8'), True)
+        if err:
+            return err
+        self.current_media.fbb_level = enum
+        return None
+
     def process_parameter_did_sdid(self, value: bytes) -> Optional[str]:
         self.current_media.did_sdid = value.decode('utf-8')
         return None
@@ -1844,7 +1874,7 @@ class MatroxSdp:
         return None
 
     def process_parameter_sprop_parameter_sets(self, value: bytes) -> Optional[str]:
-        self.current_media.h264_parameter_sets = value.decode('utf-8')
+        self.current_media.h264_parameter_sets = value.decode('utf-8') if value else ""
         return None
 
     def process_parameter_packetization_mode(self, value: bytes) -> Optional[str]:
@@ -1930,15 +1960,15 @@ class MatroxSdp:
         return None
 
     def process_parameter_sprop_vps(self, value: bytes) -> Optional[str]:
-        self.current_media.h265_vps = value.decode('utf-8')
+        self.current_media.h265_vps = value.decode('utf-8') if value else ""
         return None
 
     def process_parameter_sprop_sps(self, value: bytes) -> Optional[str]:
-        self.current_media.h265_sps = value.decode('utf-8')
+        self.current_media.h265_sps = value.decode('utf-8') if value else ""
         return None
 
     def process_parameter_sprop_pps(self, value: bytes) -> Optional[str]:
-        self.current_media.h265_pps = value.decode('utf-8')
+        self.current_media.h265_pps = value.decode('utf-8') if value else ""
         return None
 
     def process_parameter_sprop_depack_buf_nalus(self, value: bytes) -> Optional[str]:
@@ -1969,21 +1999,24 @@ class MatroxSdp:
     def check_sdp_base_requirements(self) -> Optional[str]:
         if not self.username or not self.session_id or not self.session_version or not self.origin_address:
             return "missing o= line"
-        if not self.session_name:
+        if self.session_name is None:
             return "missing s= line"
         if self.primary_media.protocol and self.primary_media.protocol.s in ("RTP/AVP", "TCP/RTP/AVP"):
             if (self.primary_media.port % 2) != 0 and not self.primary_media.rtcp_port:
                 return "missing a=rtcp: line with odd RTP port"
-            if (self.secondary_media.port % 2) != 0 and not self.secondary_media.rtcp_port:
-                return "missing a=rtcp: line with odd RTP port"
+            if self.secondary_media is not None:
+                if (self.secondary_media.port % 2) != 0 and not self.secondary_media.rtcp_port:
+                    return "missing a=rtcp: line with odd RTP port"
             if self.primary_media.port_count != 1 and self.primary_media.rtcp_port:
                 return "invalid a=rtcp: line with multiple ports"
-            if self.secondary_media.port_count != 1 and self.secondary_media.rtcp_port:
-                return "invalid a=rtcp: line with multiple ports"
+            if self.secondary_media is not None:
+                if self.secondary_media.port_count != 1 and self.secondary_media.rtcp_port:
+                    return "invalid a=rtcp: line with multiple ports"
             if not self.primary_media.rtcp_port and self.primary_media.port:
                 self.primary_media.rtcp_port = self.primary_media.port + 1
-            if not self.secondary_media.rtcp_port and self.secondary_media.port:
-                self.secondary_media.rtcp_port = self.secondary_media.port + 1
+            if self.secondary_media is not None:
+                if not self.secondary_media.rtcp_port and self.secondary_media.port:
+                    self.secondary_media.rtcp_port = self.secondary_media.port + 1
         return None
 
 
