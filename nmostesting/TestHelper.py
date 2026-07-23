@@ -232,7 +232,12 @@ def do_request(method, url, headers=None, **kwargs):
 
         req = requests.Request(method, url, headers={k: v for k, v in headers.items() if v is not None}, **kwargs)
         prepped = s.prepare_request(req)
-        settings = s.merge_environment_settings(prepped.url, {}, None, CONFIG.CERT_TRUST_ROOT_CA, None)
+        # mTLS: present (CERT_CLIENT, KEY_CLIENT) when both are configured.
+        # Default (both None) keeps the pre-mTLS behaviour — server-auth only.
+        client_cert = None
+        if getattr(CONFIG, "CERT_CLIENT", None) and getattr(CONFIG, "KEY_CLIENT", None):
+            client_cert = (CONFIG.CERT_CLIENT, CONFIG.KEY_CLIENT)
+        settings = s.merge_environment_settings(prepped.url, {}, None, CONFIG.CERT_TRUST_ROOT_CA, client_cert)
         response = s.send(prepped, timeout=CONFIG.HTTP_TIMEOUT, **settings)
         if prepped.url.startswith("https://"):
             if not response.url.startswith("https://"):
@@ -380,6 +385,11 @@ class WebsocketWorker(threading.Thread):
         hostname = url.hostname.rstrip('.')
         # sslopt needs to be Falsey when not doing Secure WebSocket
         sslopt = {"ca_certs": CONFIG.CERT_TRUST_ROOT_CA, "server_hostname": hostname} if url.scheme == "wss" else {}
+        # mTLS: present (CERT_CLIENT, KEY_CLIENT) when both are configured.
+        # Default (both None) keeps the pre-mTLS behaviour — server-auth only.
+        if url.scheme == "wss" and getattr(CONFIG, "CERT_CLIENT", None) and getattr(CONFIG, "KEY_CLIENT", None):
+            sslopt["certfile"] = CONFIG.CERT_CLIENT
+            sslopt["keyfile"] = CONFIG.KEY_CLIENT
         self.ws.run_forever(sslopt=sslopt)
 
     def on_open(self, ws):

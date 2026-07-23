@@ -201,18 +201,24 @@ class GenericTest(object):
 
         # Set up
         test = Test("Test setup", "set_up_tests")
-        CONFIG.AUTH_TOKEN = None
-        if self.authorization:
-            # We write to config here as this needs to be available outside this class
-            scopes = []
-            for api in self.apis:
-                scopes.append(api)
-            # Add 'query' permission when mock registry is disabled and existing network registry is used
-            if not CONFIG.ENABLE_DNS_SD and "query" not in scopes:
-                scopes.append("query")
-            CONFIG.AUTH_TOKEN = self.primary_auth.generate_token(scopes, True, overrides={
-                "client_id": str(uuid.uuid4()),
-                "exp": int(time.time() + 3600)})
+        # IPMX patch: when CONFIG.USE_EXTERNAL_AUTH is True the operator has
+        # injected a real token (typically from Keycloak via UserConfig.py
+        # reading NMOS_TESTING_AUTH_TOKEN); preserve it and skip AMWA's
+        # mock-token generation. Defaults to AMWA behaviour when the flag
+        # is absent or False — back-compat preserved for upstream users.
+        if not getattr(CONFIG, "USE_EXTERNAL_AUTH", False):
+            CONFIG.AUTH_TOKEN = None
+            if self.authorization:
+                # We write to config here as this needs to be available outside this class
+                scopes = []
+                for api in self.apis:
+                    scopes.append(api)
+                # Add 'query' permission when mock registry is disabled and existing network registry is used
+                if not CONFIG.ENABLE_DNS_SD and "query" not in scopes:
+                    scopes.append("query")
+                CONFIG.AUTH_TOKEN = self.primary_auth.generate_token(scopes, True, overrides={
+                    "client_id": str(uuid.uuid4()),
+                    "exp": int(time.time() + 3600)})
         if CONFIG.PREVALIDATE_API:
             for api in self.apis:
                 if "raml" not in self.apis[api] or self.apis[api]["url"] is None:

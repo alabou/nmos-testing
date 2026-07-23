@@ -117,6 +117,14 @@ BIND_INTERFACE = None
 # Defaults to the CA contained within this testing tool
 CERT_TRUST_ROOT_CA = "test_data/BCP00301/ca/certs/ca.cert.pem"
 
+# Client cert + key the test runner presents on outbound HTTPS / WSS for
+# mutual TLS. Defaults to None (no mTLS — server-auth only). When both
+# are set to PEM paths, every request from TestHelper.do_request and
+# TestHelper.WebSocketThread presents them. Set in UserConfig.py for
+# deployments where the DUT requires a client cert.
+CERT_CLIENT = None
+KEY_CLIENT = None
+
 # certificate authority private key
 # Used by the testing tool's mock Auth to generate certificate
 KEY_TRUST_ROOT_CA = "test_data/BCP00301/ca/private/ca.key.pem"
@@ -134,6 +142,17 @@ KEYS_MOCKS = [
 
 # Test using authorization as per AMWA IS-10 and BCP-003-02
 ENABLE_AUTH = False
+
+# When True, the test runner uses the external token in CONFIG.AUTH_TOKEN
+# (populated from the NMOS_TESTING_AUTH_TOKEN env var below) and bypasses
+# AMWA's embedded mock authorization server. When False (the AMWA default),
+# the test runner generates its own mock token on every run via
+# self.primary_auth.generate_token() in GenericTest.run_tests — that mock
+# token is signed by the test-runner's CA and the DUT must trust it.
+#
+# IPMX runs use True: real Keycloak tokens (TR-10-SEC realm, 'Matrox.Graphics.Device.Client.MTX.MTX00000.matrox.com'
+# client) against an OAuth2-enabled IPMX Node.
+USE_EXTERNAL_AUTH = False
 
 # The following token is set by the application at runtime and should be left as 'None'
 AUTH_TOKEN = None
