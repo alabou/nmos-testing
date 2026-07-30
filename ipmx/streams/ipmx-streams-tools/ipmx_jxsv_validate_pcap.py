@@ -43,6 +43,15 @@ from ipmx_validate_common import (
     check_multicast_mac_mapping,
     check_sr_mac_mapping,
     check_sr_rtcp_port,
+    check_payload_type_constant,
+    check_ssrc_constant,
+    check_sdp_payload_type_vs_stream,
+    check_cli_payload_type,
+    check_sr_ssrc_matches_rtp,
+    check_cli_ssrc,
+    check_cli_port,
+    check_cli_dst_ip,
+    check_cli_rtcp_port,
     check_sdp_ipmx_fmtp,
     check_sr_initial_rtp_clock,
     check_sr_ntp_self_consistent,
@@ -636,6 +645,11 @@ class JXSVValidationContext:
     cli_height: int | None = None
     cli_sampling: str | None = None
     cli_bit_depth: int | None = None
+    cli_payload_type: int | None = None
+    cli_ssrc: int | None = None
+    cli_dst_ip: str | None = None
+    cli_port: int | None = None
+    cli_rtcp_port: int | None = None
 
 
 def _frame_from_report(d: dict[str, Any]) -> JXSVFrameInfo:
@@ -731,7 +745,7 @@ def build_context(args: argparse.Namespace) -> JXSVValidationContext:
     packets_report, frames_report, stream, _ = ipmx_parse_rtp_pcap.process_jxsv_stream(
         args.pcap,
         si.dst_port if si else args.port,
-        args.payload_type,
+        None,  # --payload-type is an expected value, not a packet filter
         args.max_frames,
         args.wallclock_backstep_threshold,
         stream_info=si,
@@ -780,6 +794,11 @@ def build_context(args: argparse.Namespace) -> JXSVValidationContext:
         cli_height=args.height,
         cli_sampling=args.sampling,
         cli_bit_depth=args.bit_depth,
+        cli_payload_type=args.payload_type,
+        cli_ssrc=args.ssrc,
+        cli_dst_ip=args.dst_ip,
+        cli_port=args.port,
+        cli_rtcp_port=args.rtcp_port,
     )
 
 
@@ -2105,7 +2124,7 @@ def check_constant_frame_size(ctx: JXSVValidationContext) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 def check_rtp_seq_complete(ctx: JXSVValidationContext) -> tuple[bool, str]:
-    """RTP sequence numbers SHALL be contiguous (no missing packets)."""
+    """RTP sequence numbers SHOULD be contiguous (RFC 3550 §5.1)."""
     seq = ctx.stream.seq_analysis
     if seq.total_received == 0:
         return False, "No RTP packets received"
@@ -2121,8 +2140,9 @@ def build_requirements(ctx: JXSVValidationContext) -> list[Requirement]:
         reqs.append(Requirement(req_id=req_id, level=level, text=text, check=check))
 
     # --- PCAP completeness ---
-    add("RTP-SEQ", "shall",
-        "RTP sequence numbers SHALL be contiguous — missing packets indicate an incomplete PCAP capture.",
+    add("RTP-SEQ", "should",
+        "RTP sequence numbers SHOULD be contiguous (RFC 3550 §5.1: sender increments per packet so "
+        "receivers can reorder); a capture gap may be sender, network, or capture loss.",
         lambda c=ctx: check_rtp_seq_complete(c))
 
     # --- RFC 9134: RTP payload header ---
@@ -2367,6 +2387,33 @@ def build_requirements(ctx: JXSVValidationContext) -> list[Requirement]:
     add("SDP-PORT", "shall",
         "SDP destination port SHALL match the detected RTP stream port.",
         lambda c=ctx: check_sdp_port_vs_stream(c))
+    add("ST2110-10-6.2-PT", "shall",
+        "RTP payload type SHALL be constant within the stream (ST 2110-10 §6.2).",
+        lambda c=ctx: check_payload_type_constant(c.stream.payload_type_set))
+    add("SDP-PT", "shall",
+        "SDP payload type SHALL match the RTP stream (TR-10-1 §10).",
+        lambda c=ctx: check_sdp_payload_type_vs_stream(c.sdp.media if c.sdp else None, c.stream.payload_type_set))
+    add("JXSV-CLI-PT", "shall",
+        "Operator-supplied --payload-type SHALL match the observed RTP payload type.",
+        lambda c=ctx: check_cli_payload_type(c.cli_payload_type, c.stream.payload_type_set))
+    add("ST2110-10-6.2-SSRC", "shall",
+        "RTP SSRC SHALL be constant within the stream (ST 2110-10 §6.2).",
+        lambda c=ctx: check_ssrc_constant(c.stream.ssrc_set))
+    add("TR-10-1-8.7-SSRC", "shall",
+        "RTCP Sender Report SSRC SHALL match the RTP stream SSRC (TR-10-1 §8.7).",
+        lambda c=ctx: check_sr_ssrc_matches_rtp(c.sender_reports, c.stream_info))
+    add("JXSV-CLI-SSRC", "shall",
+        "Operator-supplied --ssrc SHALL match the selected RTP stream SSRC.",
+        lambda c=ctx: check_cli_ssrc(c.cli_ssrc, c.stream_info))
+    add("JXSV-CLI-PORT", "shall",
+        "Operator-supplied --port SHALL match the selected RTP destination port.",
+        lambda c=ctx: check_cli_port(c.cli_port, c.stream_info))
+    add("JXSV-CLI-DST-IP", "shall",
+        "Operator-supplied --dst-ip SHALL match the selected RTP destination IP.",
+        lambda c=ctx: check_cli_dst_ip(c.cli_dst_ip, c.stream_info))
+    add("JXSV-CLI-RTCP-PORT", "shall",
+        "Operator-supplied --rtcp-port SHALL match the selected RTCP destination port.",
+        lambda c=ctx: check_cli_rtcp_port(c.cli_rtcp_port, c.stream_info.rtcp_port if c.stream_info else None))
     add("SDP-DST-IP", "shall",
         "SDP connection address SHALL match the detected destination IP.",
         lambda c=ctx: check_sdp_dst_ip_vs_stream(c))
@@ -2598,17 +2645,17 @@ def main() -> int:
         help="Validate IPMX-JPEG-XS-TDC profile mode (TDC444.12 + fbblevel) "
              "instead of pure IPMX-JPEG-XS (High444.12) (TR-10-15a §8.1)",
     )
-    parser.add_argument("--payload-type", type=int, help="Filter by RTP payload type")
+    parser.add_argument("--payload-type", type=int, help="Expected RTP payload type")
     parser.add_argument("--max-frames", type=int, help="Limit number of frames processed")
     parser.add_argument(
         "--wallclock-backstep-threshold",
         type=float,
         help="Backward capture-time jump (seconds) threshold for wallclock disruption detection",
     )
-    parser.add_argument("--full-report", action="store_true", help="Show all requirements")
+    parser.add_argument("--full-report", action="store_true", help="Include all requirements (pass, fail, cannot test)")
     parser.add_argument("--pass-report", action="store_true", help="Show only passing requirements")
     parser.add_argument("--fail-report", action="store_true", help="Show only failing requirements")
-    parser.add_argument("--cannot-test-report", action="store_true", help="Show only untestable requirements")
+    parser.add_argument("--cannot-test-report", action="store_true", help="Show only requirements that cannot be tested")
     parser.add_argument(
         "--exactframerate",
         type=str,

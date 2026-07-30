@@ -21,9 +21,27 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, fields as dc_fields
+from enum import IntEnum
 from pathlib import Path
 from collections.abc import Sequence
 from typing import BinaryIO, Iterator
+
+
+class RtcpPacketType(IntEnum):
+    """RTCP packet types (RFC 3550 §12.1)."""
+
+    SR = 200        # Sender Report
+    RR = 201        # Receiver Report
+    SDES = 202      # Source Description
+    BYE = 203       # Goodbye
+    APP = 204       # Application-defined
+
+
+class SdesItemType(IntEnum):
+    """RTCP SDES item types (RFC 3550 §6.5)."""
+
+    END = 0         # Null item that terminates a chunk's item list
+    CNAME = 1       # Canonical end-point identifier
 
 
 def pad_string(value: str, length: int) -> bytes:
@@ -888,6 +906,35 @@ class SenderReport:
             octet_count=int(data["octet_count"]),
             info_block=info_block,
         )
+
+
+def build_sdes_cname(ssrc: int, cname: str) -> bytes:
+    """Build an RTCP SDES packet (PT=202) carrying a single CNAME item.
+
+    Per RFC 3550 §6.5 the packet is one SDES chunk (source count = 1): the
+    chunk's SSRC, a CNAME item (type 1, length, text), and a null item
+    (type 0) terminating the item list, zero-padded to the next 32-bit
+    boundary.  Emitting this immediately after the Sender Report forms the
+    compound RTCP packet mandated by RFC 3550 §6.1 (and TR-10-1 §8.7).
+    """
+    cname_bytes = cname.encode("ascii", "ignore")
+    if len(cname_bytes) > 255:
+        raise ValueError(f"CNAME {cname!r} exceeds 255 bytes")
+
+    payload = bytearray()
+    payload.extend(ssrc.to_bytes(4, "big"))     # SSRC of this SDES chunk
+    payload.append(SdesItemType.CNAME)          # item type = 1 (CNAME)
+    payload.append(len(cname_bytes))            # item length (text only)
+    payload.extend(cname_bytes)                 # item text
+    payload.append(SdesItemType.END)            # null item ends the chunk
+    word_boundary_pad(payload)                  # pad chunk to 32-bit boundary
+
+    header = bytearray(4)
+    header[0] = (2 << 6) | 0x01                 # V=2, P=0, SC=1
+    header[1] = RtcpPacketType.SDES
+    total_words = (len(header) + len(payload)) // 4
+    header[2:4] = (total_words - 1).to_bytes(2, "big")
+    return bytes(header + payload)
 
 
 def iter_rtcp_packets(payload: bytes) -> Iterator[bytes]:

@@ -47,6 +47,19 @@ from ipmx_validate_common import (
     check_multicast_mac_mapping,
     check_sr_mac_mapping,
     check_sr_rtcp_port,
+    check_payload_type_constant,
+    check_ssrc_constant,
+    check_sdp_payload_type_vs_stream,
+    check_cli_payload_type,
+    check_sr_ssrc_matches_rtp,
+    check_udp_port_even,
+    check_udp_port_above_5000,
+    check_sdp_port_vs_stream,
+    check_sequence_continuity,
+    check_cli_ssrc,
+    check_cli_port,
+    check_cli_dst_ip,
+    check_cli_rtcp_port,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
@@ -223,6 +236,11 @@ def build_context(args: argparse.Namespace) -> ValidationContext:
         stream_info=si,
         encrypted=rtp_report.encrypted,
         allow_superset_profile=getattr(args, "allow_superset_profile", False),
+        cli_payload_type=getattr(args, "payload_type", None),
+        cli_ssrc=getattr(args, "ssrc", None),
+        cli_dst_ip=getattr(args, "dst_ip", None),
+        cli_port=getattr(args, "port", None),
+        cli_rtcp_port=getattr(args, "rtcp_port", None),
     )
 
 
@@ -818,20 +836,6 @@ def check_decode_order(ctx: ValidationContext) -> tuple[bool, str]:
     return check_max_reorder(ctx)
 
 
-def check_cpb_cnt(ctx: ValidationContext) -> tuple[bool, str]:
-    if ctx.timeline is None:
-        return untestable("FFmpeg trace unavailable")
-    sps = ctx.timeline.header_fields.get("SPS")
-    if sps is None:
-        return untestable("No SPS fields parsed")
-    cpb = get_int_field(sps, "cpb_cnt_minus1")
-    if cpb is None:
-        return False, "cpb_cnt_minus1 not present"
-    if cpb != 0:
-        return False, f"cpb_cnt_minus1={cpb}"
-    return True, "cpb_cnt_minus1 is 0"
-
-
 def check_nal_hrd_flag(ctx: ValidationContext) -> tuple[bool, str]:
     if ctx.timeline is None:
         return untestable("FFmpeg trace unavailable")
@@ -1417,6 +1421,46 @@ def build_requirements(ctx: ValidationContext) -> list[Requirement]:
     add("SDP-DST-IP", "shall",
         "SDP connection address SHALL match the detected destination IP.",
         lambda c=ctx: _check_sdp_dst_ip(c))
+    add("ST2110-10-6.2-PT", "shall",
+        "RTP payload type SHALL be constant within the stream (ST 2110-10 §6.2).",
+        lambda c=ctx: check_payload_type_constant(c.rtp_report.payload_type_set))
+    add("SDP-PT", "shall",
+        "SDP payload type SHALL match the RTP stream (TR-10-1 §10).",
+        lambda c=ctx: check_sdp_payload_type_vs_stream(c.sdp_media, c.rtp_report.payload_type_set))
+    add("H264-CLI-PT", "shall",
+        "Operator-supplied --payload-type SHALL match the observed RTP payload type.",
+        lambda c=ctx: check_cli_payload_type(c.cli_payload_type, c.rtp_report.payload_type_set))
+    add("ST2110-10-6.2-SSRC", "shall",
+        "RTP SSRC SHALL be constant within the stream (ST 2110-10 §6.2).",
+        lambda c=ctx: check_ssrc_constant(c.rtp_report.ssrc_set))
+    add("TR-10-1-8.7-SSRC", "shall",
+        "RTCP Sender Report SSRC SHALL match the RTP stream SSRC (TR-10-1 §8.7).",
+        lambda c=ctx: check_sr_ssrc_matches_rtp(c.sender_reports, c.stream_info))
+    add("H264-CLI-SSRC", "shall",
+        "Operator-supplied --ssrc SHALL match the selected RTP stream SSRC.",
+        lambda c=ctx: check_cli_ssrc(c.cli_ssrc, c.stream_info))
+    add("TR-10-7-7a", "shall",
+        "UDP destination port SHALL be even and > 1024 (TR-10-7 §7).",
+        lambda c=ctx: check_udp_port_even(c.stream_info.dst_port if c.stream_info else None, "TR-10-7 §7"))
+    add("TR-10-7-7b", "should",
+        "UDP destination port SHOULD be > 5000 (TR-10-7 §7).",
+        lambda c=ctx: check_udp_port_above_5000(c.stream_info.dst_port if c.stream_info else None, "TR-10-7 §7"))
+    add("SDP-PORT", "shall",
+        "SDP media port SHALL match the detected RTP destination port (TR-10-1 §10).",
+        lambda c=ctx: check_sdp_port_vs_stream(c.sdp_media, c.stream_info))
+    add("H264-CLI-PORT", "shall",
+        "Operator-supplied --port SHALL match the selected RTP destination port.",
+        lambda c=ctx: check_cli_port(c.cli_port, c.stream_info))
+    add("H264-CLI-DST-IP", "shall",
+        "Operator-supplied --dst-ip SHALL match the selected RTP destination IP.",
+        lambda c=ctx: check_cli_dst_ip(c.cli_dst_ip, c.stream_info))
+    add("H264-CLI-RTCP-PORT", "shall",
+        "Operator-supplied --rtcp-port SHALL match the selected RTCP destination port.",
+        lambda c=ctx: check_cli_rtcp_port(c.cli_rtcp_port, c.stream_info.rtcp_port if c.stream_info else None))
+    add("RTP-SEQ", "should",
+        "RTP sequence numbers SHOULD be contiguous (RFC 3550 §5.1: sender increments per packet so "
+        "receivers can reorder); a capture gap may be sender, network, or capture loss.",
+        lambda c=ctx: check_sequence_continuity(c.rtp_report.seq_analysis))
 
     return reqs
 
@@ -1550,6 +1594,9 @@ def main() -> int:
     parser.add_argument("--list-requirements", action="store_true", help="List all requirement IDs this validator checks, then exit (no PCAP needed)")
     parser.add_argument("--port", type=int, help="Filter RTP packets by UDP port")
     parser.add_argument("--rtcp-port", type=int, help="Filter RTCP packets by UDP port")
+    parser.add_argument("--payload-type", type=int, help="Expected RTP payload type")
+    parser.add_argument("--ssrc", type=lambda v: int(v, 0), help="Expected SSRC (decimal or 0x hex)")
+    parser.add_argument("--dst-ip", dest="dst_ip", help="Expected destination IP address")
     parser.add_argument("--frames", type=int, default=5, help="Frames to sample with ffmpeg")
     parser.add_argument("--max-access-units", type=int, help="Limit access units processed")
     parser.add_argument(
@@ -1662,10 +1709,18 @@ def main() -> int:
 
     if not args.pcap.exists():
         raise SystemExit(f"{args.pcap} does not exist")
+    if getattr(args, "sdp", None) is not None and not args.sdp.exists():
+        raise SystemExit(f"SDP file {args.sdp} does not exist")
     if args.max_access_units is not None and args.max_access_units <= 0:
         raise SystemExit("--max-access-units must be positive")
 
     ctx = build_context(args)
+    if ctx.stream_info is not None:
+        si = ctx.stream_info
+        print(f"Detected RTP stream: dst={si.dst_ip}:{si.dst_port} "
+              f"SSRC=0x{si.ssrc:08X} ({si.ssrc}) RTCP port={si.rtcp_port}")
+    else:
+        print("WARNING: Could not auto-detect RTP stream parameters")
     print_recovery_window_note(ctx.rtp_report)
     if ctx.timeline is not None and ctx.timeline.trace_warning:
         print(ctx.timeline.trace_warning, file=sys.stderr)

@@ -58,6 +58,10 @@ from ipmx_validate_common import (
     check_dscp_sr_matches_rtp,
     check_multicast_mac_mapping,
     check_sr_mac_mapping,
+    check_sr_rtcp_port,
+    check_udp_port_even,
+    check_udp_port_above_5000,
+    check_sdp_port_vs_stream,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
@@ -943,11 +947,11 @@ def check_sdp_payload_match(ctx: Am824ValidationContext) -> tuple[bool, str] | t
     if ctx.sdp_media is None:
         return untestable("No SDP provided")
     if len(ctx.am824_report.payload_type_set) != 1:
-        return untestable("Observed RTP payload type is not constant")
+        return False, f"Observed RTP payload type is not constant: {sorted(ctx.am824_report.payload_type_set)}"
     observed = next(iter(ctx.am824_report.payload_type_set))
-    if ctx.sdp_media.payload_type != observed:
-        return False, f"SDP payload type {ctx.sdp_media.payload_type} != RTP payload type {observed}"
-    return True, f"SDP payload type {ctx.sdp_media.payload_type} matches RTP"
+    if ctx.sdp_media.format_code != observed:
+        return False, f"SDP payload type {ctx.sdp_media.format_code} != RTP payload type {observed}"
+    return True, f"SDP payload type {ctx.sdp_media.format_code} matches RTP"
 
 
 def check_sdp_channel_order(ctx: Am824ValidationContext) -> tuple[bool, str] | tuple[bool, str, bool]:
@@ -1938,6 +1942,15 @@ def build_requirements() -> list[Requirement]:
     add("SDP-DST-IP", "shall",
         "SDP connection address SHALL match the detected destination IP.",
         check_sdp_dst_ip_vs_stream_am824)
+    add("SDP-PORT", "shall",
+        "SDP media port SHALL match the detected RTP destination port (TR-10-1 §10).",
+        lambda c: check_sdp_port_vs_stream(c.sdp_media, c.stream_info))
+    add("TR-10-12-7a", "shall",
+        "UDP destination port SHALL be even and > 1024 (TR-10-12 §7).",
+        lambda c: check_udp_port_even(c.stream_info.dst_port if c.stream_info else None, "TR-10-12 §7"))
+    add("TR-10-12-7b", "should",
+        "UDP destination port SHOULD be > 5000 (TR-10-12 §7).",
+        lambda c: check_udp_port_above_5000(c.stream_info.dst_port if c.stream_info else None, "TR-10-12 §7"))
     add("TR-10-9-16a", "shall",
         "IPMX Senders conforming to TR-10-12 (AES3 transparent audio) shall mark "
         "RTP packets with the TR-10-9 §16 default DSCP AF41(34).",
@@ -1956,7 +1969,7 @@ def build_requirements() -> list[Requirement]:
         lambda c: check_sr_mac_mapping(c.sender_reports))
     add("TR-10-1-8.7-SR-PRESENT", "shall", "RTCP Sender Reports shall be present", check_sr_present)
     add("TR-10-1-8.7-SR-IP", "shall", "RTCP Sender Reports shall use the same destination IP as RTP", check_sr_ip)
-    add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports shall use the expected RTCP destination port", check_sr_port)
+    add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports shall use the expected RTCP destination port (TR-10-1 §8.7)", lambda c: check_sr_rtcp_port(c.pcap, c.stream_info))
     add("TR-10-1-8.7-SSRC", "shall", "RTCP Sender Report SSRC shall match RTP SSRC", check_sr_ssrc)
     add("TR-10-1-8.7-IPMXINFO", "shall", "RTCP Sender Reports shall include the IPMX Info Block", check_sr_ipmx_info)
     add("TR-10-1-8.7-IPMXTAG", "shall", "RTCP Sender Report IPMX tag shall be 0x5831", check_sr_ipmx_tag)
@@ -2161,6 +2174,11 @@ def main() -> int:
     if args.pcap is None:
         parser.error("the pcap argument is required unless --list-requirements is used")
 
+    if not args.pcap.exists():
+        raise SystemExit(f"{args.pcap} does not exist")
+    if getattr(args, "sdp", None) is not None and not args.sdp.exists():
+        raise SystemExit(f"SDP file {args.sdp} does not exist")
+
     if args.cfg:
         from ipmx_validate_common import (
             apply_audio_cfg,
@@ -2170,6 +2188,13 @@ def main() -> int:
         apply_audio_cfg(args, parse_cfg_file(resolve_cfg_path(args.cfg)), parse_ptime_arg)
 
     ctx = build_context(args)
+
+    if ctx.stream_info is not None:
+        si = ctx.stream_info
+        print(f"Detected RTP stream: dst={si.dst_ip}:{si.dst_port} "
+              f"SSRC=0x{si.ssrc:08X} ({si.ssrc}) RTCP port={si.rtcp_port}")
+    else:
+        print("WARNING: Could not auto-detect RTP stream parameters")
 
     if ctx.encrypted:
         print("[INFO] Encryption detected — AM824 payload content is not accessible.")

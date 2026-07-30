@@ -594,13 +594,19 @@ def write_am824_pcap(
 ) -> None:
     from scapy.all import Ether, IP, UDP, Raw  # type: ignore[import-untyped]
     from scapy.utils import PcapWriter  # type: ignore[import-untyped]
+    from ipmx_qos import MediaDscp, dst_mac_for
+
+    # RFC 1112 §6.4 multicast L2 mapping (unicast keeps the caller default) and
+    # TR-10-9 §16 default DSCP AF41 for audio.
+    eth_dst = dst_mac_for(dst_ip, eth_dst)
+    tos = MediaDscp.AUDIO_AF41.tos
 
     writer = PcapWriter(str(pcap_path), sync=True)
     try:
         for index, rtp_packet in enumerate(rtp_packets):
             pkt = (
                 Ether(src=eth_src, dst=eth_dst)
-                / IP(src=src_ip, dst=dst_ip)
+                / IP(src=src_ip, dst=dst_ip, tos=tos)
                 / UDP(sport=src_port, dport=dst_port)
                 / Raw(load=rtp_packet)
             )
