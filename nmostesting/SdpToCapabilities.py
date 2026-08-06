@@ -107,18 +107,21 @@ class SdpToCapabilitiesConverter:
             primary_capset = self._convert_media_to_capset(
                 self.sdp.primary_media,
                 "SDP",
-                preference=100
+                preference=100,
+                mux=mux
             )
 
-            # Handle secondary media (redundancy) - verify it's identical to primary
-            if (self.sdp.secondary_media and
-                self.sdp.has_group_attribute and
-                    self.sdp.secondary_media != self.sdp.primary_media):
+            # Handle secondary media (redundancy) - verify it's identical to primary.
+            # The two descriptors are compared through their capabilities below;
+            # MediaDescriptor has no __eq__, so comparing the objects themselves
+            # would be an identity test that is always true and never skips anything.
+            if self.sdp.secondary_media and self.sdp.has_group_attribute:
 
                 secondary_capset = self._convert_media_to_capset(
                     self.sdp.secondary_media,
                     "SDP_Verification",
-                    preference=100
+                    preference=100,
+                    mux=mux
                 )
 
                 # Verify capabilities are identical
@@ -178,12 +181,14 @@ class SdpToCapabilitiesConverter:
             media: MediaDescriptor from SDP
             label: Label for the CapSet
             preference: Preference value for the CapSet
+            mux: True when the Receiver is of format mux, which re-prefixes
+                 AM824 and MP2T as application/* and makes AM824 a mux layer
 
         Returns:
             CapSet: Converted capability set
         """
         capabilities: Dict[str, Capability] = {}
-        format_type = self._determine_format_type(media)
+        format_type = self._determine_format_type(media, mux)
 
         # Media type capability
         media_type = self._get_media_type_from_format(format_type, media, mux)
@@ -263,6 +268,27 @@ class SdpToCapabilitiesConverter:
                 raise ValueError("Media descriptor missing format string")
             return type + media.format_string.s
 
+    # SDP colorimetry values that exist unchanged in the NMOS colorspace
+    # vocabulary. Anything else the SDP may carry — SMPTE240M, ALPHA,
+    # UNSPECIFIED — has no NMOS equivalent and collapses to UNSPECIFIED.
+    _COLORSPACE_FROM_SDP = {
+        "BT601": "BT601", "BT709": "BT709", "BT2020": "BT2020", "BT2100": "BT2100",
+        "BT601-5": "BT601-5", "BT709-2": "BT709-2",
+        "ST2065-1": "ST2065-1", "ST2065-3": "ST2065-3", "XYZ": "XYZ",
+    }
+    _COLORSPACE_UNSPECIFIED = "UNSPECIFIED"
+
+    def _get_colorspace_from_sdp(self, colorimetry, color_range) -> str:
+        """Map an SDP colorimetry to an NMOS colorspace.
+
+        A full-range signal carries no NMOS colorspace of its own, so it
+        reports UNSPECIFIED regardless of the colorimetry declared alongside it.
+        """
+        if color_range is not None and str(color_range).lower() == "full":
+            return self._COLORSPACE_UNSPECIFIED
+        key = str(colorimetry).upper() if colorimetry else ""
+        return self._COLORSPACE_FROM_SDP.get(key, self._COLORSPACE_UNSPECIFIED)
+
     def _add_video_capabilities(self, media: MediaDescriptor, capabilities: Dict[str, Capability]):
         """Add video-specific capabilities"""
         # Frame rate
@@ -299,9 +325,10 @@ class SdpToCapabilitiesConverter:
             RangeValue(values=(interlace_mode,), type=RangeType.STRING)
         )
 
-        # Colorimetry
+        # Colorimetry. The SDP colorimetry vocabulary is wider than the NMOS
+        # colorspace one, so it is mapped rather than passed through.
         if media.colorimetry:
-            colorspace = str(media.colorimetry)
+            colorspace = self._get_colorspace_from_sdp(media.colorimetry, media.color_range)
             capabilities[CapFormatColorspace] = Capability(
                 CapFormatColorspace,
                 RangeValue(values=(colorspace,), type=RangeType.STRING)
@@ -590,7 +617,7 @@ class SdpToCapabilitiesConverter:
             if media.aac_bitrate != 0:
                 capabilities[CapFormatBitRate] = Capability(
                     CapFormatBitRate,
-                    RangeValue(values=(media.aac_bitrate / 1000,), type=RangeType.INT)  # in Kbps
+                    RangeValue(values=(media.aac_bitrate // 1000,), type=RangeType.INT)  # in Kbps
                 )
 
             if media.aac_max_displacement > 0:
@@ -628,15 +655,19 @@ class SdpToCapabilitiesConverter:
                     RangeValue(values=(float(media.max_p_time_us)/1000.0,), type=RangeType.FLOAT)
                 )
 
-            # RFC 3640 Packet time
-            if media.aac_constant_duration > 0:
+            # RFC 3640 Packet time. constantDuration is the access unit duration
+            # measured in RTP timestamp units, i.e. samples at the rtpmap clock
+            # rate; packet_time is milliseconds. Floored to microseconds first so
+            # the value matches the a=ptime: the same stream would carry.
+            if media.aac_constant_duration > 0 and media.sample_rate > 0:
+                ptime_us = (media.aac_constant_duration * 1000000) // media.sample_rate
                 capabilities[CapTransportPacketTime] = Capability(
                     CapTransportPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
                 capabilities[CapTransportMaxPacketTime] = Capability(
                     CapTransportMaxPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
 
         elif (media.encoding_name == MatroxSdpEnums.EncodingAAC_LATM or
@@ -659,7 +690,7 @@ class SdpToCapabilitiesConverter:
             if media.aac_bitrate != 0:
                 capabilities[CapFormatBitRate] = Capability(
                     CapFormatBitRate,
-                    RangeValue(values=(media.aac_bitrate / 1000,), type=RangeType.INT)  # in Kbps
+                    RangeValue(values=(media.aac_bitrate // 1000,), type=RangeType.INT)  # in Kbps
                     )
 
             if media.aac_max_displacement > 0:
@@ -673,7 +704,11 @@ class SdpToCapabilitiesConverter:
                     RangeValue(values=("non_interleaved_access_units",), type=RangeType.STRING)
                 )
 
-            if media.aac_config_present is False:
+            # A config present in the SDP means the parameter sets are carried
+            # out of band; whether they are ALSO in band depends on the config
+            # being empty. With no config present at all they can only be in band,
+            # and an empty one leaves nothing to describe the stream.
+            if media.aac_config_present:
                 if media.aac_config == "":
                     capabilities[CapTransportParameterSetsTransportMode] = Capability(
                         CapTransportParameterSetsTransportMode,
@@ -685,6 +720,9 @@ class SdpToCapabilitiesConverter:
                         RangeValue(values=("in_and_out_of_band",), type=RangeType.STRING)
                     )
             else:
+                if media.aac_config == "":
+                    raise ValueError("AAC LATM/ADTS media declares no configuration, "
+                                     "neither in band nor out of band")
                 capabilities[CapTransportParameterSetsTransportMode] = Capability(
                     CapTransportParameterSetsTransportMode,
                     RangeValue(values=("out_of_band",), type=RangeType.STRING)
@@ -703,15 +741,19 @@ class SdpToCapabilitiesConverter:
                     RangeValue(values=(float(media.max_p_time_us)/1000.0,), type=RangeType.FLOAT)
                 )
 
-            # RFC 3640 Packet time
-            if media.aac_constant_duration > 0:
+            # RFC 3640 Packet time. constantDuration is the access unit duration
+            # measured in RTP timestamp units, i.e. samples at the rtpmap clock
+            # rate; packet_time is milliseconds. Floored to microseconds first so
+            # the value matches the a=ptime: the same stream would carry.
+            if media.aac_constant_duration > 0 and media.sample_rate > 0:
+                ptime_us = (media.aac_constant_duration * 1000000) // media.sample_rate
                 capabilities[CapTransportPacketTime] = Capability(
                     CapTransportPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
                 capabilities[CapTransportMaxPacketTime] = Capability(
                     CapTransportMaxPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
 
     def _add_data_capabilities(self, media: MediaDescriptor, capabilities: Dict[str, Capability]):
