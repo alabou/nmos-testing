@@ -45,7 +45,7 @@ from .MatroxCCF import (
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatTransferCharacteristic,
     CapFormatColorSampling, CapFormatComponentDepth, CapFormatChannelCount,
     CapFormatSampleRate, CapFormatSampleDepth, CapFormatBitRate, CapFormatProfile,
-    CapFormatLevel, CapFormatSublevel, CapTransportBitRate,
+    CapFormatLevel, CapFormatSublevel, CapFormatFbblevel, CapTransportBitRate,
     CapTransportPacketTime, CapTransportMaxPacketTime, CapTransport_ST2110_21_SenderType,
     CapTransportPacketTransmissionMode, CapTransportParameterSetsFlowMode,
     CapTransportParameterSetsTransportMode, CapTransportChannelOrder,
@@ -351,6 +351,13 @@ class SdpToCapabilitiesConverter:
                 capabilities[CapFormatSublevel] = Capability(
                     CapFormatSublevel,
                     RangeValue(values=(sublevel,), type=RangeType.STRING)
+                )
+
+            if media.fbb_level:
+                fbblevel = str(media.fbb_level)
+                capabilities[CapFormatFbblevel] = Capability(
+                    CapFormatFbblevel,
+                    RangeValue(values=(fbblevel,), type=RangeType.STRING)
                 )
 
             if media.jxsv_packet_mode == MatroxSdpEnums.CodeStream:

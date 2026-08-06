@@ -44,7 +44,7 @@ from .MatroxCCF import (
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatTransferCharacteristic,
     CapFormatColorSampling, CapFormatComponentDepth, CapFormatChannelCount,
     CapFormatSampleRate, CapFormatSampleDepth, CapFormatBitRate, CapFormatProfile,
-    CapFormatLevel, CapFormatSublevel, CapFormatConstantBitRate, CapFormatVideoLayers,
+    CapFormatLevel, CapFormatSublevel, CapFormatFbblevel, CapFormatConstantBitRate, CapFormatVideoLayers,
     CapFormatAudioLayers, CapFormatDataLayers, CapTransportClockRefType,
     CapTransportSynchronousMedia, CapTransportHkep, CapTransportPrivacy,
     CapTransport_ST2110_21_SenderType, CapTransportPacketTransmissionMode,
@@ -295,6 +295,12 @@ class FlowToCapabilitiesConverter:
         if sublevel:
             caps[CapFormatSublevel] = Capability(CapFormatSublevel,
                                                  RangeValue(values=(sublevel,) if sublevel is not None
+                                                            else None, type=RangeType.STRING))
+
+        fbblevel = flow.get("fbblevel", None)
+        if sublevel:
+            caps[CapFormatFbblevel] = Capability(CapFormatFbblevel,
+                                                 RangeValue(values=(fbblevel,) if fbblevel is not None
                                                             else None, type=RangeType.STRING))
 
         layer = flow.get("urn:x-matrox:layer", None)
