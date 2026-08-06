@@ -278,6 +278,20 @@ class SdpToCapabilitiesConverter:
     }
     _COLORSPACE_UNSPECIFIED = "UNSPECIFIED"
 
+    # Keys are SDP spellings, values NMOS ones; the two vocabularies agree on every
+    # transfer characteristic. Anything else collapses to UNSPECIFIED.
+    _TRANSFER_FROM_SDP = {
+        "SDR": "SDR", "HLG": "HLG", "PQ": "PQ", "LINEAR": "LINEAR",
+        "BT2100LINPQ": "BT2100LINPQ", "BT2100LINHLG": "BT2100LINHLG",
+        "ST2065-1": "ST2065-1", "ST428-1": "ST428-1",
+        "DENSITY": "DENSITY", "ST2115LOGS3": "ST2115LOGS3",
+    }
+
+    def _get_transfer_characteristic_from_sdp(self, transfer) -> str:
+        """Map an SDP transfer characteristic to the NMOS one."""
+        key = str(transfer).upper() if transfer else ""
+        return self._TRANSFER_FROM_SDP.get(key, self._COLORSPACE_UNSPECIFIED)
+
     def _get_colorspace_from_sdp(self, colorimetry, color_range) -> str:
         """Map an SDP colorimetry to an NMOS colorspace.
 
@@ -334,9 +348,11 @@ class SdpToCapabilitiesConverter:
                 RangeValue(values=(colorspace,), type=RangeType.STRING)
             )
 
-        # Transfer characteristic
+        # Transfer characteristic. Mapped rather than passed through, for the same
+        # reason as colorimetry: the SDP and NMOS vocabularies are not identical.
         if media.transfer_characteristic:
-            transfer_characteristic = str(media.transfer_characteristic)
+            transfer_characteristic = self._get_transfer_characteristic_from_sdp(
+                media.transfer_characteristic)
             capabilities[CapFormatTransferCharacteristic] = Capability(
                 CapFormatTransferCharacteristic,
                 RangeValue(values=(transfer_characteristic,), type=RangeType.STRING)
