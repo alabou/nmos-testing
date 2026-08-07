@@ -571,11 +571,12 @@ class SdpToCapabilitiesConverter:
                 RangeValue(values=(sample_rate,), type=RangeType.RATIONAL)
             )
 
-        if media.bitrate_kbits > 0:
-            capabilities[CapTransportBitRate] = Capability(
-                CapTransportBitRate,
-                RangeValue(values=(media.bitrate_kbits,), type=RangeType.INT)
-            )
+        # transport:bit_rate is NOT emitted for every audio encoding. For
+        # uncompressed essence the bit rate is fully determined by
+        # sample_rate x channels x sample_depth, so stating it constrains nothing
+        # a receiver cannot already derive -- the same reason video/raw does not
+        # report it while jxsv/H.264/H.265 do. Only the AAC family, whose bit rate
+        # is an independent parameter, reports it; see the AAC branches below.
 
         if (media.encoding_name == MatroxSdpEnums.EncodingL8 or media.encoding_name == MatroxSdpEnums.EncodingL16 or
                 media.encoding_name == MatroxSdpEnums.EncodingL20 or media.encoding_name == MatroxSdpEnums.EncodingL24):
@@ -626,6 +627,14 @@ class SdpToCapabilitiesConverter:
         elif media.encoding_name == MatroxSdpEnums.EncodingAAC:
 
             profile, level = get_aac_profile_level_from_sdp(media.codec_profile_level_id)
+
+            # AAC bit rate is an independent parameter, so the transport rate
+            # from b=AS is worth reporting (unlike L-PCM / AM824).
+            if media.bitrate_kbits > 0:
+                capabilities[CapTransportBitRate] = Capability(
+                    CapTransportBitRate,
+                    RangeValue(values=(media.bitrate_kbits,), type=RangeType.INT)
+                )
 
             if profile:
                 capabilities[CapFormatProfile] = Capability(
@@ -699,6 +708,14 @@ class SdpToCapabilitiesConverter:
               media.encoding_name == MatroxSdpEnums.EncodingAAC_ADTS):
 
             profile, level = get_aac_profile_level_from_sdp(media.codec_profile_level_id)
+
+            # AAC bit rate is an independent parameter, so the transport rate
+            # from b=AS is worth reporting (unlike L-PCM / AM824).
+            if media.bitrate_kbits > 0:
+                capabilities[CapTransportBitRate] = Capability(
+                    CapTransportBitRate,
+                    RangeValue(values=(media.bitrate_kbits,), type=RangeType.INT)
+                )
 
             if profile:
                 capabilities[CapFormatProfile] = Capability(
