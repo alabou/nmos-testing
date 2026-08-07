@@ -631,6 +631,71 @@ class TestFlowToCapabilities(unittest.TestCase):
 
         print("✓ Data Sub-type Test Passed - smpte291 clocked, json not")
 
+    def test_color_sampling_corner_cases(self):
+        """Sampling is derived from the component array alone, by name.
+
+        IS-04's flow_video_raw declares components as a plain array (minItems 1,
+        no maxItems, no tuple form), so order and count are unconstrained. An
+        undeterminable sampling yields no capability at all rather than a guess:
+        an omitted capability is not checked by conset_included_in_caps, whereas
+        a wrong one would be.
+        """
+        print("\n=== Testing Color Sampling Corner Cases ===")
+        W, H = 1920, 1080
+
+        def sampling(components):
+            flow = {
+                "id": "e1e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0", "label": "Sampling probe",
+                "format": "urn:x-nmos:format:video",
+                "source_id": "e2e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "device_id": "e3e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [], "media_type": "video/raw",
+                "frame_width": W, "frame_height": H,
+                "interlace_mode": "progressive", "colorspace": "BT709",
+                "transfer_characteristic": "SDR",
+                "grain_rate": {"numerator": 50, "denominator": 1},
+                "components": [{"name": n, "width": w, "height": h, "bit_depth": 10}
+                               for n, w, h in components],
+            }
+            source = {
+                "id": "e2e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0", "label": "src",
+                "format": "urn:x-nmos:format:video", "caps": {}, "tags": {},
+                "device_id": "e3e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [], "clock_name": "clk0", "synchronous_media": True,
+            }
+            caps = self.converter.convert(flow, source, {}).capsets[0].caps
+            cap = caps.get(CapFormatColorSampling)
+            return next(iter(cap.value.enumerated)) if cap else None
+
+        # canonical layouts
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W, H), ("Cr", W, H)]), "YCbCr-4:4:4")
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", W // 2, H)]), "YCbCr-4:2:2")
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H // 2), ("Cr", W // 2, H // 2)]),
+                         "YCbCr-4:2:0")
+        self.assertEqual(sampling([("R", W, H), ("G", W, H), ("B", W, H)]), "RGB")
+
+        # order is not constrained by the schema
+        self.assertEqual(sampling([("Cb", W // 2, H), ("Y", W, H), ("Cr", W // 2, H)]), "YCbCr-4:2:2")
+        # nor is the count: an auxiliary plane must not break classification
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", W // 2, H), ("A", W, H)]),
+                         "YCbCr-4:2:2")
+        # luma need not equal frame_width; IS-04 asserts no such relationship
+        self.assertEqual(sampling([("Y", 3840, 2160), ("Cb", 1920, 2160), ("Cr", 1920, 2160)]),
+                         "YCbCr-4:2:2")
+        # YCbCr is decided before RGB, so a mixed array is not reported as RGB
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", W // 2, H),
+                                   ("R", W, H), ("G", W, H), ("B", W, H)]), "YCbCr-4:2:2")
+
+        # undeterminable -> no capability, never a guess
+        self.assertIsNone(sampling([("R", W, H), ("G", W // 2, H), ("B", W // 2, H)]))
+        self.assertIsNone(sampling([("I", W, H), ("Ct", W // 2, H), ("Cp", W // 2, H)]))
+        self.assertIsNone(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", 480, H)]))
+        self.assertIsNone(sampling([("Y", W, H), ("Cb", W // 2, H)]))
+
+        print("✓ Color Sampling Corner Cases Passed")
+
     def test_error_handling_missing_source(self):
         """Test error handling when source is missing"""
         print("\n=== Testing Error Handling - Missing Source ===")

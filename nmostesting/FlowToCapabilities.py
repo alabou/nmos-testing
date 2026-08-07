@@ -173,11 +173,11 @@ class FlowToCapabilitiesConverter:
         components = flow.get("components")
         if not isinstance(components, list):
             raise ValueError("FlowToCapabilities: raw video flow missing components array")
-        if isinstance(fw, int) and isinstance(fh, int):
-            sampling = self._infer_sampling_from_components(components, fw, fh)
+        sampling = self._infer_sampling_from_components(components)
+        if sampling is not None:
             caps[CapFormatColorSampling] = Capability(CapFormatColorSampling,
-                                                      RangeValue(values=(sampling,) if sampling is not None
-                                                                 else None, type=RangeType.STRING))
+                                                      RangeValue(values=(sampling,),
+                                                                 type=RangeType.STRING))
         comp_depth = self._get_component_depth(components)
         caps[CapFormatComponentDepth] = Capability(CapFormatComponentDepth,
                                                    RangeValue(values=(comp_depth,) if comp_depth is not None
@@ -269,11 +269,11 @@ class FlowToCapabilitiesConverter:
         components = flow.get("components")
         if not isinstance(components, list):
             raise ValueError("FlowToCapabilities: raw video flow missing components array")
-        if isinstance(fw, int) and isinstance(fh, int):
-            sampling = self._infer_sampling_from_components(components, fw, fh)
+        sampling = self._infer_sampling_from_components(components)
+        if sampling is not None:
             caps[CapFormatColorSampling] = Capability(CapFormatColorSampling,
-                                                      RangeValue(values=(sampling,) if sampling is not None
-                                                                 else None, type=RangeType.STRING))
+                                                      RangeValue(values=(sampling,),
+                                                                 type=RangeType.STRING))
         comp_depth = self._get_component_depth(components)
         caps[CapFormatComponentDepth] = Capability(CapFormatComponentDepth,
                                                    RangeValue(values=(comp_depth,) if comp_depth is not None
@@ -859,29 +859,52 @@ class FlowToCapabilitiesConverter:
         bd = c0.get("bit_depth") if isinstance(c0, dict) else None
         return bd if isinstance(bd, int) else None
 
-    def _infer_sampling_from_components(self, components: list, fw: int, fh: int) -> Optional[str]:
-        # Infer sampling for common YCbCr layouts; handle RGB as well
-        names = [c.get("name") for c in components if isinstance(c, dict)]
-        if set(names) >= {"R", "G", "B"}:
-            return "RGB"
-        if not (set(names) >= {"Y", "Cb", "Cr"}):
-            return None
-        y = next((c for c in components if c.get("name") == "Y"), None)
-        cb = next((c for c in components if c.get("name") == "Cb"), None)
-        cr = next((c for c in components if c.get("name") == "Cr"), None)
+    def _infer_sampling_from_components(self, components: list) -> Optional[str]:
+        """Derive the color sampling from the component array alone.
 
-        if not y or not cb or not cr:
-            return None
-        yw, yh = y.get("width"), y.get("height")
-        cbw, cbh = cb.get("width"), cb.get("height")
-        crw, crh = cr.get("width"), cr.get("height")
-        if yw == fw and yh == fh:
-            if cbw == fw and cbh == fh and crw == fw and crh == fh:
+        Components are matched by NAME, not position: IS-04's flow_video_raw
+        declares ``components`` as a plain array (minItems 1, no maxItems, no
+        tuple form), so neither order nor count is constrained -- a flow listing
+        Cb, Y, Cr, or carrying an extra A / DepthMap plane, is conformant.
+
+        The ratio is taken between the planes themselves rather than against the
+        flow's frame_width / frame_height: IS-04 ties luma to neither, and the
+        per-component width / height are required members.
+
+        Returns None when the sampling cannot be determined, which the caller
+        reports by omitting the capability.
+        """
+        by_name = {}
+        for c in components:
+            if isinstance(c, dict) and c.get("name") is not None:
+                by_name.setdefault(c["name"], c)
+
+        def wh(c):
+            w, h = c.get("width"), c.get("height")
+            return (w, h) if isinstance(w, int) and isinstance(h, int) else None
+
+        # YCbCr first: a malformed array carrying both colour systems must not be
+        # reported as RGB on the strength of the names alone.
+        if all(n in by_name for n in ("Y", "Cb", "Cr")):
+            y, cb, cr = (wh(by_name[n]) for n in ("Y", "Cb", "Cr"))
+            if y is None or cb is None or cr is None or cb != cr:
+                return None
+            (yw, yh), (cw, ch) = y, cb
+            if (yw, yh) == (cw, ch):
                 return "YCbCr-4:4:4"
-            if cbw == fw // 2 and cbh == fh and crw == fw // 2 and crh == fh:
+            if yw == 2 * cw and yh == ch:
                 return "YCbCr-4:2:2"
-            if cbw == fw // 2 and cbh == fh // 2 and crw == fw // 2 and crh == fh // 2:
+            if yw == 2 * cw and yh == 2 * ch:
                 return "YCbCr-4:2:0"
+            return None
+
+        if all(n in by_name for n in ("R", "G", "B")):
+            r, g, b = (wh(by_name[n]) for n in ("R", "G", "B"))
+            if r is None or g is None or b is None:
+                return None
+            # The names alone do not establish RGB; the planes must match.
+            return "RGB" if r == g == b else None
+
         return None
 
 
