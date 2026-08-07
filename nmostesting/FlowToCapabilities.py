@@ -58,6 +58,11 @@ from .MatroxCCF import (
 )
 
 
+# IS-07 event data. Unlike video/smpte291 it is not an RTP essence stream, so it
+# carries no transport (clock / synchronous media) capabilities.
+DATA_MEDIA_TYPE_JSON = "application/json"
+
+
 def ifelse(t, a, b):
     if t:
         return a
@@ -573,8 +578,15 @@ class FlowToCapabilitiesConverter:
         layer = flow.get("urn:x-matrox:layer", None)
         format = FormatData
 
+        # application/json is IS-07 event data carried over MQTT or WebSocket, not an
+        # RTP media stream, so it has no PTP timing and no transport capabilities.
+        # video/smpte291 (ST 2110-40) is clocked essence like any other and does.
+        clocked = media_type.lower() != DATA_MEDIA_TYPE_JSON
+
         if layer is None:
             format = None
+
+        if layer is None and clocked:
             caps[CapTransportSynchronousMedia] = Capability(CapTransportSynchronousMedia,
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))

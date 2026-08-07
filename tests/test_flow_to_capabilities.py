@@ -579,6 +579,58 @@ class TestFlowToCapabilities(unittest.TestCase):
 
         print("✓ Mux Zero Layer Counts Test Passed - 0/2/0 all reported")
 
+    def test_data_json_has_no_transport_caps_but_sdianc_does(self):
+        """Only clocked data essence reports transport capabilities.
+
+        video/smpte291 is an ST 2110-40 RTP stream, so it is PTP-locked and reports
+        clock_ref_type and synchronous_media - which is also what SdpToCapabilities
+        reports for the same stream. application/json is IS-07 event data over MQTT
+        or WebSocket with no RTP timing, so it reports neither.
+        """
+        print("\n=== Testing Data Sub-type Transport Caps ===")
+
+        def convert(media_type):
+            flow = {
+                "id": "f9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0",
+                "label": "Data Flow",
+                "format": "urn:x-nmos:format:data",
+                "source_id": "s9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "device_id": "d9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [],
+                "media_type": media_type
+            }
+            source = {
+                "id": "s9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0",
+                "label": "Data Source",
+                "format": "urn:x-nmos:format:data",
+                "caps": {},
+                "tags": {},
+                "device_id": "d9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [],
+                "clock_name": "clk0",
+                "synchronous_media": True
+            }
+            sender = {"hkep": True, "privacy": True}
+            node_clocks = [{"name": "clk0", "ref_type": "ptp"}]
+            return self.converter.convert(flow, source, sender, node_clocks).capsets[0]
+
+        TRANSPORT = (CapTransportSynchronousMedia, CapTransportClockRefType,
+                     CapTransportHkep, CapTransportPrivacy)
+
+        sdianc = convert("video/smpte291")
+        for cap in TRANSPORT:
+            self.assertIn(cap, sdianc.caps)
+        self.assertEqual(sdianc.caps[CapTransportClockRefType].value.enumerated, {"ptp"})
+
+        json_flow = convert("application/json")
+        for cap in TRANSPORT:
+            self.assertNotIn(cap, json_flow.caps)
+        self.assertIn(CapFormatMediaType, json_flow.caps)
+
+        print("✓ Data Sub-type Test Passed - smpte291 clocked, json not")
+
     def test_error_handling_missing_source(self):
         """Test error handling when source is missing"""
         print("\n=== Testing Error Handling - Missing Source ===")
