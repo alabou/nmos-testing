@@ -333,11 +333,15 @@ class SdpToCapabilitiesConverter:
             )
 
         # Interlace mode
+        # ST 2110-20 signals PsF as "interlace; segmented" -- segmented qualifies
+        # interlace rather than replacing it. Testing it as a sibling of interlaced
+        # left the branch unreachable, so a PsF stream read back as interlaced_bff.
         interlace_mode = "progressive"
         if media.interlaced:
-            interlace_mode = "interlaced_tff" if media.top_field_first else "interlaced_bff"
-        elif media.segmented:
-            interlace_mode = "interlaced_psf"
+            if media.segmented:
+                interlace_mode = "interlaced_psf"
+            else:
+                interlace_mode = "interlaced_tff" if media.top_field_first else "interlaced_bff"
 
         capabilities[CapFormatInterlaceMode] = Capability(
             CapFormatInterlaceMode,
