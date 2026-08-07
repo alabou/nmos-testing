@@ -30,11 +30,6 @@ Flow to CCF Capabilities Converter
 
 Note: some transport capabilities can only be obtained from the SDP transport file.
 
-hkep and privacy are reported only when true, matching SdpToCapabilities. This is a
-deliberate divergence from nmos-reference and the Go node, which always report both
-the true and the false value. Keep the two converters in this file and
-SdpToCapabilities.py in step with each other.
-
 TODO: add urn:x-nmos:cap:transport:usb_class
 
 """
@@ -223,7 +218,7 @@ class FlowToCapabilitiesConverter:
 
     def _convert_coded_video_flow_to_capset(self, flow: Dict[str, Any], source: Dict[str, Any],
                                             sender: Dict[str, Any], node_clocks: Optional[list]) -> CapSet:
-        """Build CapSet for coded video flows (mirrors Go getFlowProperties coded video branch)."""
+        """Build CapSet for coded video flows."""
 
         caps: Dict[str, Capability] = {}
 

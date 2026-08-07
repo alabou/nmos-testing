@@ -210,8 +210,8 @@ a=ts-refclk:localmac=1c-34-da-5a-be-34"""
         # b=AS is present, but transport bit_rate is reported only for COMPRESSED
         # video (jxsv / H.264 / H.265), where the bit rate is an independent
         # parameter. For uncompressed raw video it is fully determined by
-        # width x height x depth x frame rate, so nmos-reference, this converter
-        # and the Go node all leave it out.
+        # width x height x depth x frame rate, so nmos-reference and this
+        # converter both leave it out.
         self.assertNotIn(CapTransportBitRate, video_capset.caps)
         
         # Check 60fps frame rate
