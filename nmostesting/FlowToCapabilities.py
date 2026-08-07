@@ -308,7 +308,7 @@ class FlowToCapabilitiesConverter:
                                                             else None, type=RangeType.STRING))
 
         fbblevel = flow.get("fbblevel", None)
-        if sublevel:
+        if fbblevel:
             caps[CapFormatFbblevel] = Capability(CapFormatFbblevel,
                                                  RangeValue(values=(fbblevel,) if fbblevel is not None
                                                             else None, type=RangeType.STRING))
