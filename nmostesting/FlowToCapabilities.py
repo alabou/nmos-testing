@@ -30,8 +30,6 @@ Flow to CCF Capabilities Converter
 
 Note: some transport capabilities can only be obtained from the SDP transport file.
 
-TODO: add urn:x-nmos:cap:transport:usb_class
-
 """
 
 from typing import Optional, Dict, Any, Tuple, List, Union
