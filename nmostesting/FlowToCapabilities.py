@@ -30,6 +30,11 @@ Flow to CCF Capabilities Converter
 
 Note: some transport capabilities can only be obtained from the SDP transport file.
 
+hkep and privacy are reported only when true, matching SdpToCapabilities. This is a
+deliberate divergence from nmos-reference and the Go node, which always report both
+the true and the false value. Keep the two converters in this file and
+SdpToCapabilities.py in step with each other.
+
 TODO: add urn:x-nmos:cap:transport:usb_class
 
 """
@@ -276,7 +281,7 @@ class FlowToCapabilitiesConverter:
                                                 RangeValue(values=(bitrate,) if bitrate is not None
                                                            else None, type=RangeType.INT))
         cbr = flow.get("constant_bit_rate", None)
-        if cbr:
+        if cbr is not None:
             caps[CapFormatConstantBitRate] = Capability(CapFormatConstantBitRate,
                                                         RangeValue(values=(cbr,) if cbr is not None
                                                                    else None, type=RangeType.BOOL))
@@ -396,7 +401,7 @@ class FlowToCapabilitiesConverter:
                                                 RangeValue(values=(bitrate,) if bitrate is not None
                                                            else None, type=RangeType.INT))
         cbr = flow.get("constant_bit_rate", None)
-        if cbr:
+        if cbr is not None:
             caps[CapFormatConstantBitRate] = Capability(CapFormatConstantBitRate,
                                                         RangeValue(values=(cbr,) if cbr is not None
                                                                    else None, type=RangeType.BOOL))
@@ -615,15 +620,15 @@ class FlowToCapabilitiesConverter:
         v = self._get_int(flow, ["video_layers"])
         a = self._get_int(flow, ["audio_layers"])
         d = self._get_int(flow, ["data_layers"])
-        if v:
+        if v is not None:
             caps[CapFormatVideoLayers] = Capability(CapFormatVideoLayers,
                                                     RangeValue(values=(v,) if v is not None
                                                                else None, type=RangeType.INT))
-        if a:
+        if a is not None:
             caps[CapFormatAudioLayers] = Capability(CapFormatAudioLayers,
                                                     RangeValue(values=(a,) if a is not None
                                                                else None, type=RangeType.INT))
-        if d:
+        if d is not None:
             caps[CapFormatDataLayers] = Capability(CapFormatDataLayers,
                                                    RangeValue(values=(d,) if d is not None
                                                               else None, type=RangeType.INT))
@@ -869,5 +874,6 @@ class FlowToCapabilitiesConverter:
 
 
 def convert_flow_to_capabilities(flow: Dict[str, Any], source: Dict[str, Any],
+                                 sender: Dict[str, Any],
                                  node_clocks: Optional[list] = None) -> Caps:
-    return FlowToCapabilitiesConverter().convert(flow, source, node_clocks)
+    return FlowToCapabilitiesConverter().convert(flow, source, sender, node_clocks)

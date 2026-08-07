@@ -188,7 +188,7 @@ class SdpToCapabilitiesConverter:
             CapSet: Converted capability set
         """
         capabilities: Dict[str, Capability] = {}
-        format_type = self._determine_format_type(media, mux)
+        format_type = self._determine_format_type(media)
 
         # Media type capability
         media_type = self._get_media_type_from_format(format_type, media, mux)
@@ -218,8 +218,14 @@ class SdpToCapabilitiesConverter:
             label=label,
             preference=preference)
 
-    def _determine_format_type(self, media: MediaDescriptor, mux: bool = False) -> Optional[str]:
-        """Determine the NMOS format type from media descriptor"""
+    def _determine_format_type(self, media: MediaDescriptor) -> Optional[str]:
+        """Determine which family of capabilities the media carries.
+
+        This selects the extraction path only; it is deliberately independent of
+        the mux flag, because a mux Receiver changes how the stream is *named*,
+        not which properties the SDP describes. AM824 still carries channel
+        count, sample rate and packet time when the Receiver is a mux.
+        """
         if media.type is None:
             raise ValueError("Media descriptor missing type")
 
@@ -234,10 +240,7 @@ class SdpToCapabilitiesConverter:
                 return FormatVideo
         elif media.type == MatroxSdpEnums.Audio:
             assert media.format_code != 0 and media.format_string is None
-            if media.encoding_name == MatroxSdpEnums.EncodingAM824 and mux:
-                return FormatMux
-            else:
-                return FormatAudio
+            return FormatAudio
         elif media.type == MatroxSdpEnums.Application:
             assert media.format_code == 0 and media.encoding_name is None
             if media.format_string == MatroxSdpEnums.FormatUsb:
@@ -249,10 +252,12 @@ class SdpToCapabilitiesConverter:
 
     def _get_media_type_from_format(self, format_type: str, media: MediaDescriptor, mux: bool = False) -> Optional[str]:
         """Get the media type string for capabilities"""
-        # If the Receiver is of format mux then always application/
-        if mux:
+        # A mux Receiver sees the stream as opaque, so the two encodings that can
+        # carry a multiplex are reported as application/*. Every other encoding
+        # keeps its own prefix regardless of the flag: video/raw stays video/raw.
+        if mux and media.encoding_name in (MatroxSdpEnums.EncodingAM824,
+                                           MatroxSdpEnums.EncodingMP2T):
             type = "application/"
-        # Otherwise, use the media type
         else:
             type = media.type.s + "/"
 
@@ -829,32 +834,34 @@ class SdpToCapabilitiesConverter:
             )
 
 
-def convert_sdp_file_to_capabilities(sdp_file_path: str) -> Caps:
+def convert_sdp_file_to_capabilities(sdp_file_path: str, mux: bool = False) -> Caps:
     """
     Convenience function to convert an SDP file to CCF Capabilities
 
     Args:
         sdp_file_path: Path to the SDP file
+        mux: True when the Receiver is of format mux
 
     Returns:
         Caps: CCF Capabilities structure
     """
     converter = SdpToCapabilitiesConverter()
-    return converter.convert_file(sdp_file_path)
+    return converter.convert_file(sdp_file_path, mux)
 
 
-def convert_sdp_string_to_capabilities(sdp_content: str) -> Caps:
+def convert_sdp_string_to_capabilities(sdp_content: str, mux: bool = False) -> Caps:
     """
     Convenience function to convert SDP content to CCF Capabilities
 
     Args:
         sdp_content: SDP content as string
+        mux: True when the Receiver is of format mux
 
     Returns:
         Caps: CCF Capabilities structure
     """
     converter = SdpToCapabilitiesConverter()
-    return converter.convert_string(sdp_content)
+    return converter.convert_string(sdp_content, mux)
 
 
 if __name__ == "__main__":
