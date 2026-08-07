@@ -54,7 +54,7 @@ from .MatroxCCF import (
     CapTransportSynchronousMedia, CapTransportHkep, CapTransportPrivacy,
     CapTransport_ST2110_21_SenderType, CapTransportPacketTransmissionMode,
     CapTransportParameterSetsFlowMode, CapTransportParameterSetsTransportMode,
-    CapTransportChannelOrder, CapTransportInfoBlock, CapTransportBitRate
+    CapTransportInfoBlock, CapTransportBitRate
 )
 
 
@@ -193,7 +193,7 @@ class FlowToCapabilitiesConverter:
                                                                        if synchronous_media is not None
                                                                        else None, type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -322,7 +322,7 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -351,7 +351,7 @@ class FlowToCapabilitiesConverter:
                                if parameter_sets_transport_mode is not None
                                else None, type=RangeType.STRING))
 
-            transport_bitrate = sender.get("transport_bitrate", None)
+            transport_bitrate = sender.get("bit_rate", None)
             if transport_bitrate:
                 caps[CapTransportBitRate] = Capability(CapTransportBitRate,
                                                        RangeValue(values=(transport_bitrate,)
@@ -430,7 +430,7 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -459,14 +459,13 @@ class FlowToCapabilitiesConverter:
                                if parameter_sets_transport_mode is not None
                                else None, type=RangeType.STRING))
 
-            channel_order = sender.get("channel_order", None)
-            if channel_order:
-                caps[CapTransportChannelOrder] = Capability(CapTransportChannelOrder,
-                                                            RangeValue(values=(channel_order,)
-                                                                       if channel_order is not None
-                                                                       else None, type=RangeType.STRING))
+            # No channel_order here: it is not a Sender attribute. NMOS models it
+            # nowhere on the Sender, and nmos-reference derives it from the Source's
+            # channels only to write the SDP (a=fmtp channel-order=). The lookup that
+            # used to sit here read a key no Sender can carry, so it always produced
+            # nothing. SdpToCapabilities still reports it for AM824, read from the SDP.
 
-            transport_bitrate = sender.get("transport_bitrate", None)
+            transport_bitrate = sender.get("bit_rate", None)
             if transport_bitrate:
                 caps[CapTransportBitRate] = Capability(CapTransportBitRate,
                                                        RangeValue(values=(transport_bitrate,)
@@ -529,19 +528,18 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
                                                                                 if sender_type is not None
                                                                                 else None, type=RangeType.STRING))
 
-            channel_order = sender.get("channel_order", None)
-            if channel_order:
-                caps[CapTransportChannelOrder] = Capability(CapTransportChannelOrder,
-                                                            RangeValue(values=(channel_order,)
-                                                                       if channel_order is not None
-                                                                       else None, type=RangeType.STRING))
+            # No channel_order here: it is not a Sender attribute. NMOS models it
+            # nowhere on the Sender, and nmos-reference derives it from the Source's
+            # channels only to write the SDP (a=fmtp channel-order=). The lookup that
+            # used to sit here read a key no Sender can carry, so it always produced
+            # nothing. SdpToCapabilities still reports it for AM824, read from the SDP.
 
             clk_ref = self._clock_ref_type_from_node_clocks(clock_name, node_clocks)
             caps[CapTransportClockRefType] = Capability(CapTransportClockRefType,
@@ -591,7 +589,7 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
