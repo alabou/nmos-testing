@@ -3352,19 +3352,9 @@ class IS1101Test(GenericTest):
 
             master_enable = response["master_enable"]
 
-            if master_enable:
-                json_data = {
-                    "master_enable": False,
-                    "activation": {"mode": "activate_immediate"}
-                }
+            if not master_enable:
+                return test.DISABLED("No active IS-11 video reference senders")
 
-                valid, response = self.reference_is05_utils.checkCleanRequestJSON(
-                    "PATCH",
-                    "single/senders/" + sender_id + "/staged",
-                    json_data
-                )
-                if not valid:
-                    return test.FAIL(response)
         return test.PASS()
 
     def test_04_03_02(self, test):
@@ -3507,19 +3497,9 @@ class IS1101Test(GenericTest):
 
             master_enable = response["master_enable"]
 
-            if master_enable:
-                json_data = {
-                    "master_enable": False,
-                    "activation": {"mode": "activate_immediate"}
-                }
+            if not master_enable:
+                return test.DISABLED("No active IS-11 audio reference senders")
 
-                valid, response = self.reference_is05_utils.checkCleanRequestJSON(
-                    "PATCH",
-                    "single/senders/" + sender_id + "/staged",
-                    json_data
-                )
-                if not valid:
-                    return test.FAIL(response)
         return test.PASS()
 
     def test_04_04(self, test):

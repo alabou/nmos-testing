@@ -50,6 +50,69 @@ PCAP_GLOBAL_HEADER_SIZE = 24
 PCAP_PACKET_HEADER_SIZE = 16
 ETHERNET_HEADER_SIZE = 14
 
+# Build-time switch for the exact capture-timestamp representation below.
+# Set to False to emit plain float64 capture times, byte-for-byte identical to
+# the values produced before CaptureTime existed.
+CAPTURE_TIME_EXACT_NS = False
+
+
+class CaptureTime(float):
+    """Capture timestamp in seconds that remembers its exact nanosecond value.
+
+    A capture timestamp is Unix-epoch seconds, and float64 cannot hold that
+    instant to nanosecond resolution: 1.79e9 s needs 61 bits of mantissa and
+    float64 has 53, so values quantize to one ULP — 238 ns for a 2026 capture,
+    coarser than the sub-microsecond spacing TR-10-1 §8.10.1 asks to be
+    resolved. Deltas and orderings computed from such values are wrong by up
+    to one ULP, and two packets less than a ULP apart can compare equal.
+
+    This is a *float subclass*, so every consumer that formats, serialises,
+    or does mixed arithmetic with a capture time keeps working unchanged. Only
+    subtraction and comparison BETWEEN two capture times are redirected to the
+    exact integers, which is where the precision is needed and where float64
+    loses it. Operations mixing a capture time with a plain float fall back to
+    ordinary float64 behaviour.
+    """
+
+    __slots__ = ("ns",)
+
+    def __new__(cls, nanoseconds: int) -> "CaptureTime":
+        self = super().__new__(cls, nanoseconds / 1_000_000_000)
+        self.ns = nanoseconds
+        return self
+
+    def __sub__(self, other):
+        if isinstance(other, CaptureTime):
+            return (self.ns - other.ns) / 1_000_000_000
+        return float.__sub__(self, other)
+
+    def __rsub__(self, other):
+        if isinstance(other, CaptureTime):
+            return (other.ns - self.ns) / 1_000_000_000
+        return float.__rsub__(self, other)
+
+    def __lt__(self, other):
+        return self.ns < other.ns if isinstance(other, CaptureTime) else float.__lt__(self, other)
+
+    def __le__(self, other):
+        return self.ns <= other.ns if isinstance(other, CaptureTime) else float.__le__(self, other)
+
+    def __gt__(self, other):
+        return self.ns > other.ns if isinstance(other, CaptureTime) else float.__gt__(self, other)
+
+    def __ge__(self, other):
+        return self.ns >= other.ns if isinstance(other, CaptureTime) else float.__ge__(self, other)
+
+    def __eq__(self, other):
+        return self.ns == other.ns if isinstance(other, CaptureTime) else float.__eq__(self, other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    # Equal capture times always hold the same nanosecond count and therefore
+    # the same float value, so the inherited hash stays consistent with __eq__.
+    __hash__ = float.__hash__
+
 
 @dataclass
 class UdpPacket:
@@ -90,7 +153,13 @@ def iter_udp_packets_scapy(
             payload = bytes(udp.payload)
             if not payload:
                 continue
-            capture_time = float(pkt.time)
+            # Scapy exposes the record timestamp as an EDecimal of seconds, so
+            # scaling it to nanoseconds is exact; float() is the lossy view.
+            capture_time = (
+                CaptureTime(int(pkt.time * 1_000_000_000))
+                if CAPTURE_TIME_EXACT_NS
+                else float(pkt.time)
+            )
             src_ip: str | None = None
             dst_ip: str | None = None
             dscp: int | None = None
@@ -154,6 +223,8 @@ def iter_udp_packets_manual(
             return
         endian, is_nsec = _parse_pcap_magic(global_header[:4])
         frac_divisor = 1_000_000_000 if is_nsec else 1_000_000
+        # Scale factor turning the record's fractional field into nanoseconds.
+        frac_to_ns = 1 if is_nsec else 1_000
         _, _, _, _, _, network = struct.unpack(
             endian + "HHIIII", global_header[4:]
         )
@@ -243,7 +314,9 @@ def iter_udp_packets_manual(
 
             yield UdpPacket(
                 payload=udp_payload,
-                capture_time=sec + (usec / frac_divisor),
+                capture_time=CaptureTime(sec * 1_000_000_000 + usec * frac_to_ns)
+                if CAPTURE_TIME_EXACT_NS
+                else sec + (usec / frac_divisor),
                 src_ip=src_ip,
                 dst_ip=dst_ip,
                 src_port=udp_src_port,

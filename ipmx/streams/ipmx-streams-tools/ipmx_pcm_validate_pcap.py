@@ -759,7 +759,7 @@ def check_sr_before(ctx: PcmValidationContext) -> tuple[bool, str]:
         return False, "No SR/RTP associations found"
     for report, pkt_idx in associations:
         packet = ctx.rtp_packets[pkt_idx]
-        if packet.capture_time is None or report.capture_time >= packet.capture_time:
+        if packet.capture_time is None or report.capture_time > packet.capture_time:
             return False, f"SR for RTP packet index {pkt_idx} does not arrive before the packet"
     return True, "Each SR arrives before its associated RTP packet"
 

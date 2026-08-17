@@ -558,7 +558,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
     - A PCAP of the TCP exchange of the HKEP protocol between a DuT and its Reference peer must be captured, starting the PCAP capture just prior to connecting the Receiver to the Sender and disconnecting the Receiver from the Sender prior to stop the PCAP capture. The media must visually and audibly playback properly on the Receiver for at least 10 seconds prior to disconnecting it from the Sender. After the disconnect the capture must record for at least 10 seconds prior to stopping the PCAP capture.
 
-    - The PCAP shall be analysed with the hkepDissector script with the --validate-all command line option, and all the HKEP validations must PASS.
+    - The PCAP shall be analysed with the ipmx/hkep/hkepDissector.py script with the --validate-all command line option, and all the HKEP validations must PASS.
 
 
 10. **PEP Capability Tests**

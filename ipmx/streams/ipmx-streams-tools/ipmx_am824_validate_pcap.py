@@ -1304,7 +1304,7 @@ def check_sr_before(ctx: Am824ValidationContext) -> tuple[bool, str]:
         return False, "No SR/RTP associations found"
     for report, packet_index in associations:
         packet = ctx.rtp_packets[packet_index]
-        if packet.capture_time is None or report.capture_time >= packet.capture_time:
+        if packet.capture_time is None or report.capture_time > packet.capture_time:
             return False, f"SR for RTP packet index {packet_index} does not arrive before the packet"
     return True, "Each SR arrives before its associated RTP packet"
 

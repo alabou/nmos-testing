@@ -344,6 +344,98 @@ def peek_length(data: bytes, offset: int = 0) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# Frame synchronisation
+#
+# The only field a header check can really lean on is LENGTH, and it is accepted
+# over [24, 131047] out of a 17-bit range — about 99.96% of possible values. So a
+# single readable header is almost no evidence that an offset is a real message
+# boundary: measured on a real capture, 83% of *misaligned* offsets pass it, and
+# 100% do on high-entropy (encrypted) payload. Framing therefore has to be
+# justified by a run of messages whose lengths tile the stream, not by one header.
+# ---------------------------------------------------------------------------
+
+RESYNC_MIN_MESSAGES = 3
+
+
+def chain_frames_cleanly(data: bytes, start: int = 0, min_messages: int = 1,
+                         allow_truncated_tail: bool = True) -> bool:
+    """
+    Return True if framing forward from *start* accounts for the rest of *data*.
+
+    Every message from *start* onwards must have a readable header, the chain must
+    contain at least *min_messages* complete messages, and it must consume the
+    buffer — landing exactly on the final byte, or, when *allow_truncated_tail* is
+    set, on a trailing message cut short by the end of the capture.
+
+    Note that msg_type is deliberately *not* validated here. Unknown message types
+    are tolerated elsewhere in this module (``msg_type_enum`` returns None and the
+    payload decodes to an empty dict), so rejecting them during framing would make
+    a vendor-specific or future message type break the whole stream.
+    """
+    offset = start
+    framed = 0
+
+    while offset < len(data):
+        if offset + HEADER_SIZE > len(data):
+            # Trailing bytes too short to hold a header: a message truncated by
+            # the end of the capture.
+            return allow_truncated_tail and framed >= min_messages
+
+        length = peek_length(data, offset)
+        if length is None:
+            return False
+
+        if offset + length > len(data):
+            # Trailing message truncated by the end of the capture.
+            return allow_truncated_tail and framed >= min_messages
+
+        offset += length
+        framed += 1
+
+    return framed >= min_messages
+
+
+def block_starts_on_boundary(data: bytes) -> bool:
+    """
+    Return True if *data* can be trusted to begin on a message boundary.
+
+    A buffer whose messages tile it exactly is self-evidently well framed. One
+    that ends in a truncated message needs corroboration first, because "a single
+    readable header followed by a length that overruns the buffer" is a pattern
+    unrelated traffic satisfies easily — it is how an HTTP stream ends up being
+    parsed as one enormous USB message. Requiring RESYNC_MIN_MESSAGES complete
+    messages before trusting a truncated tail costs nothing on real USB streams,
+    which carry far more than that before a capture cuts off.
+    """
+    if chain_frames_cleanly(data, 0, 1, allow_truncated_tail=False):
+        return True
+    return chain_frames_cleanly(data, 0, RESYNC_MIN_MESSAGES, allow_truncated_tail=True)
+
+
+def next_sync_offset(data: bytes, start: int = 0) -> Optional[int]:
+    """
+    Find the first offset at or after *start* that can be trusted as a message
+    boundary, or None when there is no such offset.
+
+    The test here is deliberately far stricter than the one used to validate the
+    start of a block. usbDissector inspects *every* TCP stream in a capture, not
+    just USB ones, so a permissive rule does not merely mis-frame USB data — it
+    manufactures USB messages out of TLS, HKEP and any other traffic that happens
+    to be present. Requiring a chain of RESYNC_MIN_MESSAGES that tiles the buffer
+    to its exact end (no truncated tail) is what keeps unrelated streams from
+    producing a sync point at all.
+    """
+    limit = len(data) - HEADER_SIZE
+    if limit < start:
+        return None
+    for candidate in range(start, limit + 1):
+        if chain_frames_cleanly(data, candidate, RESYNC_MIN_MESSAGES,
+                                allow_truncated_tail=False):
+            return candidate
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Payload decoders — one per message type
 # ---------------------------------------------------------------------------
 

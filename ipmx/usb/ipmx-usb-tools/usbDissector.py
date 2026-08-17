@@ -161,6 +161,87 @@ def _load_packets(pcap_file: str) -> list:
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Framing diagnostics
+#
+# Stream bytes that cannot be framed used to be dropped without a word, which let
+# a partially-parsed capture look complete and turned missing messages into bogus
+# "never sent" conclusions. Channel identification re-parses the same blocks
+# several times, so entries are keyed by block content and overwritten rather
+# than accumulated.
+# ---------------------------------------------------------------------------
+
+_UNFRAMED: dict[tuple, dict] = {}
+_FRAMED_PORTS: set[int] = set()
+
+
+def _reset_framing_stats() -> None:
+    _UNFRAMED.clear()
+    _FRAMED_PORTS.clear()
+
+
+def _block_ports(block) -> tuple[int, int]:
+    """TCP ports of the connection a block belongs to, or (0, 0) if unknown."""
+    if not block.packets:
+        return (0, 0)
+    meta = block.packets[0]
+    try:
+        return (int(meta[3]), int(meta[5]))
+    except (TypeError, ValueError, IndexError):
+        return (0, 0)
+
+
+def _note_framed(block) -> None:
+    """Remember that this connection really does carry IPMX USB messages."""
+    _FRAMED_PORTS.update(p for p in _block_ports(block) if p)
+
+
+def _record_unframed(block, nbytes: int, kind: str) -> None:
+    """Record *nbytes* of stream data that could not be framed as USB messages."""
+    if nbytes <= 0:
+        return
+    key = (hash(block.data), len(block.data), kind)
+    _UNFRAMED[key] = {'bytes': nbytes, 'kind': kind, 'ports': _block_ports(block)}
+
+
+def _framing_report() -> Optional[str]:
+    """
+    Summarise stream data that could not be framed, or None when there is none.
+
+    Only connections demonstrably carrying IPMX USB are reported — ones that
+    yielded messages elsewhere, plus any block that needed resynchronising. This
+    dissector walks every TCP stream in the capture, so counting unrelated HTTP,
+    TLS or HKEP traffic as "unframed USB" would bury the real signal in noise.
+    The Session sender port is deliberately not used to widen this: it is
+    auto-detected and can land on a busy non-USB port such as HKEP's 5051.
+    """
+    relevant = [v for v in _UNFRAMED.values()
+                if v['kind'] == 'resync' or any(p in _FRAMED_PORTS for p in v['ports'])]
+    if not relevant:
+        return None
+
+    total   = sum(v['bytes'] for v in relevant)
+    resyncs = sum(1 for v in relevant if v['kind'] == 'resync')
+    tails   = sum(1 for v in relevant if v['kind'] == 'tail')
+    lost    = sum(1 for v in relevant if v['kind'] == 'unframed')
+
+    lines = [f"[!] WARNING: this capture was not fully parsed - {total} byte(s) of IPMX USB "
+             f"stream data could not be framed as messages"]
+    if resyncs:
+        lines.append(f"  {resyncs} block(s) did not start on a message boundary, so framing was "
+                     f"resynchronised (capture likely started mid-stream)")
+        lines.append(f"    Resynchronised framing is best-effort: it locates a boundary that is "
+                     f"consistent with the rest of the stream, which is strong evidence but not "
+                     f"proof. Treat messages from those blocks with corresponding caution.")
+    if tails:
+        lines.append(f"  {tails} block(s) ended in a message truncated by the end of the capture")
+    if lost:
+        lines.append(f"  {lost} block(s) could not be framed at all")
+    lines.append("  Messages contained in those bytes are absent from the analysis below, so "
+                 "'not sent' conclusions may reflect the gap rather than the device.")
+    return "\n".join(lines)
+
+
 def _collect_streams(packets: list) -> dict[str, TcpConnection]:
     """
     First pass: collect all TCP payload packets into per-connection buffers.
@@ -277,11 +358,30 @@ def _parse_messages_from_connection(
         first_encrypted_seen = False
         for block in blocks_fn():
             offset = 0
+
+            # Establish a trustworthy starting point before framing anything. A
+            # block that does not begin on a message boundary (capture started
+            # mid-stream) used to be abandoned silently at the first bad header,
+            # discarding every message in it.
+            if not usb.block_starts_on_boundary(block.data):
+                start = usb.next_sync_offset(block.data, 1)
+                if start is None:
+                    # No trustworthy boundary anywhere. Recorded rather than
+                    # discarded outright, but only reported if the connection
+                    # turns out to be IPMX USB — this dissector walks every TCP
+                    # stream in the capture, so most such blocks are simply other
+                    # traffic and warning about them would be noise.
+                    _record_unframed(block, len(block.data), 'unframed')
+                    continue
+                _record_unframed(block, start, 'resync')
+                offset = start
+
             while True:
                 length = usb.peek_length(block.data, offset)
-                if length is None:
-                    break
-                if offset + length > len(block.data):
+                if length is None or offset + length > len(block.data):
+                    # Trailing message cut short by the end of the capture.
+                    if offset < len(block.data):
+                        _record_unframed(block, len(block.data) - offset, 'tail')
                     break
                 try:
                     parsed = usb.parse_one(block.data, offset,
@@ -289,7 +389,9 @@ def _parse_messages_from_connection(
                 except ValueError as exc:
                     if verbose:
                         print(f"    Parse error at offset {offset}: {exc}")
-                    offset += 1
+                    # The boundary is trusted because the chain validated, so skip
+                    # this message rather than sliding a byte and losing framing.
+                    offset += length
                     continue
 
                 mac_ok: Optional[bool] = None
@@ -308,6 +410,10 @@ def _parse_messages_from_connection(
                     except Exception as exc:
                         if verbose:
                             print(f"    Decrypt error at offset {offset}: {exc}")
+
+                # This connection demonstrably carries IPMX USB, so unframed
+                # bytes found on it are a real gap rather than unrelated traffic.
+                _note_framed(block)
 
                 meta = block.meta_at(offset)
                 if meta is not None:
@@ -1367,6 +1473,8 @@ def analyze_pcap(
     decrypted transparently and field-level validation is applied to
     the decrypted content.
     """
+    _reset_framing_stats()
+
     # §12: Valid modes for TR-10-14 USB privacy
     _VALID_USB_MODES = {
         "AES-128-CTR_CMAC-64-AAD",
@@ -1973,6 +2081,10 @@ def main() -> int:
     )
 
     if not args.quiet:
+        framing_warning = _framing_report()
+        if framing_warning:
+            print(f"\n{framing_warning}")
+
         for sess in sessions:
             _print_session(sess, verbose=args.verbose,
                            show_messages=args.messages,

@@ -46,6 +46,35 @@ except ImportError:
     sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# TCP sequence number arithmetic (RFC 1982 serial-number comparison)
+#
+# TCP sequence numbers are 32-bit and wrap around to 0 after 2^32-1. Comparing
+# them with plain < / > breaks across that boundary: a segment at seq 20 that
+# follows one at seq 0xFFFFFFF0 looks like it comes *before* it, so the
+# reassembler either mistakes fresh data for an old retransmission or declares
+# a bogus gap. These helpers mirror ipmx/usb/ipmx-usb-tools/tcp_reassembler.py
+# so both dissectors reassemble streams identically.
+# ---------------------------------------------------------------------------
+
+def _seq_lt(a: int, b: int) -> bool:
+    """Return True if TCP sequence number *a* is strictly before *b* (mod 2^32)."""
+    return ((b - a) & 0xFFFFFFFF) < 0x80000000
+
+
+def _seq_add(seq: int, n: int) -> int:
+    """Advance *seq* by *n* bytes, wrapping at 2^32."""
+    return (seq + n) & 0xFFFFFFFF
+
+
+def _seq_diff(later: int, earlier: int) -> int:
+    """Signed distance from *earlier* to *later* (positive means later > earlier)."""
+    d = (later - earlier) & 0xFFFFFFFF
+    if d >= 0x80000000:
+        return d - 0x100000000
+    return d
+
+
 class HKEPExchange:
     """Represents a single HKEP protocol exchange (HKEP session identified by receiverId, nodeId, portId)"""
 
@@ -278,6 +307,11 @@ class HKEPDissector:
         self.target_port = target_port
         self.tcp_streams = {}  # Track TCP streams for reassembly
         self.seen_packets = set()  # Track packet hashes to detect retransmissions
+        # Framing diagnostics: bytes the framer could not attribute to a message,
+        # and how many times it had to resynchronise. Reported instead of being
+        # dropped silently, so a partially-framed capture is visible.
+        self._framing_skipped_bytes = 0
+        self._framing_resyncs = 0
         
     def bytes_to_hex(self, data: bytes) -> str:
         """Convert bytes to hex string representation"""
@@ -781,7 +815,33 @@ class HKEPDissector:
         dst_ip = packet[IP].dst if packet.haslayer(IP) else "0"
         payload = bytes(tcp_layer.payload) if tcp_layer.payload else b""
         return f"{src_ip}:{dst_ip}:{tcp_layer.seq}:{len(payload)}:{payload[:20].hex()}"
-    
+
+    def get_tcp_payload(self, packet: Packet) -> bytes:
+        """
+        Return a packet's TCP payload with any Ethernet padding removed.
+
+        Real TCP payload length comes from the IP total-length field. Short frames
+        (e.g. bare ACK/SYN, 54 bytes) are zero-padded to Ethernet's 60-byte
+        minimum, and scapy surfaces that padding as trailing TCP-payload bytes.
+        Using bytes(tcp.payload) directly would inject phantom bytes into the
+        reassembled stream — corrupting sequence tracking and manufacturing
+        messages that were never sent (e.g. a Receiver_AuthStatus whose header
+        lands right after a padded ACK). Bound by ip.len, which accounts for
+        IP/TCP options. When ip.len is 0 (e.g. TCP segmentation offload), fall
+        back to the raw payload bytes.
+        """
+        if not packet.haslayer(TCP):
+            return b""
+        tcp_layer = packet[TCP]
+        raw = bytes(tcp_layer.payload) if tcp_layer.payload else b""
+        if raw and packet.haslayer(IP):
+            ip_layer = packet[IP]
+            if ip_layer.len:
+                seg_len = ip_layer.len - (ip_layer.ihl * 4) - (tcp_layer.dataofs * 4)
+                if seg_len >= 0:
+                    raw = raw[:seg_len]
+        return raw
+
     def is_complete_hkep_message(self, data: bytes) -> Tuple[bool, int]:
         """
         Check if data contains a complete HKEP message
@@ -837,10 +897,10 @@ class HKEPDissector:
             if not tcp_layer.payload:
                 continue
                 
-            payload = bytes(tcp_layer.payload)
+            payload = self.get_tcp_payload(packet)
             if len(payload) < 3:
                 continue
-            
+
             # Try to parse as HKEP
             try:
                 msg_size = struct.unpack('>H', payload[0:2])[0]
@@ -949,162 +1009,27 @@ class HKEPDissector:
         
         return fixed_count
     
-    def reassemble_tcp_stream(self, packets: List, target_port: int) -> Dict[str, bytes]:
-        """
-        Reassemble TCP streams by collecting all packets for each stream
-        Returns dict mapping stream_key -> reassembled data
-        """
-        streams = {}
-        
-        for packet in packets:
-            if not packet.haslayer(TCP):
-                continue
-            
-            tcp = packet[TCP]
-            if tcp.sport != target_port and tcp.dport != target_port:
-                continue
-            
-            if not tcp.payload:
-                continue
-            
-            src_ip = packet[IP].src if packet.haslayer(IP) else "unknown"
-            dst_ip = packet[IP].dst if packet.haslayer(IP) else "unknown"
-            
-            # Create bidirectional stream key
-            if (src_ip, tcp.sport) < (dst_ip, tcp.dport):
-                stream_key = f"{src_ip}:{tcp.sport}-{dst_ip}:{tcp.dport}"
-                direction = "forward"
-            else:
-                stream_key = f"{dst_ip}:{tcp.dport}-{src_ip}:{tcp.sport}"
-                direction = "reverse"
-            
-            if stream_key not in streams:
-                streams[stream_key] = {'forward': [], 'reverse': []}
-            
-            payload = bytes(tcp.payload)
-            seq = tcp.seq
-            
-            # Store packet with sequence number
-            if direction == "forward":
-                streams[stream_key]['forward'].append((seq, payload, packet))
-            else:
-                streams[stream_key]['reverse'].append((seq, payload, packet))
-        
-        # Reassemble each stream
-        reassembled = {}
-        for stream_key, directions in streams.items():
-            # Reassemble forward direction
-            forward_data = self._reassemble_direction(directions['forward'])
-            # Reassemble reverse direction  
-            reverse_data = self._reassemble_direction(directions['reverse'])
-            
-            reassembled[f"{stream_key}_forward"] = forward_data
-            reassembled[f"{stream_key}_reverse"] = reverse_data
-        
-        return reassembled
-    
-    def _reassemble_direction(self, packets: List[Tuple[int, bytes, Packet]]) -> bytes:
-        """Reassemble packets in one direction by sequence number"""
-        if not packets:
-            return b''
-        
-        # Sort by sequence number
-        packets.sort(key=lambda x: x[0])
-        
-        # Simple reassembly - just concatenate in order
-        # (assuming no gaps or overlaps for now)
-        result = b''
-        expected_seq = None
-        
-        for seq, payload, packet in packets:
-            if expected_seq is None:
-                expected_seq = seq
-                result = payload
-                expected_seq += len(payload)
-            elif seq == expected_seq:
-                # In order - append
-                result += payload
-                expected_seq += len(payload)
-            elif seq < expected_seq:
-                # Retransmission or partial overlap
-                overlap = expected_seq - seq
-                if overlap < len(payload):
-                    # Partial overlap: append only the new suffix
-                    result += payload[overlap:]
-                    expected_seq = seq + len(payload)
-                # else: full retransmission — skip
-            else:
-                # True gap: stop reassembly to avoid inserting incorrect data
-                break
-        
-        return result
-    
-    def reassemble_tcp_stream_properly(self, packets: List[Tuple[int, int, bytes]]) -> Tuple[bytes, List[Dict]]:
-        """
-        Properly reassemble TCP stream from packets with (seq, length, payload)
-        Handles gaps, overlaps, and out-of-order packets
-
-        Returns:
-            (reassembled_data, discontinuity_info)
-
-        discontinuity_info contains info about gaps/discontinuities found
-        """
-        if not packets:
-            return b'', []
-
-        # Sort by sequence number
-        packets.sort(key=lambda x: x[0])
-
-        result = bytearray()
-        last_end = None
-        discontinuities = []
-
-        for seq, length, payload in packets:
-            if len(payload) == 0:
-                continue
-
-            if last_end is None:
-                # First packet
-                result.extend(payload)
-                last_end = seq + len(payload)
-            elif seq == last_end:
-                # Perfect continuation - no gap, no overlap
-                result.extend(payload)
-                last_end = seq + len(payload)
-            elif seq < last_end:
-                # Overlap - skip overlapping bytes
-                overlap = last_end - seq
-                if overlap < len(payload):
-                    # Partial overlap - append non-overlapping part
-                    result.extend(payload[overlap:])
-                    last_end = seq + len(payload)
-                # else: completely overlapped, skip
-            else:
-                # Gap - record the discontinuity and stop reassembly
-                gap = seq - last_end
-                discontinuities.append({
-                    'gap_start': last_end,
-                    'gap_end': seq,
-                    'gap_size': gap,
-                    'description': f'Gap of {gap} bytes between SEQ {last_end} and {seq}'
-                })
-
-                # Stop reassembly at gaps to avoid misalignment
-                break
-
-        return bytes(result), discontinuities
-
     def _find_contiguous_blocks(self, packets: List[Tuple[int, int, bytes, int, Packet]]) -> List[Tuple[bytes, List[Tuple[int, int, bytes, int, Packet]]]]:
         """
         Find contiguous blocks of packets (no gaps in sequence numbers)
+
+        Out-of-order segments are handled by the sequence-number sort below, so
+        capture order does not matter. All sequence comparisons are 32-bit
+        wraparound-safe (see _seq_lt / _seq_add / _seq_diff).
 
         Returns list of (block_data, block_packets) tuples
         """
         if not packets:
             return []
 
-        # Sort by sequence number
-        packets.sort(key=lambda x: x[0])
+        # Sort by sequence number. Sorting on the raw value would split a stream
+        # that wraps past 2^32 into two blocks in the wrong order, so order by
+        # signed distance from the lowest observed sequence number instead.
+        base_seq = packets[0][0]
+        for pkt in packets:
+            if _seq_lt(pkt[0], base_seq):
+                base_seq = pkt[0]
+        packets.sort(key=lambda x: _seq_diff(x[0], base_seq))
 
         blocks = []
         current_block = []
@@ -1119,31 +1044,31 @@ class HKEPDissector:
                 # Start new block
                 current_block = [(seq, length, payload, pkt_num, packet)]
                 current_data = bytearray(payload)
-                expected_seq = seq + len(payload)
+                expected_seq = _seq_add(seq, len(payload))
             elif seq == expected_seq:
                 # Continuation of current block
                 current_block.append((seq, length, payload, pkt_num, packet))
                 current_data.extend(payload)
-                expected_seq = seq + len(payload)
-            elif seq < expected_seq:
+                expected_seq = _seq_add(seq, len(payload))
+            elif _seq_lt(seq, expected_seq):
                 # Retransmission or partial overlap — do not start a new block.
-                overlap = expected_seq - seq
+                overlap = _seq_diff(expected_seq, seq)
                 if overlap < len(payload):
                     # Partial overlap: only the new suffix carries unseen bytes.
                     new_payload = payload[overlap:]
-                    current_block.append((seq + overlap, len(new_payload), new_payload, pkt_num, packet))
+                    current_block.append((_seq_add(seq, overlap), len(new_payload), new_payload, pkt_num, packet))
                     current_data.extend(new_payload)
-                    expected_seq = seq + len(payload)
+                    expected_seq = _seq_add(seq, len(payload))
                 # else: full retransmission — already have all these bytes; skip.
             else:
-                # True gap (seq > expected_seq) — save current block and start a new one.
+                # True gap (seq after expected_seq) — save current block and start a new one.
                 if current_block:
                     blocks.append((bytes(current_data), current_block))
 
                 # Start new block
                 current_block = [(seq, length, payload, pkt_num, packet)]
                 current_data = bytearray(payload)
-                expected_seq = seq + len(payload)
+                expected_seq = _seq_add(seq, len(payload))
 
         # Add final block
         if current_block:
@@ -1151,96 +1076,146 @@ class HKEPDissector:
 
         return blocks
 
+    # A resynchronisation point has to be justified by more than one message.
+    # Header density in HDCP key material is roughly one plausible 3-byte header
+    # per 270 bytes, so a single message — or even a pair — can line up by
+    # chance; a run of three whose lengths tile the block does not.
+    RESYNC_MIN_MESSAGES = 3
+
+    def _chain_frames_cleanly(self, block_data: bytes, start: int, min_messages: int = 1) -> bool:
+        """
+        Return True if framing forward from *start* accounts for the rest of the block.
+
+        Every message from *start* onwards must carry a valid header, the chain
+        must consume the block exactly — ending either on its final byte or on a
+        trailing message cut short by the end of the capture — and it must contain
+        at least *min_messages* complete messages.
+
+        Requiring the whole chain to close is what separates a genuine message
+        boundary from a byte pattern inside a certificate or a hash that happens
+        to look like a header. A lone plausible header is weak evidence; a run of
+        headers whose lengths tile the block is strong evidence.
+        """
+        offset = start
+        framed = 0
+
+        while offset < len(block_data):
+            if offset + 3 > len(block_data):
+                # Trailing bytes too short to hold a header: a message truncated
+                # by the end of the capture.
+                return framed >= min_messages
+
+            msg_size = struct.unpack('>H', block_data[offset:offset+2])[0]
+            if msg_size < 3 or msg_size > 1000:
+                return False
+            if block_data[offset+2] not in self.MSG_TYPES:
+                return False
+
+            if offset + msg_size > len(block_data):
+                # Trailing message truncated by the end of the capture.
+                return framed >= min_messages
+
+            offset += msg_size
+            framed += 1
+
+        return framed >= min_messages
+
+    def _next_sync_offset(self, block_data: bytes, start: int) -> Optional[int]:
+        """
+        Find the first offset at or after *start* whose message chain closes cleanly.
+
+        Prefers the strongest available evidence: a chain of RESYNC_MIN_MESSAGES
+        or more is tried first, and shorter chains are only considered when no
+        such point exists anywhere in the block. That keeps the strict rule for
+        the common case while still recovering the last message or two of a
+        block, where a long chain is impossible by definition.
+
+        Returns None when no remaining offset can frame the rest of the block, in
+        which case the caller should account for the skipped bytes rather than
+        guessing at a boundary.
+        """
+        for min_messages in range(self.RESYNC_MIN_MESSAGES, 0, -1):
+            for candidate in range(start, len(block_data) - 2):
+                if self._chain_frames_cleanly(block_data, candidate, min_messages):
+                    return candidate
+        return None
+
     def _extract_messages_from_block(self, block_data: bytes, block_packets: List, stream_key: str, direction_name: str, hkep_message_count: int) -> List[Dict]:
         """
         Extract HKEP messages from a contiguous block of data
+
+        A block is only framed from an offset whose whole message chain tiles the
+        rest of the block (see _chain_frames_cleanly). Resynchronising on the
+        first 3-byte pattern that merely looks like a header is not safe here:
+        an HKEP header is only a 2-byte length plus a 1-byte msg_id, and that
+        pattern occurs roughly once every 270 bytes of HDCP key material, so
+        scanning forward through a certificate or a hash will eventually
+        manufacture a message that was never sent.
 
         Returns list of message results
         """
         messages = []
         offset = 0
-        max_offset = len(block_data) - 2
-        last_valid_offset = -1
 
-        while offset <= max_offset:
-            # Check if we have enough bytes for msg_size
-            if offset + 2 > len(block_data):
+        # Establish a trustworthy starting point before framing anything.
+        if not self._chain_frames_cleanly(block_data, 0):
+            start = self._next_sync_offset(block_data, 1)
+            if start is None:
+                self._framing_skipped_bytes += len(block_data)
+                return messages
+            self._framing_skipped_bytes += start
+            self._framing_resyncs += 1
+            offset = start
+
+        while offset + 3 <= len(block_data):
+            # msg_size is the total on-wire length, i.e. it already covers its own
+            # two bytes and the msg_id (same convention as is_complete_hkep_message).
+            msg_size = struct.unpack('>H', block_data[offset:offset+2])[0]
+            if msg_size < 3 or msg_size > 1000 or offset + msg_size > len(block_data):
+                # Trailing message cut short by the end of the capture.
+                self._framing_skipped_bytes += len(block_data) - offset
                 break
 
-            msg_size = struct.unpack('>H', block_data[offset:offset+2])[0]
-            total_len = 2 + msg_size
+            msg_data = block_data[offset:offset+msg_size]
+            msg_id = msg_data[2]
+            if msg_id not in self.MSG_TYPES:
+                # Unreachable once the chain has been validated; kept as a guard.
+                self._framing_skipped_bytes += len(block_data) - offset
+                break
 
-            # Validate msg_size (HKEP messages are typically 3-1000 bytes)
-            if msg_size > 1000 or msg_size < 1:
-                offset += 1
-                continue
+            try:
+                hkep_data = self.dissect_hkep_message(msg_data)
+            except (ValueError, IndexError, struct.error):
+                hkep_data = None
 
-            # Check if we have a complete message
-            if offset + total_len <= len(block_data):
-                # Complete message
-                msg_data = block_data[offset:offset+total_len]
+            if hkep_data and hkep_data.get('msg_id') in self.MSG_TYPES:
+                # Set direction for Null messages based on TCP stream direction
+                # forward = server->client (Encoder->Decoder), reverse = client->server (Decoder->Encoder)
+                if hkep_data.get('message_type') == 'Null message' and 'direction' not in hkep_data:
+                    hkep_data['direction'] = 'Encoder->Decoder' if direction_name == 'forward' else 'Decoder->Encoder'
 
-                # Validate msg_id is a known HKEP message type
-                if len(msg_data) >= 3:
-                    msg_id = msg_data[2]
-                    if msg_id not in self.MSG_TYPES:
-                        offset += 1
-                        continue
+                # Find which packet contains this message
+                actual_pkt_num = block_packets[0][3]  # Default to first packet
+                actual_timestamp = float(block_packets[0][4].time) if hasattr(block_packets[0][4], 'time') else 0.0
 
-                    # Try to dissect
-                    try:
-                        hkep_data = self.dissect_hkep_message(msg_data)
+                # Track offset to find the right packet
+                current_offset = 0
+                for seq, length, payload, pkt_num, pkt in block_packets:
+                    if current_offset <= offset < current_offset + len(payload):
+                        actual_pkt_num = pkt_num
+                        actual_timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
+                        break
+                    current_offset += len(payload)
 
-                        if hkep_data and hkep_data.get('msg_id') in self.MSG_TYPES:
-                            # Set direction for Null messages based on TCP stream direction
-                            # forward = server->client (Encoder->Decoder), reverse = client->server (Decoder->Encoder)
-                            if hkep_data.get('message_type') == 'Null message' and 'direction' not in hkep_data:
-                                hkep_data['direction'] = 'Encoder->Decoder' if direction_name == 'forward' else 'Decoder->Encoder'
-                            
-                            last_valid_offset = offset
+                messages.append({
+                    "packet_number": actual_pkt_num,
+                    "timestamp": actual_timestamp,
+                    "hkep": hkep_data
+                })
 
-                            # Find which packet contains this message
-                            actual_pkt_num = block_packets[0][3]  # Default to first packet
-                            actual_timestamp = float(block_packets[0][4].time) if hasattr(block_packets[0][4], 'time') else 0.0
-
-                            # Track offset to find the right packet
-                            current_offset = 0
-                            for seq, length, payload, pkt_num, pkt in block_packets:
-                                if current_offset <= offset < current_offset + len(payload):
-                                    actual_pkt_num = pkt_num
-                                    actual_timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
-                                    break
-                                current_offset += len(payload)
-
-                            messages.append({
-                                "packet_number": actual_pkt_num,
-                                "timestamp": actual_timestamp,
-                                "hkep": hkep_data
-                            })
-
-                            offset += total_len
-                            continue
-                    except (ValueError, IndexError, struct.error) as e:
-                        # Parse error - skip this offset
-                        pass
-
-            # If we haven't found a valid message, try next byte
-            # But if we've moved too far from last valid message, try harder to find next
-            if offset - last_valid_offset > 100:
-                # Look ahead for next valid message start
-                found = False
-                for search in range(offset + 1, min(offset + 200, len(block_data) - 2)):
-                    test_size = struct.unpack('>H', block_data[search:search+2])[0]
-                    if 1 <= test_size <= 1000 and search + 2 < len(block_data):
-                        test_id = block_data[search + 2]
-                        if test_id in self.MSG_TYPES and search + 2 + test_size <= len(block_data):
-                            offset = search
-                            found = True
-                            break
-                if not found:
-                    offset += 1
-            else:
-                offset += 1
+            # The message boundary is trusted even when the body failed to
+            # dissect, so a single bad message does not cost us the rest.
+            offset += msg_size
 
         return messages
 
@@ -1409,10 +1384,10 @@ class HKEPDissector:
             if not tcp_layer.payload:
                 continue
             
-            payload = bytes(tcp_layer.payload)
+            payload = self.get_tcp_payload(packet)
             if len(payload) < 3:
                 continue
-            
+
             # Track seen packets for retransmission detection (but don't skip yet - might be needed for reassembly)
             pkt_hash = self.get_packet_hash(packet)
             is_retransmission = pkt_hash in self.seen_packets
@@ -1473,9 +1448,9 @@ class HKEPDissector:
                     if tcp_layer.seq == stream['expected_seq']:
                         # In-order packet - add to buffer
                         stream['buffer'] += payload
-                        stream['expected_seq'] = tcp_layer.seq + len(payload)
+                        stream['expected_seq'] = _seq_add(tcp_layer.seq, len(payload))
                         stream['packets'].append(pkt_num)
-                    elif tcp_layer.seq < stream['expected_seq']:
+                    elif _seq_lt(tcp_layer.seq, stream['expected_seq']):
                         # Old/duplicate packet - skip
                         if show_tcp_issues and verbose:
                             print(f"  [INFO] Skipping old/duplicate packet with SEQ={tcp_layer.seq}")
@@ -1703,7 +1678,7 @@ class HKEPDissector:
             
             # Collect payload for reassembly
             if tcp_layer.payload:
-                payload = bytes(tcp_layer.payload)
+                payload = self.get_tcp_payload(packet)
                 if len(payload) > 0:
                     # Create bidirectional stream key
                     if (src_ip, src_port) < (dst_ip, dst_port):
@@ -1838,7 +1813,12 @@ class HKEPDissector:
         for stream_key in stream_preinits:
             stream_preinits[stream_key].sort(key=lambda x: x[0])
         
-        # Second pass: Process all messages and associate with exchanges
+        # Second pass: Process all messages and associate with exchanges.
+        # Reset the framing diagnostics so they describe this pass only (the
+        # AKE_PreInit discovery pass above walks the same blocks).
+        self._framing_skipped_bytes = 0
+        self._framing_resyncs = 0
+
         for stream_key, directions in stream_data.items():
             # Get metadata from first packet in either direction
             first_direction = 'forward' if directions['forward'] else 'reverse'
@@ -1902,9 +1882,16 @@ class HKEPDissector:
                                     # Ensure TCP connection is registered
                                     exchange.add_tcp_connection(stream_key, src_ip, src_port, dst_ip, dst_port)
                             
-                            # Check if we already processed this message from a block
+                            # Check if we already processed this message from a block.
+                            # A single TCP segment can carry several back-to-back HKEP
+                            # messages (e.g. AKE_Init followed by AKE_Transmitter_Info),
+                            # so the message type has to be part of the identity here —
+                            # keying on the packet number alone silently drops all but
+                            # the first message of such a segment.
                             already_processed = any(
-                                msg['packet_number'] == pkt_num for msg in exchange.messages
+                                msg['packet_number'] == pkt_num
+                                and msg['hkep'].get('msg_id') == hkep_data.get('msg_id')
+                                for msg in exchange.messages
                             )
 
                             if not already_processed:
@@ -1974,9 +1961,13 @@ class HKEPDissector:
                                 # Ensure TCP connection is registered
                                 exchange.add_tcp_connection(stream_key, src_ip, src_port, dst_ip, dst_port)
                         
-                        # Check if we already processed this message from individual packet processing
+                        # Check if we already processed this message from individual packet
+                        # processing. Keyed on message type as well as packet number, since a
+                        # single TCP segment can carry several back-to-back HKEP messages.
                         already_processed = any(
-                            msg['packet_number'] == msg_result["packet_number"] for msg in exchange.messages
+                            msg['packet_number'] == msg_result["packet_number"]
+                            and msg['hkep'].get('msg_id') == hkep_data.get('msg_id')
+                            for msg in exchange.messages
                         )
 
                         if not already_processed:
@@ -2005,6 +1996,21 @@ class HKEPDissector:
                             })
 
         
+        # Surface any stream bytes the framer could not attribute to a message.
+        # Staying quiet here would let a partially-framed capture look complete
+        # and turn missing messages into bogus "never sent" conclusions.
+        if verbose and self._framing_skipped_bytes:
+            print(f"\n[!] WARNING: this capture was not fully parsed - {self._framing_skipped_bytes} "
+                  f"stream byte(s) could not be framed as HKEP messages")
+            if self._framing_resyncs:
+                print(f"  {self._framing_resyncs} block(s) did not start on a message boundary, so "
+                      f"framing was resynchronised (capture likely started mid-stream)")
+                print(f"    Resynchronised framing is best-effort: it locates a boundary that is "
+                      f"consistent with the rest of the stream, which is strong evidence but not "
+                      f"proof. Treat messages from those blocks with corresponding caution.")
+            print(f"  Messages contained in those bytes are absent from the analysis below, so "
+                  f"'not sent' conclusions may reflect the gap rather than the device.")
+
         # Add all exchanges to the analysis result
         for exchange in exchanges.values():
             analysis_result.add_exchange(exchange)
