@@ -1499,7 +1499,7 @@ class IpmxSdpTest(GenericTest):
 
                     active = response.json()
 
-                sdp_retry = 3
+                sdp_retry = 5
                 while True:
                     manifest_href = "single/senders/{}/transportfile".format(sender["id"])
                     manifest_href_valid, manifest_href_response = self.is05_utils.checkCleanRequest(
@@ -1516,12 +1516,12 @@ class IpmxSdpTest(GenericTest):
                     if (manifest_href_response.text is None or
                             manifest_href_response.text == "" or
                             manifest_href_response.text.isspace()):
-                        sdp_retry -= 1
                         if sdp_retry <= 0:
                             return test.FAIL("Sender {} cannot GET an SDP transport file after 5 retries."
                                              .format(sender["id"]))
                         else:
                             time.sleep(2)
+                        sdp_retry -= 1
                     else:
                         break
 
@@ -1684,7 +1684,7 @@ class IpmxSdpTest(GenericTest):
                 # We must get the SDP transport file again to get the final PEP parameters that
                 # become final on activation with master_enable set to true. We are not expecting
                 # any changes in the SDP transport file after activation with master_enable set to true.
-                sdp_retry = 2
+                sdp_retry = 5
                 while True:
                     manifest_href = "single/senders/{}/transportfile".format(sender["id"])
                     manifest_href_valid, manifest_href_response = self.is05_utils.checkCleanRequest(
@@ -1703,12 +1703,12 @@ class IpmxSdpTest(GenericTest):
                     if (manifest_href_response.text is None or
                             manifest_href_response.text == "" or
                             manifest_href_response.text.isspace()):
-                        sdp_retry -= 1
                         if sdp_retry <= 0:
                             return test.FAIL("Sender {} cannot GET an SDP transport file after 5 retries."
                                              .format(sender["id"]))
                         else:
                             time.sleep(2)
+                        sdp_retry -= 1
                     else:
                         break
 
@@ -1844,7 +1844,7 @@ class IpmxSdpTest(GenericTest):
 
                     active = response.json()
 
-                sdp_retry = 3
+                sdp_retry = 5
                 while True:
                     manifest_href = "single/senders/{}/transportfile".format(sender["id"])
                     manifest_href_valid, manifest_href_response = self.is05_utils.checkCleanRequest(
@@ -1861,12 +1861,12 @@ class IpmxSdpTest(GenericTest):
                     if (manifest_href_response.text is None or
                             manifest_href_response.text == "" or
                             manifest_href_response.text.isspace()):
-                        sdp_retry -= 1
                         if sdp_retry <= 0:
                             return test.FAIL("Sender {} cannot GET an SDP transport file after 5 retries."
                                              .format(sender["id"]))
                         else:
                             time.sleep(2)
+                        sdp_retry -= 1
                     else:
                         break
 
@@ -2011,7 +2011,7 @@ class IpmxSdpTest(GenericTest):
                 # We must get the SDP transport file again to get the final PEP parameters that
                 # become final on activation with master_enable set to true. We are not expecting
                 # any changes in the SDP transport file after activation with master_enable set to true.
-                sdp_retry = 2
+                sdp_retry = 5
                 while True:
                     manifest_href = "single/senders/{}/transportfile".format(sender["id"])
                     manifest_href_valid, manifest_href_response = self.is05_utils.checkCleanRequest(
@@ -2030,12 +2030,12 @@ class IpmxSdpTest(GenericTest):
                     if (manifest_href_response.text is None or
                             manifest_href_response.text == "" or
                             manifest_href_response.text.isspace()):
-                        sdp_retry -= 1
                         if sdp_retry <= 0:
                             return test.FAIL("Sender {} cannot GET an SDP transport file after 5 retries."
                                              .format(sender["id"]))
                         else:
                             time.sleep(2)
+                        sdp_retry -= 1
                     else:
                         break
 
@@ -2255,12 +2255,12 @@ class IpmxSdpTest(GenericTest):
                     if (manifest_href_response.text is None or
                             manifest_href_response.text == "" or
                             manifest_href_response.text.isspace()):
-                        sdp_retry -= 1
                         if sdp_retry <= 0:
                             return test.FAIL("Sender {} cannot GET an SDP transport file after 5 retries."
                                              .format(sender["id"]))
                         else:
                             time.sleep(2)
+                        sdp_retry -= 1
                     else:
                         break
 
