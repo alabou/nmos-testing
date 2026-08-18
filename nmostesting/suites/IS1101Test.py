@@ -223,7 +223,8 @@ class IS1101Test(GenericTest):
                         if state == "awaiting_signal":
                             return test.FAIL("Expected state of input {} is \"awaiting_signal\", got \"{}\""
                                              .format(id, state))
-                        self.not_active_connected_inputs.append(input)
+                    if state == "no_signal":
+                        self.not_active_connected_inputs.append(id)
             if len(self.not_active_connected_inputs) != 0:
                 for input in self.not_active_connected_inputs:
                     self.connected_inputs.remove(input)
@@ -1413,8 +1414,8 @@ class IS1101Test(GenericTest):
             if not valid:
                 return test.FAIL("Unexpected response from the streamcompatibility API: {}".format(response))
             if response.status_code != 200:
-                test.FAIL("The streamcompatibility request for sender {} status has failed: {}"
-                          .format(sender_id, response.json()))
+                return test.FAIL("The streamcompatibility request for sender {} status has failed: {}"
+                                 .format(sender_id, response.json()))
             state = response.json()["state"]
             if state in ["awaiting_essence", "no_essence"]:
                 for i in range(0, CONFIG.STABLE_STATE_ATTEMPTS):
