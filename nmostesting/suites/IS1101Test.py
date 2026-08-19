@@ -566,6 +566,9 @@ class IS1101Test(GenericTest):
                     return test.FAIL("Unexpected response from the streamcompatibility API: {}".format(response))
                 if response.status_code != 200:
                     return test.FAIL("The sender {} constraints cannot be deleted".format(sender_id))
+            # wait for stable state before moving on since flow may have been reset momentarily by PUT/DELETE of base edid in test_01_** tests above
+            for i in range(0, CONFIG.STABLE_STATE_ATTEMPTS):
+                time.sleep(CONFIG.STABLE_STATE_DELAY)
             return test.PASS()
         return test.UNCLEAR("There are no IS-11 senders")
 
