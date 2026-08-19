@@ -568,7 +568,18 @@ class IS1101Test(GenericTest):
                     return test.FAIL("The sender {} constraints cannot be deleted".format(sender_id))
             # wait for stable state before moving on since flow may have been reset momentarily by PUT/DELETE of base edid in test_01_** tests above
             for i in range(0, CONFIG.STABLE_STATE_ATTEMPTS):
-                time.sleep(CONFIG.STABLE_STATE_DELAY)
+                all_inputs_have_signal = True
+                for input_id in self.base_edid_inputs: # loop sets all_inputs_have_signal to False if any input does not have signal_present
+                    input_props = self.get_json(test, self.compat_url + "inputs/" + input_id + "/properties/")
+                    state = input_props["status"]["state"]
+                    if state != "signal_present":
+                        all_inputs_have_signal = False
+                        break
+                # leave loop only after all inputs have signal, otherwise go around again
+                if all_inputs_have_signal:
+                    break
+                else:
+                    time.sleep(CONFIG.STABLE_STATE_DELAY)
             return test.PASS()
         return test.UNCLEAR("There are no IS-11 senders")
 
