@@ -1485,7 +1485,11 @@ def check_internal_requirements():
                    "websocket-client": "websocket",
                    "paho-mqtt": "paho",
                    "Flask-Cors": "flask_cors",
-                   "pycryptodome": "Crypto"}
+                   "pycryptodome": "Crypto",
+                   # PySocks installs as the module `socks`. get_package_name()
+                   # does not lowercase, so the key must match the spelling used
+                   # in requirements.txt or the check hard-exits.
+                   "PySocks": "socks"}
     installed_pkgs = [pkg[1] for pkg in pkgutil.iter_modules()]
     with open("requirements.txt") as requirements_file:
         for requirement in requirements_file.readlines():

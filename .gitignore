@@ -83,9 +83,13 @@ celerybeat-schedule
 .env
 
 # virtualenv
-.venv
+.venv/
 venv/
 ENV/
+
+.venv12/
+venv12/
+
 
 # Spyder project settings
 .spyderproject
@@ -120,3 +124,4 @@ nmostesting/UserConfig.py
 
 # IPMX
 ipmx/ffmpeg
+IPMX_VENDOR_*/

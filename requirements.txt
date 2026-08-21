@@ -22,3 +22,4 @@ pycryptodome
 xeger
 pyshark
 scapy
+PySocks>=1.7.1
