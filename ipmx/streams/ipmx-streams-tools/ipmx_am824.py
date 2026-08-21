@@ -25,7 +25,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+import ipmx_audio_ptime
 import ipmx_parse_rtp_pcap
+from ipmx_audio_ptime import AudioPath
 
 
 DEFAULT_CAPTURE_START = 1_700_000_000.0
@@ -38,61 +40,21 @@ DEFAULT_ETH_DST = "02:00:00:00:00:02"
 AES3_BLOCK_PERIOD = 192
 AES3_CHANNEL_STATUS_BYTES = 24
 
-# ST 2110-31:2022 Table 1 — the only nine permitted packet-time / clock-rate
-# combinations.  Two keys can map to the same entry to tolerate the rounding
-# that ST 2110-31 section 7 note mandates ("rounded to 2 decimal places, with
-# midway values such as 0.125 rounded down"):
+# The AM824 transport is governed by ST 2110-31:2022 section 7 Table 1.  The
+# table itself lives in ipmx_audio_ptime, which also holds the ST 2110-30 / AES67
+# table used by the PCM path — the two are NOT interchangeable, so everything in
+# this module resolves packet times through AUDIO_PATH below and never reaches
+# for the PCM table.
 #
-#   key = accepted ptime in µs  →  (nominal_ptime_us, periods_per_packet)
-#
-# "Signaled" key  — value of a=ptime × 1000 as written by a spec-compliant
-#                   sender (e.g. 120 for 0.12 ms).
-# "Exact" key     — physical period rounded to the nearest integer µs
-#                   (e.g. 125 for 6 × 1/48000 s = 125.000 µs exactly).
-#
-# NOTE: stream *generation* currently only supports 125 µs (6 periods) and
-# 1000 µs (48 periods) because PtimePreset only defines those two values.
-# The 4-period entries (80/83 µs for 48/96 kHz, 90/91 µs for 44.1 kHz) are
-# present so that the validator and SR-injector can handle all spec-legal
-# captures, but build_dynamic_audio_stream_config will raise ValueError for
-# those ptimes until PtimePreset is extended.
-SUPPORTED_PACKET_TIME_PROFILES: dict[int, dict[int, tuple[int, int]]] = {
-    # 44.1 kHz — three permitted ptimes (Table 1)
-    44_100: {
-        # 4 periods: 4/44100 s = 90.703 µs  →  SDP 0.09 ms = 90 µs
-        91:   (91, 4),    # exact (rounded)
-        90:   (91, 4),    # SDP signaled
-        # 6 periods: 6/44100 s = 136.054 µs  →  SDP 0.14 ms = 140 µs
-        136:  (136, 6),   # exact (rounded)
-        140:  (136, 6),   # SDP signaled
-        # 48 periods: 48/44100 s = 1088.435 µs  →  SDP 1.09 ms = 1090 µs
-        1088: (1088, 48), # exact (rounded)
-        1090: (1088, 48), # SDP signaled
-    },
-    # 48 kHz — three permitted ptimes (Table 1)
-    48_000: {
-        # 4 periods: 4/48000 s = 83.333 µs  →  SDP 0.08 ms = 80 µs
-        83:   (83, 4),    # exact (rounded)
-        80:   (83, 4),    # SDP signaled
-        # 6 periods: 6/48000 s = 125.000 µs  →  SDP 0.12 ms = 120 µs
-        # (0.125 ms rounds down to 0.12 ms per the spec note)
-        125:  (125, 6),   # exact
-        120:  (125, 6),   # SDP signaled
-        # 48 periods: 48/48000 s = 1000.000 µs  →  SDP 1 ms = 1000 µs
-        1000: (1000, 48), # exact and SDP signaled
-    },
-    # 96 kHz — three permitted ptimes (Table 1)
-    96_000: {
-        # 8 periods: 8/96000 s = 83.333 µs  →  SDP 0.08 ms = 80 µs
-        83:   (83, 8),    # exact (rounded)
-        80:   (83, 8),    # SDP signaled
-        # 12 periods: 12/96000 s = 125.000 µs  →  SDP 0.12 ms = 120 µs
-        125:  (125, 12),  # exact
-        120:  (125, 12),  # SDP signaled
-        # 96 periods: 96/96000 s = 1000.000 µs  →  SDP 1 ms = 1000 µs
-        1000: (1000, 96), # exact and SDP signaled
-    },
-}
+# NOTE: stream *generation* currently only supports 125 µs and 1000 µs signaled
+# ptimes because PtimePreset only defines those two values.  The 4-period
+# entries (80/83 µs for 48/96 kHz, 90/91 µs for 44.1 kHz) are present so that
+# the validator and SR-injector can handle all spec-legal captures, but
+# generation raises ValueError for those ptimes until PtimePreset is extended.
+# Note this also leaves 44.1 kHz AM824 generation unsupported: Table 1 permits
+# only 1.09 / 0.14 / 0.09 ms there and PtimePreset can express none of them.
+AUDIO_PATH = AudioPath.AM824
+SUPPORTED_PACKET_TIME_PROFILES = ipmx_audio_ptime.packet_time_profiles(AUDIO_PATH)
 
 
 class AudioSourceKind(Enum):
@@ -201,14 +163,44 @@ class AudioStreamConfig:
     duration_seconds: float = 6
 
     @property
+    def nominal_packet_time_us(self) -> int:
+        """Physical packet duration for this rate/ptime, per ST 2110-31 Table 1.
+
+        Resolved from the table rather than computed from `ptime.value` because
+        the signaled ptime is a *rounded description* of the real packet time,
+        not the packet time itself: at 44.1 kHz a signaled 1.09 ms describes a
+        1088.435 µs packet, so `sample_rate × ptime` yields the wrong geometry.
+        """
+        nominal = resolve_nominal_packet_time_us(self.sample_rate, self.ptime.value)
+        if nominal is None:
+            raise ValueError(
+                f"ptime={self.ptime.value} us is not a permitted AM824 signaling value "
+                f"for sample_rate={self.sample_rate} (ST 2110-31 Table 1)"
+            )
+        return nominal
+
+    @property
+    def capture_interval_seconds(self) -> float:
+        """Nominal inter-packet spacing to hand to `write_am824_pcap`."""
+        return self.nominal_packet_time_us / 1_000_000.0
+
+    @property
     def periods_per_packet(self) -> int:
-        return self.sample_rate * self.ptime.value // 1_000_000
+        periods = resolve_packet_samples_per_packet(self.sample_rate, self.ptime.value)
+        if periods is None:
+            raise ValueError(
+                f"ptime={self.ptime.value} us is not a permitted AM824 signaling value "
+                f"for sample_rate={self.sample_rate} (ST 2110-31 Table 1)"
+            )
+        return periods
 
     @property
     def packet_count(self) -> int:
-        # Use round() to absorb the tiny floating-point error that can arise
-        # when duration_seconds is derived from an integer sample count.
-        return round(self.duration_seconds * 1_000_000 / self.ptime.value)
+        # Derived from the sample budget rather than from the signaled ptime, so
+        # a rounded ptime description cannot skew the count.  Use round() to
+        # absorb the tiny floating-point error that can arise when
+        # duration_seconds is derived from an integer sample count.
+        return round(self.duration_seconds * self.sample_rate / self.periods_per_packet)
 
     @property
     def period_count(self) -> int:
@@ -486,43 +478,39 @@ def deterministic_ssrc(name: str) -> int:
     return int.from_bytes(digest[:4], "big")
 
 
+# ST 2110-31-bound views of the shared resolvers.  Callers on the AM824 path use
+# these so the governing table is fixed by the module they import from rather
+# than by an argument every call site has to remember to pass.
+
 def legal_ptimes_us(sample_rate: int) -> set[int] | None:
-    profiles = SUPPORTED_PACKET_TIME_PROFILES.get(sample_rate)
-    if profiles is None:
-        return None
-    return set(profiles)
+    return ipmx_audio_ptime.legal_ptimes_us(sample_rate, path=AUDIO_PATH)
 
 
 def resolve_nominal_packet_time_us(
     sample_rate: int,
     signaled_ptime_us: int,
 ) -> int | None:
-    profiles = SUPPORTED_PACKET_TIME_PROFILES.get(sample_rate)
-    if profiles is None:
-        return None
-    entry = profiles.get(signaled_ptime_us)
-    return None if entry is None else entry[0]
+    return ipmx_audio_ptime.resolve_nominal_packet_time_us(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
 
 
 def resolve_packet_samples_per_packet(
     sample_rate: int,
     signaled_ptime_us: int,
 ) -> int | None:
-    profiles = SUPPORTED_PACKET_TIME_PROFILES.get(sample_rate)
-    if profiles is None:
-        return None
-    entry = profiles.get(signaled_ptime_us)
-    return None if entry is None else entry[1]
+    return ipmx_audio_ptime.resolve_packet_samples_per_packet(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
 
 
 def compute_audio_sender_report_interval_packets(
     sample_rate: int,
     signaled_ptime_us: int,
 ) -> int | None:
-    samples_per_packet = resolve_packet_samples_per_packet(sample_rate, signaled_ptime_us)
-    if samples_per_packet is None or samples_per_packet <= 0:
-        return None
-    return sample_rate // (100 * samples_per_packet)
+    return ipmx_audio_ptime.compute_audio_sender_report_interval_packets(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
 
 
 def build_am824_payload(
@@ -989,7 +977,7 @@ def smoke_parse_am824_outputs(
             capture_time = float(packet.time)
             if previous_time is not None:
                 delta = capture_time - previous_time
-                expected_interval = config.ptime.value / 1_000_000.0
+                expected_interval = config.capture_interval_seconds
                 if abs(delta - expected_interval) > 1e-6:
                     raise ValueError(f"Unexpected capture interval: {delta}")
             previous_time = capture_time

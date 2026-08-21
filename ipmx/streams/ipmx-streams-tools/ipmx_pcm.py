@@ -29,18 +29,63 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+import ipmx_audio_ptime
 import ipmx_parse_rtp_pcap
+from ipmx_audio_ptime import AudioPath
 from ipmx_am824 import (
-    SUPPORTED_PACKET_TIME_PROFILES,
     ChannelOrderConfig,
     ChannelOrderGroup,
     PtimePreset,
-    compute_audio_sender_report_interval_packets,
     deterministic_ssrc,
-    legal_ptimes_us,
-    resolve_nominal_packet_time_us,
-    resolve_packet_samples_per_packet,
 )
+
+# The PCM transport is governed by ST 2110-30:2017, which states no packet-time
+# table of its own and defers the signaling to AES67-2018 section 8.1.  That
+# gives the PCM path a table the AM824 path must not use — it carries the AES67
+# integer-millisecond interoperability allowance (a=ptime:1 at 44.1 kHz standing
+# in for the permitted 1.09 ms) which ST 2110-31 Table 1 does not admit.  See
+# ipmx_audio_ptime for the tables and the reasoning.
+AUDIO_PATH = AudioPath.PCM
+SUPPORTED_PACKET_TIME_PROFILES = ipmx_audio_ptime.packet_time_profiles(AUDIO_PATH)
+
+
+# ST 2110-30 / AES67-bound views of the shared resolvers.  Callers on the PCM
+# path import these from here so the governing table is fixed by the module they
+# import from rather than by an argument every call site has to remember.
+
+def legal_ptimes_us(sample_rate: int) -> set[int] | None:
+    return ipmx_audio_ptime.legal_ptimes_us(sample_rate, path=AUDIO_PATH)
+
+
+def resolve_nominal_packet_time_us(sample_rate: int, signaled_ptime_us: int) -> int | None:
+    return ipmx_audio_ptime.resolve_nominal_packet_time_us(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
+
+
+def resolve_packet_samples_per_packet(sample_rate: int, signaled_ptime_us: int) -> int | None:
+    return ipmx_audio_ptime.resolve_packet_samples_per_packet(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
+
+
+def compute_audio_sender_report_interval_packets(
+    sample_rate: int,
+    signaled_ptime_us: int,
+) -> int | None:
+    return ipmx_audio_ptime.compute_audio_sender_report_interval_packets(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
+
+
+def acceptable_nominal_packet_times_us(sample_rate: int, signaled_ptime_us: int) -> set[int] | None:
+    return ipmx_audio_ptime.acceptable_nominal_packet_times_us(
+        sample_rate, signaled_ptime_us, path=AUDIO_PATH
+    )
+
+
+def aes67_integer_ms_alias_target_us(sample_rate: int, signaled_ptime_us: int) -> int | None:
+    return ipmx_audio_ptime.aes67_integer_ms_alias_target_us(sample_rate, signaled_ptime_us)
 
 DEFAULT_CAPTURE_START = 1_700_000_000.0
 DEFAULT_CAPTURE_INTERVAL = 0.001
@@ -103,12 +148,43 @@ class PcmStreamConfig:
     duration_seconds: float = 6
 
     @property
+    def nominal_packet_time_us(self) -> int:
+        """Physical packet duration for this rate/ptime.
+
+        Resolved from the table rather than computed from `ptime.value` because
+        the signaled ptime is a *rounded description* of the real packet time,
+        not the packet time itself: at 44.1 kHz a signaled 1 ms or 1.09 ms both
+        describe a 1088.435 µs / 48-period packet, so `sample_rate × ptime`
+        yields the wrong geometry (44 periods).
+        """
+        nominal = resolve_nominal_packet_time_us(self.sample_rate, self.ptime.value)
+        if nominal is None:
+            raise ValueError(
+                f"ptime={self.ptime.value} us is not an accepted PCM signaling value "
+                f"for sample_rate={self.sample_rate} (ST 2110-30 / AES67)"
+            )
+        return nominal
+
+    @property
+    def capture_interval_seconds(self) -> float:
+        """Nominal inter-packet spacing to hand to `write_pcm_pcap`."""
+        return self.nominal_packet_time_us / 1_000_000.0
+
+    @property
     def periods_per_packet(self) -> int:
-        return self.sample_rate * self.ptime.value // 1_000_000
+        periods = resolve_packet_samples_per_packet(self.sample_rate, self.ptime.value)
+        if periods is None:
+            raise ValueError(
+                f"ptime={self.ptime.value} us is not an accepted PCM signaling value "
+                f"for sample_rate={self.sample_rate} (ST 2110-30 / AES67)"
+            )
+        return periods
 
     @property
     def packet_count(self) -> int:
-        return round(self.duration_seconds * 1_000_000 / self.ptime.value)
+        # Derived from the sample budget rather than from the signaled ptime, so
+        # a rounded ptime description cannot skew the count.
+        return round(self.duration_seconds * self.sample_rate / self.periods_per_packet)
 
     @property
     def period_count(self) -> int:
@@ -599,7 +675,7 @@ def smoke_parse_pcm_outputs(
             capture_time = float(packet.time)
             if previous_time is not None:
                 delta = capture_time - previous_time
-                expected_interval = config.ptime.value / 1_000_000.0
+                expected_interval = config.capture_interval_seconds
                 if abs(delta - expected_interval) > 1e-6:
                     raise ValueError(f"Unexpected capture interval: {delta}")
             previous_time = capture_time
