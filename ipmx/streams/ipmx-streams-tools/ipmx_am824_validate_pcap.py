@@ -53,6 +53,7 @@ from ipmx_validate_common import (
     Requirement,
     RequirementResult,
     SenderReportInfo,
+    SR_COUNTER_MODULUS,
     configure_utf8_output,
     check_dscp_rtp_marking,
     check_dscp_sr_matches_rtp,
@@ -1356,14 +1357,22 @@ def check_sr_counts(ctx: Am824ValidationContext) -> tuple[bool, str]:
     # tied to pkt_offset * payload_size, so packet/octet mutual consistency is
     # still enforced (this identity holds for both counter conventions and for
     # mid-stream offsets, given the constant AM824 payload size).
+    #
+    # Both counters are 32-bit fields that wrap (SR_COUNTER_MODULUS), and the
+    # octet counter wraps first, so every comparison is done modulo 2**32.
+    # Reducing pkt_offset is lossless here: any whole-modulus ambiguity in the
+    # anchor contributes k * 2**32 * payload_size to the octet expectation,
+    # which is itself a multiple of the modulus and therefore vanishes.
     first_report, first_idx = associations[0]
-    pkt_offset = first_report.packet_count - (first_idx + 1)
+    pkt_offset = (first_report.packet_count - (first_idx + 1)) % SR_COUNTER_MODULUS
 
     payload_size = len(ctx.rtp_packets[0].payload) if ctx.rtp_packets else 0
 
     for report, packet_index in associations:
-        expected_packet_count = packet_index + 1 + pkt_offset
-        expected_octet_count = octets_by_packet[packet_index] + pkt_offset * payload_size
+        expected_packet_count = (packet_index + 1 + pkt_offset) % SR_COUNTER_MODULUS
+        expected_octet_count = (
+            octets_by_packet[packet_index] + pkt_offset * payload_size
+        ) % SR_COUNTER_MODULUS
         if report.packet_count != expected_packet_count:
             return False, (
                 f"SR for packet index {packet_index} reports packet_count={report.packet_count}, "
@@ -1374,12 +1383,15 @@ def check_sr_counts(ctx: Am824ValidationContext) -> tuple[bool, str]:
                 f"SR for packet index {packet_index} reports octet_count={report.octet_count}, "
                 f"expected {expected_octet_count}"
             )
-    if pkt_offset == 0:
+    # Re-center the modular offset so the 0-based convention reads as -1 rather
+    # than as 2**32 - 1.
+    signed_offset = pkt_offset - SR_COUNTER_MODULUS if pkt_offset > SR_COUNTER_MODULUS // 2 else pkt_offset
+    if signed_offset == 0:
         basis = "1-based, capture from stream start"
-    elif pkt_offset == -1:
+    elif signed_offset == -1:
         basis = "0-based, capture from stream start"
     else:
-        basis = f"consistent counter offset {pkt_offset:+d} (capture started mid-stream)"
+        basis = f"consistent counter offset {signed_offset:+d} (capture started mid-stream)"
     return True, f"SR packet_count and octet_count match cumulative RTP payload counters ({basis})"
 
 

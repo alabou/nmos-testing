@@ -41,6 +41,11 @@ from ipmx_pcap_reader import UdpPacket, iter_udp_packets  # re-exported
 NTP_UNIX_OFFSET = 2_208_988_800
 CLOCK_RATE = 90_000
 NANOSECONDS_PER_SECOND = 1_000_000_000
+# RFC 3550 §6.4.1: the SR sender's packet count and sender's octet count are
+# 32-bit unsigned fields, so both wrap. The octet counter wraps far sooner than
+# the packet counter (e.g. ~4 h for a 288-byte 1 ms PCM stream), so any check
+# against cumulative capture counts must compare modulo this value.
+SR_COUNTER_MODULUS = 1 << 32
 
 
 # ---------------------------------------------------------------------------
