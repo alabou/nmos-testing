@@ -654,6 +654,17 @@ class PepParams:
                 break
         if pd is None and parser.privacy_desc.protocol is not None:
             pd = parser.privacy_desc
+
+        # Connection info (address/port) is independent of privacy encryption:
+        # the loop only binds *media* to a privacy-bearing media section. When
+        # none was found (session-level privacy, or no privacy descriptor at
+        # all), fall back to the first media section so callers still get its
+        # connection address/port. The `media is None` guard preserves a media
+        # bound by the loop at a non-zero index; the ternary keeps *media* None
+        # for an SDP with no media sections rather than indexing a stale slot.
+        if media is None and parser.media_count > 0:
+            media = parser.medias[0]
+            
         return parser, media, pd
 
     @staticmethod

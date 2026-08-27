@@ -39,8 +39,14 @@ from ipmx_validate_common import (
     Requirement,
     RequirementResult,
     ValidationContext,
+    configure_utf8_output,
     build_rtp_report,
     build_timeline,
+    check_dscp_rtp_marking,
+    check_dscp_sr_matches_rtp,
+    check_multicast_mac_mapping,
+    check_sr_mac_mapping,
+    check_sr_rtcp_port,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
@@ -48,6 +54,7 @@ from ipmx_validate_common import (
     check_sr_ntp_self_consistent,
     check_sr_ntp_vs_capture_rate,
     check_sr_rc_zero,
+    check_sr_compound_packet,
     check_sr_rtp_timestamp_nominal,
     compute_nominal_period,
     cross_validate_exactframerate,
@@ -65,6 +72,7 @@ from ipmx_validate_common import (
     nominal_ticks_per_period_from_seconds,
     parse_exactframerate_arg,
     parse_sender_reports,
+    print_first_sr_block_version,
     rate_matches,
     resolve_exact_ticks_per_frame,
     run_cmax_hrd_check,
@@ -1321,8 +1329,13 @@ def build_requirements(ctx: ValidationContext) -> list[Requirement]:
     add("TR-10-9-11.2b", "shall", "IPMX Senders shall send IPMX Sender Reports for each frame at regular intervals that correspond to the Frame-to-Frame Interval. The difference between maximum and minimum of this interval measured over a 2 second period shall not exceed 2 mSec.", lambda c=ctx: check_sr_interval_tr10_9(c))
     add("TR-10-9-11.2c", "shall", "For a Baseband IPMX Sender the Frame-to-Frame Interval shall correspond to the timing of their baseband input signal.", lambda _: untestable("Baseband input not observable"))
     add("TR-10-9-11.2d", "shall", "For IPMX Senders not based on the conversion of a baseband signal, the Frame-to-Frame interval shall correspond to the nominal frame rate of the media signal.", lambda _: untestable("Sender type not observable"))
+    add("TR-10-9-16a", "shall", "IPMX Senders conforming to TR-10-7 (compressed video) shall mark RTP packets with the TR-10-9 §16 default DSCP AF42(36).", lambda c=ctx: check_dscp_rtp_marking(c.pcap, c.stream_info, 36))
+    add("TR-10-9-16b", "shall", "IPMX Senders shall mark outgoing RTCP Sender Report packets with the same DSCP value as the respective RTP stream packets (TR-10-9 §16).", lambda c=ctx: check_dscp_sr_matches_rtp(c.pcap, c.stream_info, c.sender_reports))
+    add("RFC1112-MCAST-MAC", "shall", "IPv4 multicast RTP packets SHALL use the RFC 1112 §6.4 Ethernet destination MAC derived from the group address (01:00:5e + low 23 bits).", lambda c=ctx: check_multicast_mac_mapping(c.pcap, c.stream_info))
+    add("RFC1112-SR-MAC", "shall", "IPv4 multicast RTCP Sender Report packets SHALL use the RFC 1112 §6.4 Ethernet destination MAC of the group address.", lambda c=ctx: check_sr_mac_mapping(c.sender_reports))
+    add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports SHALL be sent on the RTP destination port + 1 (TR-10-1 §8.7 / RFC 3550 §11).", lambda c=ctx: check_sr_rtcp_port(c.pcap, c.stream_info))
     add("TR-10-15c-97", "shall", "A UDP/IP packet shall not contain more than one VCL NAL Unit.", lambda c=ctx: check_packet_vcl_limit(c))
-    add("TR-10-15c-99", "shall", "H.264 coded video shall be transmitted and decoded using the HRD transmitter and decoder schedules.", lambda c=ctx: untestable("HRD presence verified by TR-10-15c-110; schedule conformance not testable from PCAP"))
+    add("TR-10-15c-99", "shall", "H.264 coded video shall be transmitted and decoded using the HRD transmitter and decoder schedules.", lambda _: untestable("HRD presence verified by TR-10-15c-110; schedule conformance not testable from PCAP"))
     add("TR-10-1-MIB-SIG", "shall", "MIB baseband signal parameters shall be internally consistent (htotal >= width, vtotal >= height, pixclk = htotal*vtotal*fps).", lambda c=ctx: check_mib_signal_sanity(c))
     add("TR-10-15c-101", "shall", "Traffic shaping mode shall be set to TP=2110TPW and explicitly declared in the SDP fmtp attribute.", lambda c=ctx: check_sdp_tp_mode_h264(c))
     add("TR-10-15c-103", "shall", "Buffering Period SEI messages shall be provided at each recovery point.", lambda _: untestable("SEI recovery point details not parsed"))
@@ -1390,6 +1403,10 @@ def build_requirements(ctx: ValidationContext) -> list[Requirement]:
     add("TR-10-1-8.7-RC", "should",
         "RTCP SR reception report count (RC) should be 0 (TR-10-1 §8.7).",
         lambda c=ctx: check_sr_rc_zero(c.sender_reports))
+    add("TR-10-1-8.7-COMPOUND", "shall",
+        "RTCP Sender Reports shall be sent in a compound RTCP packet — report "
+        "packet first and an SDES CNAME item present (RFC 3550 §6.1, TR-10-1 §8.7).",
+        lambda c=ctx: check_sr_compound_packet(c.pcap, c.stream_info))
     add("TR-10-1-10.1-IPMX-FMTP", "shall",
         "SDP a=fmtp line shall contain the IPMX keyword (TR-10-1 §10.1).",
         lambda c=ctx: check_sdp_ipmx_fmtp(c.sdp_media))
@@ -1527,8 +1544,10 @@ def _run_cmax_check(ctx: ValidationContext) -> list[RequirementResult]:
 
 
 def main() -> int:
+    configure_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pcap", type=Path, help="PCAP file containing RTP/RTCP")
+    parser.add_argument("pcap", type=Path, nargs="?", help="PCAP file containing RTP/RTCP")
+    parser.add_argument("--list-requirements", action="store_true", help="List all requirement IDs this validator checks, then exit (no PCAP needed)")
     parser.add_argument("--port", type=int, help="Filter RTP packets by UDP port")
     parser.add_argument("--rtcp-port", type=int, help="Filter RTCP packets by UDP port")
     parser.add_argument("--frames", type=int, default=5, help="Frames to sample with ffmpeg")
@@ -1616,7 +1635,30 @@ def main() -> int:
         action="store_true",
         help="Accept superset profiles (e.g. High 4:2:2 includes High 4:2:0 capability)",
     )
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        help="Stream descriptor (streams/cfg/*.cfg, by path or bare name) to seed "
+             "expected-value flags (--exactframerate/--width/--height/--sampling/"
+             "--bit-depth); explicit flags on the command line override the cfg",
+    )
     args = parser.parse_args()
+
+    if args.list_requirements:
+        from ipmx_validate_common import print_requirements_list
+        print_requirements_list(Path(__file__).name, build_requirements(None))
+        return 0
+
+    if args.pcap is None:
+        parser.error("the pcap argument is required unless --list-requirements is used")
+
+    if args.cfg:
+        from ipmx_validate_common import (
+            apply_video_cfg,
+            parse_cfg_file,
+            resolve_cfg_path,
+        )
+        apply_video_cfg(args, parse_cfg_file(resolve_cfg_path(args.cfg)), ycbcr_only=True)
 
     if not args.pcap.exists():
         raise SystemExit(f"{args.pcap} does not exist")
@@ -1630,6 +1672,7 @@ def main() -> int:
     if ctx.encrypted:
         print("[INFO] Encryption detected — payload content is not accessible.")
         print("       NAL content checks will be marked as untestable.\n")
+    print_first_sr_block_version(ctx.sender_reports)
     results = run_validation(ctx)
 
     hrd_results = ipmx_validate_hrd_h264.run_hrd_checks(

@@ -95,8 +95,14 @@ class MatroxEdid:
         Descriptor at base offset 0x36, or None if absent/invalid.
 
         fps is a float derived from pixel clock and total (active+blank)
-        pixel/line counts. Interlaced timings report field rate (i.e.
-        pixel_clock / (H_total * V_total_field)).
+        pixel/line counts, and is the FRAME rate.
+
+        Interlaced timings: the DTD stores per-field vertical values, so the
+        true lines-per-frame is 2*V_field + 1 (VESA GTF 1.1 section 7.6.3 --
+        the extra line is the pair of half-lines placed at the odd-field front
+        porch and even-field back porch; see VESA-GTF-1.1.pdf sections 7.3-7.6
+        and 7.6.3, [TOTAL LINES PER FRAME]). fps = pixel_clock /
+        (H_total * V_frame) then yields the frame rate directly.
         """
         dtd = self.base[0x36:0x36 + 18]
         if len(dtd) != 18:
@@ -119,15 +125,20 @@ class MatroxEdid:
             return None
 
         interlaced = bool(dtd[17] & 0x80)
-        fps = pixel_clock_hz / (h_total * v_total)
-        # For interlaced, pixel_clock/(H*V) already yields field rate; report
-        # the frame rate as half so the caller sees e.g. 30 rather than 60 for
-        # 1080i. Adjust to taste.
+        # Lines per FRAME. For interlaced the DTD's v_total is per-field, and
+        # the frame carries one extra line -- the two half-lines VESA GTF adds
+        # at the odd-field front porch and even-field back porch (VESA GTF 1.1
+        # section 7.6.3: [TOTAL LINES PER FRAME] = 2 * per-field total, where
+        # the per-field total already includes [INTERLACE] = 0.5, i.e.
+        # 2 * V_field + 1). Active lines have no half-line, so the frame height
+        # is exactly 2 * v_active.
         if interlaced:
-            fps = fps / 2.0
+            v_frame = 2 * v_total + 1
             reported_v = v_active * 2
         else:
+            v_frame = v_total
             reported_v = v_active
+        fps = pixel_clock_hz / (h_total * v_frame)
 
         return (h_active, reported_v, fps)
 
@@ -141,6 +152,16 @@ class MatroxEdid:
         which allows only the unavoidable +/-1 unit of 10 kHz quantization.
         With this rule, 60/1 (clk 148500) and 60000/1001 (clk 148350) for
         1920x1080 @ 2200x1125 are correctly distinguished.
+
+        For interlaced timings the DTD stores per-field vertical values, and
+        the true lines-per-frame is 2*V_field + 1 (VESA GTF 1.1 section 7.6.3:
+        [TOTAL LINES PER FRAME] = 2 * per-field total, where the per-field
+        total already includes [INTERLACE] = 0.5 -- the extra line is the two
+        half-lines at the odd-field front porch and even-field back porch).
+        numerator/denominator is an NMOS grain (frame) rate, so the ideal uses
+        V_frame = 2*V_field + 1 (NOT 2*V_field). Omitting the +1 understates
+        the pixel clock by exactly H_total * frame_rate (e.g. 2200 * 30 =
+        66_000 Hz for 1080i60), which this comparison would then reject.
         """
         dtd = self.base[0x36:0x36 + 18]
         if len(dtd) != 18 or denominator == 0:
@@ -156,8 +177,15 @@ class MatroxEdid:
         v_total = v_active + v_blank
         if h_total == 0 or v_total == 0:
             return False
+
+        interlaced = bool(dtd[17] & 0x80)
+        # Lines per FRAME (VESA GTF 1.1 section 7.6.3). For interlaced the DTD's
+        # v_total is per-field; the frame has one extra line (two half-lines).
+        v_frame = (2 * v_total + 1) if interlaced else v_total
+
         encoded = pclk_10khz * 10_000 * denominator
-        ideal = h_total * v_total * numerator
+        ideal = h_total * v_frame * numerator
+
         return abs(encoded - ideal) <= 10_000 * denominator
 
     # -- audio: CTA-861 Short Audio Descriptors -----------------------------

@@ -47,12 +47,19 @@ from ipmx_validate_common import (
     Requirement,
     RequirementResult,
     SenderReportInfo,
+    configure_utf8_output,
+    check_dscp_rtp_marking,
+    check_dscp_sr_matches_rtp,
+    check_multicast_mac_mapping,
+    check_sr_mac_mapping,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
     check_sr_initial_rtp_clock,
     check_sr_rc_zero,
+    check_sr_compound_packet,
     parse_sender_reports,
+    print_first_sr_block_version,
     summarize_results,
     untestable,
 )
@@ -748,7 +755,7 @@ def check_sr_before(ctx: PcmValidationContext) -> tuple[bool, str]:
         return False, "No SR/RTP associations found"
     for report, pkt_idx in associations:
         packet = ctx.rtp_packets[pkt_idx]
-        if packet.capture_time is None or report.capture_time >= packet.capture_time:
+        if packet.capture_time is None or report.capture_time > packet.capture_time:
             return False, f"SR for RTP packet index {pkt_idx} does not arrive before the packet"
     return True, "Each SR arrives before its associated RTP packet"
 
@@ -1262,6 +1269,22 @@ def build_requirements() -> list[Requirement]:
     add("SDP-DST-IP", "shall",
         "SDP connection address SHALL match the detected destination IP.",
         check_sdp_dst_ip_vs_stream_pcm)
+    add("TR-10-9-16a", "shall",
+        "IPMX Senders conforming to TR-10-3 (PCM audio) shall mark RTP packets "
+        "with the TR-10-9 §16 default DSCP AF41(34).",
+        lambda c: check_dscp_rtp_marking(c.pcap, c.stream_info, 34))
+    add("TR-10-9-16b", "shall",
+        "IPMX Senders shall mark outgoing RTCP Sender Report packets with the "
+        "same DSCP value as the respective RTP stream packets (TR-10-9 §16).",
+        lambda c: check_dscp_sr_matches_rtp(c.pcap, c.stream_info, c.sender_reports))
+    add("RFC1112-MCAST-MAC", "shall",
+        "IPv4 multicast RTP packets SHALL use the RFC 1112 §6.4 Ethernet "
+        "destination MAC derived from the group address (01:00:5e + low 23 bits).",
+        lambda c: check_multicast_mac_mapping(c.pcap, c.stream_info))
+    add("RFC1112-SR-MAC", "shall",
+        "IPv4 multicast RTCP Sender Report packets SHALL use the RFC 1112 §6.4 "
+        "Ethernet destination MAC of the group address.",
+        lambda c: check_sr_mac_mapping(c.sender_reports))
     add("TR-10-1-8.7-SR-PRESENT", "shall", "RTCP Sender Reports shall be present", check_sr_present)
     add("TR-10-1-8.7-SR-IP", "shall", "RTCP Sender Reports shall use the same destination IP as RTP", check_sr_ip)
     add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports shall use the expected RTCP destination port", check_sr_port)
@@ -1294,6 +1317,10 @@ def build_requirements() -> list[Requirement]:
     add("TR-10-1-8.7-RC", "should",
         "RTCP SR reception report count (RC) should be 0 (TR-10-1 §8.7).",
         lambda c: check_sr_rc_zero(c.sender_reports))
+    add("TR-10-1-8.7-COMPOUND", "shall",
+        "RTCP Sender Reports shall be sent in a compound RTCP packet — report "
+        "packet first and an SDES CNAME item present (RFC 3550 §6.1, TR-10-1 §8.7).",
+        lambda c: check_sr_compound_packet(c.pcap, c.stream_info))
     add("TR-10-1-10.1-IPMX-FMTP", "shall",
         "SDP a=fmtp line shall contain the IPMX keyword (TR-10-1 §10.1).",
         lambda c: check_sdp_ipmx_fmtp(c.sdp_media))
@@ -1417,8 +1444,10 @@ def print_results(
 
 
 def main() -> int:
+    configure_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pcap", type=Path, help="PCAP file containing PCM RTP")
+    parser.add_argument("pcap", type=Path, nargs="?", help="PCAP file containing PCM RTP")
+    parser.add_argument("--list-requirements", action="store_true", help="List all requirement IDs this validator checks, then exit (no PCAP needed)")
     parser.add_argument("--port", type=int, help="RTP destination port (auto-detected if omitted)")
     parser.add_argument("--ssrc", type=lambda v: int(v, 0), help="Expected SSRC (decimal or 0x hex)")
     parser.add_argument("--dst-ip", dest="dst_ip", help="Expected destination IP address")
@@ -1432,20 +1461,51 @@ def main() -> int:
     parser.add_argument("--sample-size", type=int, help="Expected SR audio MIB sample size")
     parser.add_argument("--measured-sample-rate", type=int, help="Expected SR audio MIB measured sample rate")
     parser.add_argument("--bit-depth", type=int, choices=[16, 20, 24], help="PCM bit depth (16, 20, or 24)")
-    parser.add_argument("--expect-stream-start", action="store_true", help="Require the first RTP packet to have an associated SR")
+    parser.add_argument(
+        "--expect-stream-start",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require the first RTP packet to have an associated SR (on by default; "
+             "use --no-expect-stream-start for captures that begin mid-stream)",
+    )
     parser.add_argument("--hkep", action="store_true", help="Assert that HDCP encryption (HKEP) is active")
     parser.add_argument("--pep", action="store_true", help="Assert that Privacy Encryption Protocol (PEP) is active")
     parser.add_argument("--full-report", action="store_true", help="Include all requirements (pass, fail, cannot test)")
     parser.add_argument("--pass-report", action="store_true", help="Show only passing requirements")
     parser.add_argument("--fail-report", action="store_true", help="Show only failing requirements")
     parser.add_argument("--cannot-test-report", action="store_true", help="Show only requirements that cannot be tested")
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        help="Stream descriptor (streams/cfg/*.cfg, by path or bare name) to seed "
+             "expected-value flags (--sample-rate/--nchan/--ptime/--bit-depth/"
+             "--sample-size); explicit flags on the command line override the cfg",
+    )
     args = parser.parse_args()
+
+    if args.list_requirements:
+        from ipmx_validate_common import print_requirements_list
+        print_requirements_list(Path(__file__).name, build_requirements())
+        return 0
+
+    if args.pcap is None:
+        parser.error("the pcap argument is required unless --list-requirements is used")
+
+    if args.cfg:
+        from ipmx_validate_common import (
+            apply_audio_cfg,
+            parse_cfg_file,
+            resolve_cfg_path,
+        )
+        apply_audio_cfg(args, parse_cfg_file(resolve_cfg_path(args.cfg)), parse_ptime_arg)
 
     ctx = build_context(args)
 
     if ctx.encrypted:
         print("[INFO] Encryption detected — PCM payload content is not accessible.")
         print("       Payload-level checks will be marked as untestable.\n")
+
+    print_first_sr_block_version(ctx.sender_reports)
 
     results = run_requirements(ctx, build_requirements())
 

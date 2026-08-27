@@ -111,6 +111,85 @@ python3 ipmx_h265_validate_pcap.py capture.pcap \
 For encrypted captures, add `--hkep` and/or `--pep` to enable the
 encryption-validation requirement family (`ENC-01`..`ENC-14`).
 
+## Stream descriptor presets (`--cfg`)
+
+Every validator accepts `--cfg <file>` to seed the per-stream
+expected-value flags from a descriptor in [`cfg/`](cfg/) instead of typing
+them one by one. The argument takes a path or a bare name resolved against
+`cfg/` (e.g. `--cfg Test1080p59YUVPTP`). A cfg value only fills a flag that is
+still unset — an explicit flag on the command line always wins. `--cfg` never
+sets policy flags (`--cmax`, `--hrd-timing`, `--hkep`, `--pep`) or `--sdp`;
+keep passing those explicitly.
+
+The cfg files are INI-style `key=value`. Fields map to flags as follows:
+
+| cfg field | flag(s) set | validators |
+|-----------|-------------|------------|
+| `exactframerate` | `--exactframerate` | jxsv, raw, h264, h265 |
+| `width` / `height` | `--width` / `--height` | jxsv, raw, h264, h265 |
+| `sampling` | `--sampling` | jxsv, raw, h264, h265 |
+| `depth` | `--bit-depth` | jxsv, raw, h264, h265 |
+| `rtpclock` | `--sample-rate` | pcm, am824 |
+| `samplesize` (channel count) | `--nchan` | pcm, am824 |
+| `samplefmt` (L16/L20/L24) | `--bit-depth` + `--sample-size` | pcm (both), am824 (`--sample-size`) |
+| `ptime` | `--ptime` | pcm, am824 |
+
+`type`/`PTP` are not flags (`type` is a media sanity-check). For H.264/H.265 a
+non-YCbCr `sampling` (e.g. `RGB`) is skipped with a warning, since those codecs
+carry YCbCr only. `--measured-sample-rate` is a measured value and is not set
+from a cfg.
+
+```bash
+# H.265, parameters from a descriptor; SDP and policy flags still explicit
+python3 ipmx_h265_validate_pcap.py capture.pcap \
+    --cfg Test1080p59YUVPTP --sdp transport.sdp --cmax --hrd-timing
+
+# PCM audio
+python3 ipmx_pcm_validate_pcap.py capture.pcap --cfg TestL24-2 --sdp transport.sdp
+```
+
+For `jxsv` and `raw`, `--width/--height/--sampling/--bit-depth` are
+authoritative expected values cross-checked against the RTCP Sender-Report MIB
+(`TR-10-1-VP-XVAL`), behaving exactly like `--exactframerate` — untestable when
+omitted, exact-match-or-fail when supplied.
+
+## Profile-mode switches
+
+Some requirement families apply only when a specific profile mode is under test.
+These are opt-in, authoritative switches — the mode's requirements are only
+checked (and only listed by `--list-requirements`) when the switch is given:
+
+| Validator | Switch | Enables (in place of the base-profile requirements) |
+|-----------|--------|---------|
+| `jxsv` | `--tdc` | IPMX-JPEG-XS-TDC profile-mode requirements (`TR-10-15a` TDC), instead of the base High444.12 profile requirements |
+| `h265` | `--444` | IPMX HEVC 4:4:4 Profile Mode requirements (`TR-10-15b-131..134`), instead of the base `TR-10-15b-123`/`126` Main/Main10 4:2:0 requirements |
+
+A single capture exhibits one profile, so the base profile and the profile mode
+are validated from **separate captures**: run **without** the switch to validate
+the base profile, and **with** it to validate the mode. Each mode's "shall also
+be compliant with the base profile" requirement is untestable from one capture
+and is reported as such (validate the base leg from the without-switch run).
+
+## Listing requirements (`--list-requirements`)
+
+Every validator accepts `--list-requirements` to print its full requirement
+catalogue (ID, level, text, grouped by SHALL/SHOULD/INFO) and exit, without
+needing a PCAP. The list reflects the profile-mode switches above — e.g.
+`ipmx_h265_validate_pcap.py --444 --list-requirements` includes the 4:4:4
+Profile Mode requirements, and `--list-requirements` alone omits them.
+
+Rows that can never be tested from a PCAP (receiver / NMOS / decoder
+capabilities, and similar sender declarations) are marked **`NA`**, and the
+header reports the split, e.g. `70 requirements (53 testable, 17 NA)`. An
+unmarked row has a real check that yields PASS / FAIL / CANNOT_TEST at run time
+depending on the capture. (`NA` is the `lambda _: untestable(...)` sentinel in
+the requirement tables.)
+
+```bash
+python3 ipmx_h265_validate_pcap.py --list-requirements
+python3 ipmx_jxsv_validate_pcap.py --tdc --list-requirements
+```
+
 ## Validation Surface
 
 Every check is tagged with the normative requirement ID. The major

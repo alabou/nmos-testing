@@ -198,6 +198,13 @@ class IpmxUsbMessage:
     # --- decoded payload (filled by parse_data()) ---
     payload: dict = field(default_factory=dict)
 
+    # When set, the message is treated as plaintext even if CTR/KEYVERSION are
+    # non-zero — used by the dissector's --no-encrypted override so a stream a
+    # vendor mislabels as encrypted (non-zero KEYVERSION but plaintext DATA)
+    # can still be decoded. Does not suppress §12 CTR/KEYVERSION checks, which
+    # read the raw fields directly.
+    force_plaintext: bool = False
+
     @property
     def msg_type_enum(self) -> Optional[MsgType]:
         try:
@@ -212,6 +219,8 @@ class IpmxUsbMessage:
 
     @property
     def is_encrypted(self) -> bool:
+        if self.force_plaintext:
+            return False
         return self.ctr != 0 or self.key_version != 0
 
     @property
@@ -262,11 +271,15 @@ def _parse_header(raw: bytes, offset: int) -> tuple[int, int, int, int]:
     return ctr, key_version, msg_type, length
 
 
-def parse_one(raw: bytes, offset: int = 0) -> IpmxUsbMessage:
+def parse_one(raw: bytes, offset: int = 0, *,
+              force_plaintext: bool = False) -> IpmxUsbMessage:
     """
     Parse one complete IPMX USB TCP message from *raw* starting at *offset*.
 
     The caller must ensure ``len(raw) - offset >= length`` before calling.
+
+    When *force_plaintext* is True the DATA is decoded as plaintext even if
+    CTR/KEYVERSION are non-zero (see :attr:`IpmxUsbMessage.force_plaintext`).
     """
     ctr, key_version, msg_type, length = _parse_header(raw, offset)
 
@@ -288,6 +301,7 @@ def parse_one(raw: bytes, offset: int = 0) -> IpmxUsbMessage:
         mac=mac,
         raw=raw[offset:end],
         offset=offset,
+        force_plaintext=force_plaintext,
     )
     if msg.is_encrypted:
         # DATA is ciphertext — cannot decode field values.
@@ -298,7 +312,8 @@ def parse_one(raw: bytes, offset: int = 0) -> IpmxUsbMessage:
     return msg
 
 
-def parse_stream(stream_bytes: bytes) -> Iterator[IpmxUsbMessage]:
+def parse_stream(stream_bytes: bytes, *,
+                 force_plaintext: bool = False) -> Iterator[IpmxUsbMessage]:
     """
     Yield all complete :class:`IpmxUsbMessage` objects from a reassembled
     byte stream.  Stops when insufficient bytes remain for the next message.
@@ -310,7 +325,7 @@ def parse_stream(stream_bytes: bytes) -> Iterator[IpmxUsbMessage]:
         _, _, _, length = _parse_header(stream_bytes, offset)
         if offset + length > total:
             break  # incomplete trailing message — wait for more data
-        yield parse_one(stream_bytes, offset)
+        yield parse_one(stream_bytes, offset, force_plaintext=force_plaintext)
         offset += length
 
 
@@ -326,6 +341,98 @@ def peek_length(data: bytes, offset: int = 0) -> Optional[int]:
         return length
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Frame synchronisation
+#
+# The only field a header check can really lean on is LENGTH, and it is accepted
+# over [24, 131047] out of a 17-bit range — about 99.96% of possible values. So a
+# single readable header is almost no evidence that an offset is a real message
+# boundary: measured on a real capture, 83% of *misaligned* offsets pass it, and
+# 100% do on high-entropy (encrypted) payload. Framing therefore has to be
+# justified by a run of messages whose lengths tile the stream, not by one header.
+# ---------------------------------------------------------------------------
+
+RESYNC_MIN_MESSAGES = 3
+
+
+def chain_frames_cleanly(data: bytes, start: int = 0, min_messages: int = 1,
+                         allow_truncated_tail: bool = True) -> bool:
+    """
+    Return True if framing forward from *start* accounts for the rest of *data*.
+
+    Every message from *start* onwards must have a readable header, the chain must
+    contain at least *min_messages* complete messages, and it must consume the
+    buffer — landing exactly on the final byte, or, when *allow_truncated_tail* is
+    set, on a trailing message cut short by the end of the capture.
+
+    Note that msg_type is deliberately *not* validated here. Unknown message types
+    are tolerated elsewhere in this module (``msg_type_enum`` returns None and the
+    payload decodes to an empty dict), so rejecting them during framing would make
+    a vendor-specific or future message type break the whole stream.
+    """
+    offset = start
+    framed = 0
+
+    while offset < len(data):
+        if offset + HEADER_SIZE > len(data):
+            # Trailing bytes too short to hold a header: a message truncated by
+            # the end of the capture.
+            return allow_truncated_tail and framed >= min_messages
+
+        length = peek_length(data, offset)
+        if length is None:
+            return False
+
+        if offset + length > len(data):
+            # Trailing message truncated by the end of the capture.
+            return allow_truncated_tail and framed >= min_messages
+
+        offset += length
+        framed += 1
+
+    return framed >= min_messages
+
+
+def block_starts_on_boundary(data: bytes) -> bool:
+    """
+    Return True if *data* can be trusted to begin on a message boundary.
+
+    A buffer whose messages tile it exactly is self-evidently well framed. One
+    that ends in a truncated message needs corroboration first, because "a single
+    readable header followed by a length that overruns the buffer" is a pattern
+    unrelated traffic satisfies easily — it is how an HTTP stream ends up being
+    parsed as one enormous USB message. Requiring RESYNC_MIN_MESSAGES complete
+    messages before trusting a truncated tail costs nothing on real USB streams,
+    which carry far more than that before a capture cuts off.
+    """
+    if chain_frames_cleanly(data, 0, 1, allow_truncated_tail=False):
+        return True
+    return chain_frames_cleanly(data, 0, RESYNC_MIN_MESSAGES, allow_truncated_tail=True)
+
+
+def next_sync_offset(data: bytes, start: int = 0) -> Optional[int]:
+    """
+    Find the first offset at or after *start* that can be trusted as a message
+    boundary, or None when there is no such offset.
+
+    The test here is deliberately far stricter than the one used to validate the
+    start of a block. usbDissector inspects *every* TCP stream in a capture, not
+    just USB ones, so a permissive rule does not merely mis-frame USB data — it
+    manufactures USB messages out of TLS, HKEP and any other traffic that happens
+    to be present. Requiring a chain of RESYNC_MIN_MESSAGES that tiles the buffer
+    to its exact end (no truncated tail) is what keeps unrelated streams from
+    producing a sync point at all.
+    """
+    limit = len(data) - HEADER_SIZE
+    if limit < start:
+        return None
+    for candidate in range(start, limit + 1):
+        if chain_frames_cleanly(data, candidate, RESYNC_MIN_MESSAGES,
+                                allow_truncated_tail=False):
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------

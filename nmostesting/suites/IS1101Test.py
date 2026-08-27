@@ -223,7 +223,8 @@ class IS1101Test(GenericTest):
                         if state == "awaiting_signal":
                             return test.FAIL("Expected state of input {} is \"awaiting_signal\", got \"{}\""
                                              .format(id, state))
-                        self.not_active_connected_inputs.append(input)
+                    if state == "no_signal":
+                        self.not_active_connected_inputs.append(id)
             if len(self.not_active_connected_inputs) != 0:
                 for input in self.not_active_connected_inputs:
                     self.connected_inputs.remove(input)
@@ -1413,8 +1414,8 @@ class IS1101Test(GenericTest):
             if not valid:
                 return test.FAIL("Unexpected response from the streamcompatibility API: {}".format(response))
             if response.status_code != 200:
-                test.FAIL("The streamcompatibility request for sender {} status has failed: {}"
-                          .format(sender_id, response.json()))
+                return test.FAIL("The streamcompatibility request for sender {} status has failed: {}"
+                                 .format(sender_id, response.json()))
             state = response.json()["state"]
             if state in ["awaiting_essence", "no_essence"]:
                 for i in range(0, CONFIG.STABLE_STATE_ATTEMPTS):
@@ -3352,19 +3353,9 @@ class IS1101Test(GenericTest):
 
             master_enable = response["master_enable"]
 
-            if master_enable:
-                json_data = {
-                    "master_enable": False,
-                    "activation": {"mode": "activate_immediate"}
-                }
+            if not master_enable:
+                return test.DISABLED("No active IS-11 video reference senders")
 
-                valid, response = self.reference_is05_utils.checkCleanRequestJSON(
-                    "PATCH",
-                    "single/senders/" + sender_id + "/staged",
-                    json_data
-                )
-                if not valid:
-                    return test.FAIL(response)
         return test.PASS()
 
     def test_04_03_02(self, test):
@@ -3507,19 +3498,9 @@ class IS1101Test(GenericTest):
 
             master_enable = response["master_enable"]
 
-            if master_enable:
-                json_data = {
-                    "master_enable": False,
-                    "activation": {"mode": "activate_immediate"}
-                }
+            if not master_enable:
+                return test.DISABLED("No active IS-11 audio reference senders")
 
-                valid, response = self.reference_is05_utils.checkCleanRequestJSON(
-                    "PATCH",
-                    "single/senders/" + sender_id + "/staged",
-                    json_data
-                )
-                if not valid:
-                    return test.FAIL(response)
         return test.PASS()
 
     def test_04_04(self, test):
@@ -4012,9 +3993,14 @@ class IS1101Test(GenericTest):
         print("[EDID-VIDEO] preferred (w,h,fps)={}".format(pref))
         if dtd is not None:
             encoded = dtd["pixel_clock_10khz"] * 10_000 * den
-            ideal = dtd["h_total"] * dtd["v_total"] * num
-            print("[EDID-VIDEO] exact-match check: encoded={} ideal={} diff={} tol={}".format(
-                encoded, ideal, encoded - ideal, 10_000 * den))
+            # Interlaced DTDs store per-field vertical values; lines-per-frame
+            # is 2*V_field + 1 (VESA GTF 1.1 section 7.6.3 -- two half-lines at
+            # the odd-field front porch and even-field back porch). Mirror
+            # matches_preferred_grain_rate() so this trace agrees with it.
+            v_frame = (2 * dtd["v_total"] + 1) if dtd["interlaced"] else dtd["v_total"]
+            ideal = dtd["h_total"] * v_frame * num
+            print("[EDID-VIDEO] exact-match check: encoded={} ideal={} diff={} tol={} interlaced={} v_frame={}".format(
+                encoded, ideal, encoded - ideal, 10_000 * den, dtd["interlaced"], v_frame))
         compliant = edid.matches_preferred_grain_rate(num, den)
         print("[EDID-VIDEO] compliant={}".format(compliant))
         return compliant

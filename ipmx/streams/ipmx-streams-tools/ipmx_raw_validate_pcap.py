@@ -45,6 +45,12 @@ from ipmx_validate_common import (
     Requirement,
     RequirementResult,
     SenderReportInfo,
+    configure_utf8_output,
+    check_dscp_rtp_marking,
+    check_dscp_sr_matches_rtp,
+    check_multicast_mac_mapping,
+    check_sr_mac_mapping,
+    check_sr_rtcp_port,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
@@ -52,15 +58,18 @@ from ipmx_validate_common import (
     check_sr_ntp_self_consistent,
     check_sr_ntp_vs_capture_rate,
     check_sr_rc_zero,
+    check_sr_compound_packet,
     check_sr_rtp_timestamp_nominal,
     compute_nominal_period,
     cross_validate_exactframerate,
+    cross_validate_video_params,
     extract_exact_framerate_from_sr,
     extract_video_params_from_sr,
     filter_capture_boundary_orphan_srs,
     interval_variation_in_window,
     parse_exactframerate_arg,
     parse_sender_reports,
+    print_first_sr_block_version,
     resolve_exact_ticks_per_frame,
     simulate_cmax_leaky_bucket,
     summarize_results,
@@ -185,6 +194,13 @@ class RawValidationContext:
     width: int | None = None
     height: int | None = None
     depth: int | None = None
+    # Authoritative expected values from the CLI (--width/--height/--sampling/
+    # --bit-depth), cross-checked against the MIB; kept separate from the
+    # SDP/MIB-derived fields above so the existing checks are unaffected.
+    cli_width: int | None = None
+    cli_height: int | None = None
+    cli_sampling: str | None = None
+    cli_bit_depth: int | None = None
 
 
 def _frame_from_report(d: dict[str, Any]) -> RawFrameInfo:
@@ -360,6 +376,10 @@ def build_context(args: argparse.Namespace) -> RawValidationContext:
         width=width,
         height=height,
         depth=depth,
+        cli_width=args.width,
+        cli_height=args.height,
+        cli_sampling=args.sampling,
+        cli_bit_depth=args.bit_depth,
     )
 
 
@@ -1163,6 +1183,9 @@ def build_requirements(ctx: RawValidationContext) -> list[Requirement]:
     add("TR-10-1-FR-XVAL", "shall",
         "CLI --exactframerate SHALL match MIB rate_numerator/rate_denominator when both present.",
         lambda c=ctx: cross_validate_exactframerate(c.exact_framerate, c.sender_reports))
+    add("TR-10-1-VP-XVAL", "shall",
+        "CLI --width/--height/--sampling/--bit-depth SHALL match MIB video parameters when both present.",
+        lambda c=ctx: cross_validate_video_params(c.cli_width, c.cli_height, c.cli_sampling, c.cli_bit_depth, c.sender_reports))
     add("TR-10-1-10.1-IPMX-FMTP", "shall",
         "SDP a=fmtp line shall contain the IPMX keyword (TR-10-1 §10.1).",
         lambda c=ctx: check_sdp_ipmx_fmtp(c.sdp.media if c.sdp is not None else None))
@@ -1178,6 +1201,28 @@ def build_requirements(ctx: RawValidationContext) -> list[Requirement]:
     add("TR-10-9-11.2b", "shall",
         "SR capture times SHALL have max-min variation <= 2ms over any 2s window (TR-10-9 §11.2).",
         lambda c=ctx: check_sr_interval_tr10_9(c))
+
+    # --- TR-10-9 §16: Quality of service (DSCP marking) ---
+    add("TR-10-9-16a", "shall",
+        "RTP packets SHALL be marked with the TR-10-9 §16 default DSCP AF42(36) "
+        "for uncompressed video (TR-10-2).",
+        lambda c=ctx: check_dscp_rtp_marking(c.pcap, c.stream_info, 36))
+    add("TR-10-9-16b", "shall",
+        "RTCP Sender Report packets SHALL carry the same DSCP as their RTP "
+        "stream (TR-10-9 §16).",
+        lambda c=ctx: check_dscp_sr_matches_rtp(c.pcap, c.stream_info, c.sender_reports))
+    add("RFC1112-MCAST-MAC", "shall",
+        "IPv4 multicast RTP packets SHALL use the RFC 1112 §6.4 Ethernet "
+        "destination MAC derived from the group address (01:00:5e + low 23 bits).",
+        lambda c=ctx: check_multicast_mac_mapping(c.pcap, c.stream_info))
+    add("RFC1112-SR-MAC", "shall",
+        "IPv4 multicast RTCP Sender Report packets SHALL use the RFC 1112 §6.4 "
+        "Ethernet destination MAC of the group address.",
+        lambda c=ctx: check_sr_mac_mapping(c.sender_reports))
+    add("TR-10-1-8.7-SR-PORT", "shall",
+        "RTCP Sender Reports SHALL be sent on the RTP destination port + 1 "
+        "(TR-10-1 §8.7 / RFC 3550 §11).",
+        lambda c=ctx: check_sr_rtcp_port(c.pcap, c.stream_info))
 
     # --- SDP transport file cross-validation ---
     add("SDP-PORT", "shall",
@@ -1206,6 +1251,10 @@ def build_requirements(ctx: RawValidationContext) -> list[Requirement]:
     add("TR-10-1-8.7-RC", "should",
         "RTCP SR reception report count (RC) should be 0 (TR-10-1 §8.7).",
         lambda c=ctx: check_sr_rc_zero(c.sender_reports))
+    add("TR-10-1-8.7-COMPOUND", "shall",
+        "RTCP Sender Reports shall be sent in a compound RTCP packet — report "
+        "packet first and an SDES CNAME item present (RFC 3550 §6.1, TR-10-1 §8.7).",
+        lambda c=ctx: check_sr_compound_packet(c.pcap, c.stream_info))
 
     return reqs
 
@@ -1377,8 +1426,10 @@ def _run_cmax_check(ctx: RawValidationContext) -> list[RequirementResult]:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    configure_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pcap", type=Path, help="PCAP file containing raw video RTP/RTCP")
+    parser.add_argument("pcap", type=Path, nargs="?", help="PCAP file containing raw video RTP/RTCP")
+    parser.add_argument("--list-requirements", action="store_true", help="List all requirement IDs this validator checks, then exit (no PCAP needed)")
     parser.add_argument("--port", type=int, help="RTP destination port (auto-detected if omitted)")
     parser.add_argument("--rtcp-port", type=int, help="RTCP destination port (default: RTP port + 1)")
     parser.add_argument("--ssrc", type=lambda x: int(x, 0), help="SSRC (decimal or 0x hex; auto-detected if omitted)")
@@ -1400,6 +1451,17 @@ def main() -> int:
         type=str,
         help="Exact framerate as integer or num/den (e.g. 60, 60000/1001)",
     )
+    parser.add_argument("--width", type=int, help="Expected video width in pixels")
+    parser.add_argument("--height", type=int, help="Expected video height in pixels")
+    parser.add_argument("--sampling", type=str, help="Expected sampling (e.g. YCbCr-4:2:2, RGB)")
+    parser.add_argument("--bit-depth", type=int, help="Expected bit depth (e.g. 8, 10, 12)")
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        help="Stream descriptor (streams/cfg/*.cfg, by path or bare name) to seed "
+             "expected-value flags (--exactframerate/--width/--height/--sampling/"
+             "--bit-depth); explicit flags on the command line override the cfg",
+    )
     parser.add_argument(
         "--cmax",
         action="store_true",
@@ -1416,6 +1478,22 @@ def main() -> int:
         help="Stream uses Privacy Encryption Protocol (PEP) encryption",
     )
     args = parser.parse_args()
+
+    if args.list_requirements:
+        from ipmx_validate_common import print_requirements_list
+        print_requirements_list(Path(__file__).name, build_requirements(None))
+        return 0
+
+    if args.pcap is None:
+        parser.error("the pcap argument is required unless --list-requirements is used")
+
+    if args.cfg:
+        from ipmx_validate_common import (
+            apply_video_cfg,
+            parse_cfg_file,
+            resolve_cfg_path,
+        )
+        apply_video_cfg(args, parse_cfg_file(resolve_cfg_path(args.cfg)))
 
     if not args.pcap.exists():
         raise SystemExit(f"{args.pcap} does not exist")
@@ -1439,6 +1517,7 @@ def main() -> int:
     print(f"RTP: {seq.summary()}")
     print(f"     {len(ctx.frames)} frames")
     print(f"RTCP: {len(ctx.sender_reports)} Sender Report(s)")
+    print_first_sr_block_version(ctx.sender_reports)
     if ctx.sdp is not None:
         s = ctx.sdp
         print(f"SDP:  sampling={s.sampling} width={s.width} height={s.height} "

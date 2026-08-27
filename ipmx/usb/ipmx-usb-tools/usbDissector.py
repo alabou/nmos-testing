@@ -37,6 +37,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+# Decoded payloads can carry non-ASCII bytes (e.g. a vendor busid string that
+# isn't cleanly null-padded). Make stdout/stderr tolerant so such content never
+# raises UnicodeEncodeError on a legacy Windows code page. This must run before
+# scapy is imported, since scapy pulls in colorama which wraps stdout with the
+# strict console encoding.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="backslashreplace")
+
 try:
     from scapy.all import rdpcap, TCP, IP, Raw
     from scapy.utils import PcapReader
@@ -46,6 +55,7 @@ except ImportError:
 
 import ipmx_pep as pepmod
 import ipmx_usb_message as usb
+import usb_decode
 from ipmx_usb_message import IpmxUsbMessage, MsgType, StatusCode, _VALID_STATUS_CODES
 from tcp_reassembler import TcpConnection, make_stream_key, find_contiguous_blocks
 
@@ -151,6 +161,87 @@ def _load_packets(pcap_file: str) -> list:
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Framing diagnostics
+#
+# Stream bytes that cannot be framed used to be dropped without a word, which let
+# a partially-parsed capture look complete and turned missing messages into bogus
+# "never sent" conclusions. Channel identification re-parses the same blocks
+# several times, so entries are keyed by block content and overwritten rather
+# than accumulated.
+# ---------------------------------------------------------------------------
+
+_UNFRAMED: dict[tuple, dict] = {}
+_FRAMED_PORTS: set[int] = set()
+
+
+def _reset_framing_stats() -> None:
+    _UNFRAMED.clear()
+    _FRAMED_PORTS.clear()
+
+
+def _block_ports(block) -> tuple[int, int]:
+    """TCP ports of the connection a block belongs to, or (0, 0) if unknown."""
+    if not block.packets:
+        return (0, 0)
+    meta = block.packets[0]
+    try:
+        return (int(meta[3]), int(meta[5]))
+    except (TypeError, ValueError, IndexError):
+        return (0, 0)
+
+
+def _note_framed(block) -> None:
+    """Remember that this connection really does carry IPMX USB messages."""
+    _FRAMED_PORTS.update(p for p in _block_ports(block) if p)
+
+
+def _record_unframed(block, nbytes: int, kind: str) -> None:
+    """Record *nbytes* of stream data that could not be framed as USB messages."""
+    if nbytes <= 0:
+        return
+    key = (hash(block.data), len(block.data), kind)
+    _UNFRAMED[key] = {'bytes': nbytes, 'kind': kind, 'ports': _block_ports(block)}
+
+
+def _framing_report() -> Optional[str]:
+    """
+    Summarise stream data that could not be framed, or None when there is none.
+
+    Only connections demonstrably carrying IPMX USB are reported — ones that
+    yielded messages elsewhere, plus any block that needed resynchronising. This
+    dissector walks every TCP stream in the capture, so counting unrelated HTTP,
+    TLS or HKEP traffic as "unframed USB" would bury the real signal in noise.
+    The Session sender port is deliberately not used to widen this: it is
+    auto-detected and can land on a busy non-USB port such as HKEP's 5051.
+    """
+    relevant = [v for v in _UNFRAMED.values()
+                if v['kind'] == 'resync' or any(p in _FRAMED_PORTS for p in v['ports'])]
+    if not relevant:
+        return None
+
+    total   = sum(v['bytes'] for v in relevant)
+    resyncs = sum(1 for v in relevant if v['kind'] == 'resync')
+    tails   = sum(1 for v in relevant if v['kind'] == 'tail')
+    lost    = sum(1 for v in relevant if v['kind'] == 'unframed')
+
+    lines = [f"[!] WARNING: this capture was not fully parsed - {total} byte(s) of IPMX USB "
+             f"stream data could not be framed as messages"]
+    if resyncs:
+        lines.append(f"  {resyncs} block(s) did not start on a message boundary, so framing was "
+                     f"resynchronised (capture likely started mid-stream)")
+        lines.append(f"    Resynchronised framing is best-effort: it locates a boundary that is "
+                     f"consistent with the rest of the stream, which is strong evidence but not "
+                     f"proof. Treat messages from those blocks with corresponding caution.")
+    if tails:
+        lines.append(f"  {tails} block(s) ended in a message truncated by the end of the capture")
+    if lost:
+        lines.append(f"  {lost} block(s) could not be framed at all")
+    lines.append("  Messages contained in those bytes are absent from the analysis below, so "
+                 "'not sent' conclusions may reflect the gap rather than the device.")
+    return "\n".join(lines)
+
+
 def _collect_streams(packets: list) -> dict[str, TcpConnection]:
     """
     First pass: collect all TCP payload packets into per-connection buffers.
@@ -165,14 +256,28 @@ def _collect_streams(packets: list) -> dict[str, TcpConnection]:
         if not pkt.haslayer(TCP) or not pkt.haslayer(IP):
             continue
         tcp = pkt[TCP]
-        if not tcp.payload:
-            continue
-        payload = bytes(tcp.payload)
-        if not payload:
-            continue
+        ip = pkt[IP]
 
-        src_ip   = pkt[IP].src
-        dst_ip   = pkt[IP].dst
+        # Real TCP payload length from the IP total-length field. Short frames
+        # (e.g. bare ACK/SYN, 54 bytes) are zero-padded to Ethernet's 60-byte
+        # minimum, and scapy surfaces that padding as trailing TCP-payload
+        # bytes. Using bytes(tcp.payload) directly would inject phantom bytes
+        # into the reassembled stream — corrupting sequence tracking and
+        # dropping legitimate messages (e.g. a Receiver's SenderConnectionStatus
+        # whose header lands right after a padded ACK). Bound by ip.len, which
+        # accounts for IP/TCP options. When ip.len is 0 (e.g. TCP segmentation
+        # offload), fall back to the raw payload bytes.
+        raw = bytes(tcp.payload)
+        if ip.len:
+            seg_len = ip.len - (ip.ihl * 4) - (tcp.dataofs * 4)
+            if seg_len >= 0:
+                raw = raw[:seg_len]
+        if not raw:
+            continue
+        payload = raw
+
+        src_ip   = ip.src
+        dst_ip   = ip.dst
         src_port = tcp.sport
         dst_port = tcp.dport
 
@@ -205,6 +310,7 @@ def _parse_messages_from_connection(
     iv_mode_rev: pepmod.IvMode = pepmod.IvMode.SPEC,
     handshake_iv_fwd: Optional[int] = None,
     handshake_iv_rev: Optional[int] = None,
+    force_plaintext: bool = False,
 ) -> tuple[list[ChannelMessage], list[ChannelMessage]]:
     """
     Reassemble and parse IPMX USB messages from both directions of a connection.
@@ -252,18 +358,40 @@ def _parse_messages_from_connection(
         first_encrypted_seen = False
         for block in blocks_fn():
             offset = 0
+
+            # Establish a trustworthy starting point before framing anything. A
+            # block that does not begin on a message boundary (capture started
+            # mid-stream) used to be abandoned silently at the first bad header,
+            # discarding every message in it.
+            if not usb.block_starts_on_boundary(block.data):
+                start = usb.next_sync_offset(block.data, 1)
+                if start is None:
+                    # No trustworthy boundary anywhere. Recorded rather than
+                    # discarded outright, but only reported if the connection
+                    # turns out to be IPMX USB — this dissector walks every TCP
+                    # stream in the capture, so most such blocks are simply other
+                    # traffic and warning about them would be noise.
+                    _record_unframed(block, len(block.data), 'unframed')
+                    continue
+                _record_unframed(block, start, 'resync')
+                offset = start
+
             while True:
                 length = usb.peek_length(block.data, offset)
-                if length is None:
-                    break
-                if offset + length > len(block.data):
+                if length is None or offset + length > len(block.data):
+                    # Trailing message cut short by the end of the capture.
+                    if offset < len(block.data):
+                        _record_unframed(block, len(block.data) - offset, 'tail')
                     break
                 try:
-                    parsed = usb.parse_one(block.data, offset)
+                    parsed = usb.parse_one(block.data, offset,
+                                           force_plaintext=force_plaintext)
                 except ValueError as exc:
                     if verbose:
                         print(f"    Parse error at offset {offset}: {exc}")
-                    offset += 1
+                    # The boundary is trusted because the chain validated, so skip
+                    # this message rather than sliding a byte and losing framing.
+                    offset += length
                     continue
 
                 mac_ok: Optional[bool] = None
@@ -282,6 +410,10 @@ def _parse_messages_from_connection(
                     except Exception as exc:
                         if verbose:
                             print(f"    Decrypt error at offset {offset}: {exc}")
+
+                # This connection demonstrably carries IPMX USB, so unframed
+                # bytes found on it are a real gap rather than unrelated traffic.
+                _note_framed(block)
 
                 meta = block.meta_at(offset)
                 if meta is not None:
@@ -320,6 +452,7 @@ def _identify_channels(
     pep_params: Optional[pepmod.PepParams] = None,
     iv_mode_s2r: pepmod.IvMode = pepmod.IvMode.SPEC,
     iv_mode_r2s: pepmod.IvMode = pepmod.IvMode.SPEC,
+    force_plaintext: bool = False,
 ) -> tuple[dict[str, tuple[str, list[ChannelMessage], list[ChannelMessage]]],
            dict[str, tuple[int, int, bool]]]:
     """
@@ -347,7 +480,8 @@ def _identify_channels(
     # which TCP direction corresponds to Sender-to-Receiver (S2R).
     classified: dict[str, tuple[str, TcpConnection, bool]] = {}
     for key, conn in connections.items():
-        fwd_msgs, rev_msgs = _parse_messages_from_connection(conn, verbose)
+        fwd_msgs, rev_msgs = _parse_messages_from_connection(
+            conn, verbose, force_plaintext=force_plaintext)
         all_msgs = sorted(fwd_msgs + rev_msgs, key=lambda m: m.packet_number)
         if not all_msgs:
             continue
@@ -428,7 +562,8 @@ def _identify_channels(
         Tries SSID 2 first (spec-required handshake SSID).  Falls back to
         brute-force 0-254 if CMAC fails with SSID 2.
         """
-        fwd, rev = _parse_messages_from_connection(conn, verbose=False)
+        fwd, rev = _parse_messages_from_connection(
+            conn, verbose=False, force_plaintext=force_plaintext)
         for m in sorted(fwd + rev, key=lambda x: x.packet_number):
             if m.msg.msg_type_enum == MsgType.USB_STREAM_INFO:
                 if not m.msg.is_encrypted:
@@ -532,7 +667,8 @@ def _identify_channels(
             pep_params=pep_params,
             iv_forward=iv_fwd, iv_reverse=iv_rev,
             iv_mode_fwd=ivm_fwd, iv_mode_rev=ivm_rev,
-            handshake_iv_fwd=hs_iv_fwd, handshake_iv_rev=hs_iv_rev)
+            handshake_iv_fwd=hs_iv_fwd, handshake_iv_rev=hs_iv_rev,
+            force_plaintext=force_plaintext)
 
         all_msgs = sorted(fwd_msgs + rev_msgs, key=lambda m: m.packet_number)
         if not all_msgs:
@@ -884,8 +1020,8 @@ def _validate_control_channel(
                       packet_number=cm.packet_number)
     else:
         # ---------------------------------------------------------------- §12 — CTR monotonicity
-        _check_ctr_monotonic(s, sender_msgs, "Sender→Receiver (control)")
-        _check_ctr_monotonic(s, receiver_msgs, "Receiver→Sender (control)")
+        _check_ctr_monotonic(s, sender_msgs, "Sender->Receiver (control)")
+        _check_ctr_monotonic(s, receiver_msgs, "Receiver->Sender (control)")
         # ---------------------------------------------------------------- §12 — KEYVERSION consistency
         _check_keyversion_consistency(s, sender_msgs, receiver_msgs, "control")
 
@@ -904,8 +1040,8 @@ def _check_keyversion_consistency(
     share one (possibly different) KEYVERSION.
     """
     s = session
-    for direction_label, msgs in (("Sender→Receiver", sender_msgs),
-                                  ("Receiver→Sender", receiver_msgs)):
+    for direction_label, msgs in (("Sender->Receiver", sender_msgs),
+                                  ("Receiver->Sender", receiver_msgs)):
         kv_set: set[int] = set()
         for cm in msgs:
             kv = cm.msg.key_version
@@ -1303,9 +1439,9 @@ def _validate_data_channel(
     else:
         # ---------------------------------------------------------------- §12 — CTR monotonicity
         _check_ctr_monotonic(s, sender_msgs,
-                             f"Sender→Receiver (data substreamid=0x{channel.substreamid:02X})")
+                             f"Sender->Receiver (data substreamid=0x{channel.substreamid:02X})")
         _check_ctr_monotonic(s, receiver_msgs,
-                             f"Receiver→Sender (data substreamid=0x{channel.substreamid:02X})")
+                             f"Receiver->Sender (data substreamid=0x{channel.substreamid:02X})")
         # ---------------------------------------------------------------- §12 — KEYVERSION consistency
         _check_keyversion_consistency(
             s, sender_msgs, receiver_msgs,
@@ -1322,7 +1458,7 @@ def analyze_pcap(
     sender_port: Optional[int] = None,
     sender_cid: Optional[bytes] = None,
     sender_sn: Optional[str] = None,
-    encrypted: bool = False,
+    encrypted: Optional[bool] = None,
     verbose: bool = False,
     show_tcp_issues: bool = False,
     pep_params: Optional[pepmod.PepParams] = None,
@@ -1337,6 +1473,8 @@ def analyze_pcap(
     decrypted transparently and field-level validation is applied to
     the decrypted content.
     """
+    _reset_framing_stats()
+
     # §12: Valid modes for TR-10-14 USB privacy
     _VALID_USB_MODES = {
         "AES-128-CTR_CMAC-64-AAD",
@@ -1384,16 +1522,25 @@ def analyze_pcap(
     if verbose:
         print(f"  Found {len(connections)} TCP stream(s)")
 
+    # --no-encrypted (encrypted is False) forces plaintext decoding even when a
+    # message header carries a non-zero CTR/KEYVERSION. --encrypted / auto leave
+    # the parser's own is_encrypted heuristic in charge.
+    force_plaintext = encrypted is False
+
     channel_map, ssid_findings = _identify_channels(
         connections, verbose,
         pep_key=pep_key, pep_params=pep_params,
         iv_mode_s2r=iv_mode_s2r,
-        iv_mode_r2s=iv_mode_r2s)
+        iv_mode_r2s=iv_mode_r2s,
+        force_plaintext=force_plaintext)
 
     # Auto-detect encryption from messages: if any message on any channel has
-    # non-zero CTR or KEYVERSION, treat the stream as encrypted.
+    # non-zero CTR or KEYVERSION, treat the stream as encrypted. Only runs when
+    # the caller left it unspecified (None); --encrypted / --no-encrypted force
+    # the value and skip detection.
     mac_failures = 0
-    if not encrypted:
+    if encrypted is None:
+        encrypted = False
         for _ctype, _smsgs, _rmsgs in channel_map.values():
             for cm in _smsgs + _rmsgs:
                 if cm.msg.is_encrypted:
@@ -1633,23 +1780,129 @@ def _format_payload(payload: dict) -> str:
     return "  " + "  ".join(parts) if parts else ""
 
 
-def _print_messages(sess: Session) -> None:
-    """Print every message on the control channel and each data channel."""
+def _hid_kind_by_shape(data: bytes) -> usb_decode.HidBootProtocol:
+    """Fallback HID classification when no Configuration descriptor was captured.
+
+    A boot keyboard report is 8 bytes with a zero reserved byte (index 1); a
+    boot mouse report is 3-4 bytes.  Ambiguous shapes return NONE so nothing is
+    mis-decoded.
+    """
+    n = len(data)
+    if n >= 8 and data[1] == 0:
+        return usb_decode.HidBootProtocol.KEYBOARD
+    if 3 <= n <= 4:
+        return usb_decode.HidBootProtocol.MOUSE
+    return usb_decode.HidBootProtocol.NONE
+
+
+def _hid_report_lines(data: bytes, ep: Optional[usb_decode.EndpointInfo]) -> list[str]:
+    """ASCII-only annotation for a tunneled HID boot keyboard/mouse report.
+
+    Classification prefers the endpoint's boot-interface protocol (from a
+    Configuration descriptor captured earlier on the same channel) and falls
+    back to the report shape otherwise.  Idle reports (nothing pressed or moved)
+    and non-HID endpoints produce no line.
+    """
+    kind = usb_decode.classify_hid(ep) if ep is not None else _hid_kind_by_shape(data)
+    if kind == usb_decode.HidBootProtocol.KEYBOARD:
+        r = usb_decode.decode_keyboard_report(data)
+        if r is None or (not r.text and not r.modifiers):
+            return []
+        keys = f" keys={ascii(r.text)}" if r.text else ""
+        mods = f" mods=[{', '.join(r.modifiers)}]" if r.modifiers else ""
+        return [f"-> Keyboard{keys}{mods}"]
+    if kind == usb_decode.HidBootProtocol.MOUSE:
+        r = usb_decode.decode_mouse_report(data)
+        if r is None or (not r.buttons and r.dx == 0 and r.dy == 0 and r.wheel == 0):
+            return []
+        btns = f" buttons=[{', '.join(r.buttons)}]" if r.buttons else ""
+        return [f"-> Mouse{btns} dx={r.dx:+d} dy={r.dy:+d} wheel={r.wheel:+d}"]
+    return []
+
+
+def _print_messages(sess: Session, decode_usb: bool = False) -> None:
+    """Print every message on the control channel and each data channel.
+
+    When ``decode_usb`` is set, each row that carries a tunneled USB SETUP
+    packet (USBDEVREQ) or descriptor payload (TRANSFERDATA) is followed by
+    indented, ASCII-only annotation lines decoding the USB standard layer.
+    Returned descriptors are decoded in the context of the SETUP request that
+    produced them, correlated per-channel by SEQNUM.
+    """
+
+    def _usb_annotations(m: IpmxUsbMessage,
+                         setup_by_seqnum: dict[int, dict],
+                         hid_endpoints: dict[int, usb_decode.EndpointInfo]) -> list[str]:
+        """Return decoded USB lines for one message, updating the correlation maps.
+
+        ``setup_by_seqnum`` correlates a SETUP request to its returned data;
+        ``hid_endpoints`` maps endpoint number -> EndpointInfo, learned from a
+        Configuration descriptor seen earlier on the channel, so a boot HID
+        interrupt report can be classified as keyboard vs mouse.
+        """
+        p = m.payload
+        if not p or p.get('_encrypted'):
+            return []
+        lines: list[str] = []
+        seqnum = p.get('seqnum')
+
+        # SUBMIT direction: decode the 8-byte SETUP and remember it by SEQNUM so
+        # the matching RETURN's descriptor can be decoded in context.
+        req_hex = p.get('usbdevreq')
+        if req_hex:
+            setup = usb_decode.decode_setup(bytes.fromhex(req_hex))
+            if setup:
+                if seqnum is not None:
+                    setup_by_seqnum[seqnum] = setup
+                lines.append(setup['summary'])
+
+        # Any direction may carry returned/outgoing descriptor bytes.
+        data_hex = p.get('transferdata')
+        if data_hex:
+            data = bytes.fromhex(data_hex)
+            setup = setup_by_seqnum.get(seqnum) if seqnum is not None else None
+            hint_type = setup.get('descriptor_type') if setup else None
+            hint_index = setup.get('descriptor_index') if setup else None
+            lines.extend(usb_decode.describe_descriptor(data, hint_type, hint_index))
+            # Learn endpoint->interface mapping from a Configuration descriptor so
+            # later interrupt reports on this channel can be classified.
+            if hint_type == usb_decode.DescriptorType.CONFIGURATION:
+                for ep in usb_decode.parse_config_descriptor(data):
+                    hid_endpoints[ep.endpoint_num] = ep
+            # Tunneled HID boot keyboard/mouse reports ride in interrupt returns.
+            if (m.msg_type_enum == MsgType.USB_INTERRUPT_SUBMIT_RETURN
+                    and p.get('direction') == 1):
+                lines.extend(_hid_report_lines(data, hid_endpoints.get(p.get('endpoint'))))
+        return lines
+
+    # Reference time (t0): earliest message timestamp across the whole session,
+    # so the Time(ms) column is comparable across the control and data channels.
+    all_ts = [cm.timestamp
+              for msgs in ([sess.control.messages]
+                           + [ch.messages for ch in sess.data_channels.values()])
+              for cm in msgs]
+    t0 = min(all_ts) if all_ts else 0.0
 
     def _dump(label: str, messages: list[ChannelMessage]) -> None:
         if not messages:
             print(f"\n  {label}: (no messages)")
             return
         print(f"\n  {label}  ({len(messages)} messages)")
-        print(f"  {'#Pkt':<6} {'Dir':<5} {'Type':<38} {'Len':>6}  Payload")
-        print(f"  {'-'*5:<6} {'-'*4:<5} {'-'*37:<38} {'-'*6}  {'-'*50}")
+        print(f"  {'#Pkt':<6} {'Time(ms)':>11} {'Dir':<30} {'Type':<38} {'Len':>6}  Payload")
+        print(f"  {'-'*5:<6} {'-'*11:>11} {'-'*30:<30} {'-'*37:<38} {'-'*6}  {'-'*50}")
+        setup_by_seqnum: dict[int, dict] = {}
+        hid_endpoints: dict[int, usb_decode.EndpointInfo] = {}
         for cm in messages:
             m = cm.msg
             src_short = f"{cm.src_ip.split('.')[-1]}:{cm.src_port}"
             dst_short = f"{cm.dst_ip.split('.')[-1]}:{cm.dst_port}"
-            direction = f"{src_short}→{dst_short}"
+            direction = f"{src_short}->{dst_short}"
+            t_ms = (cm.timestamp - t0) * 1000.0
             payload_str = _format_payload(m.payload)
-            print(f"  {cm.packet_number:<6} {direction:<30} {m.msg_type_name:<38} {m.length:>6}{payload_str}")
+            print(f"  {cm.packet_number:<6} {t_ms:>11.3f} {direction:<30} {m.msg_type_name:<38} {m.length:>6}{payload_str}")
+            if decode_usb:
+                for line in _usb_annotations(m, setup_by_seqnum, hid_endpoints):
+                    print(f"  {'':6} {'':11} {'':30} {line}")
 
     _dump("Control channel", sess.control.messages)
     for substreamid, ch in sess.data_channels.items():
@@ -1662,7 +1915,7 @@ def _print_messages(sess: Session) -> None:
 
 
 def _print_session(sess: Session, verbose: bool, show_messages: bool = False,
-                   show_requirements: bool = False) -> None:
+                   show_requirements: bool = False, decode_usb: bool = False) -> None:
     print(f"\n{'='*72}")
     print(f"Session: Sender={sess.sender_ip}:{sess.sender_port}")
     if sess.control.sender_info:
@@ -1694,7 +1947,7 @@ def _print_session(sess: Session, verbose: bool, show_messages: bool = False,
         print("  [OK] No violations found")
 
     if show_messages:
-        _print_messages(sess)
+        _print_messages(sess, decode_usb=decode_usb)
 
     if show_requirements:
         _print_requirements(sess)
@@ -1754,12 +2007,18 @@ def main() -> int:
                         help="Expected Sender CID as hex string, e.g. 0050C2")
     parser.add_argument('--sender-sn', default=None,
                         help="Expected Sender serial number string")
-    parser.add_argument('--encrypted', action='store_true',
-                        help="Stream is encrypted — only validate non-encrypted fields")
+    parser.add_argument('--encrypted', action=argparse.BooleanOptionalAction, default=None,
+                        help="Force encryption handling. --encrypted: treat the stream as "
+                             "encrypted (only validate non-encrypted fields). --no-encrypted: "
+                             "force plaintext validation, skipping auto-detection. "
+                             "Default: auto-detect from non-zero CTR/KEYVERSION/MAC.")
     parser.add_argument('--verbose', '-v', action='store_true',
                         help="Show stream classification details")
     parser.add_argument('--messages', '-m', action='store_true',
                         help="Print every parsed message with decoded fields")
+    parser.add_argument('--decode-usb', action='store_true',
+                        help="With -m, also decode the tunneled USB standard "
+                             "layer (SETUP packets and returned descriptors)")
     parser.add_argument('--requirements', '-r', action='store_true',
                         help="Print a per-requirement pass/fail checklist")
     parser.add_argument('--show-tcp-issues', action='store_true',
@@ -1822,10 +2081,15 @@ def main() -> int:
     )
 
     if not args.quiet:
+        framing_warning = _framing_report()
+        if framing_warning:
+            print(f"\n{framing_warning}")
+
         for sess in sessions:
             _print_session(sess, verbose=args.verbose,
                            show_messages=args.messages,
-                           show_requirements=args.requirements)
+                           show_requirements=args.requirements,
+                           decode_usb=args.decode_usb)
 
         total_errors   = sum(len([f for f in s.findings if f.severity == Severity.ERROR]) for s in sessions)
         total_warnings = sum(len([f for f in s.findings if f.severity == Severity.WARNING]) for s in sessions)

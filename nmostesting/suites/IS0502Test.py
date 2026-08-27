@@ -16,7 +16,6 @@ import time
 import uuid
 import re
 from requests.compat import json
-from copy import deepcopy
 from collections import defaultdict
 from random import randint
 from jinja2 import Template
@@ -1010,7 +1009,6 @@ class IS0502Test(GenericTest):
                     continue
 
                 found_refclk = False
-                interface_bindings = deepcopy(sender["interface_bindings"])
                 for sdp_line in is05_transport_file.split("\n"):
                     sdp_line = sdp_line.replace("\r", "")
                     ts_refclk = re.search(r"^a=ts-refclk:(.+)$", sdp_line)
@@ -1044,17 +1042,24 @@ class IS0502Test(GenericTest):
                     prefix = "localmac="
                     if ts_refclk.group(1).startswith(prefix):
                         try:
-                            # This assumes that ts-refclk isn't specified globally, but this shouldn't be the case when
-                            # localmac is used given each RTP sender is likely to use a different interface
-                            if len(interface_bindings) == 0:
-                                return test.FAIL("Sender {} returned empty 'interface_bindings'".format(sender["id"]))
-                            api_mac = interface_map[interface_bindings[0]]["port_id"]
+                            # Per RFC 7273, localmac identifies the device's local reference clock by the
+                            # EUI-48/64 of one of the interfaces of the equipment generating the clock. It is a
+                            # device-wide clock identifier, not the MAC of the interface this Sender egresses on,
+                            # so a multi-NIC device may advertise the same localmac on Senders bound to different
+                            # interfaces. Therefore match the SDP localmac against any of the Node's interfaces
+                            # rather than only the Sender's bound interface.
+                            found = False
                             sdp_mac = ts_refclk.group(1)[len(prefix):].lower()
-                            if api_mac != sdp_mac:
-                                return test.FAIL("IS-04 interface_bindings port_id does not match SDP ts-refclk "
+
+                            for ifname in interface_map.keys():
+                                api_mac = interface_map[ifname]["port_id"]
+                                if api_mac == sdp_mac:
+                                    found = True
+                                    break
+
+                            if not found:
+                                return test.FAIL("IS-04 interfaces port_id do not match SDP ts-refclk "
                                                  "localmac for Sender {}".format(sender["id"]))
-                            # Ensure that any further localmacs we test match the expected interface
-                            del interface_bindings[0]
                         except KeyError as e:
                             return test.FAIL("Expected attribute not found in IS-04 API: {}".format(e))
 

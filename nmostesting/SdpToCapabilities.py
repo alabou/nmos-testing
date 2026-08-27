@@ -244,9 +244,6 @@ class SdpToCapabilitiesConverter:
 
     def _get_media_type_from_format(self, format_type: str, media: MediaDescriptor, mux: bool = False) -> Optional[str]:
         """Get the media type string for capabilities"""
-        if not media.encoding_name:
-            raise ValueError("Media descriptor missing encoding name")
-
         # If the Receiver is of format mux then always application/
         if mux:
             type = "application/"
@@ -254,9 +251,16 @@ class SdpToCapabilitiesConverter:
         else:
             type = media.type.s + "/"
 
+        # RTP media (format_code != 0) carry the subtype in the rtpmap encoding
+        # name; non-RTP media such as application/usb (format_code == 0) carry it
+        # in the media-line format string and have no encoding name.
         if media.format_code != 0:
+            if not media.encoding_name:
+                raise ValueError("Media descriptor missing encoding name")
             return type + media.encoding_name.s
         else:
+            if media.format_string is None:
+                raise ValueError("Media descriptor missing format string")
             return type + media.format_string.s
 
     def _add_video_capabilities(self, media: MediaDescriptor, capabilities: Dict[str, Capability]):

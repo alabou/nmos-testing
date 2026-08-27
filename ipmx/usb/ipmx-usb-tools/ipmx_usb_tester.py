@@ -49,7 +49,6 @@ import struct
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +62,14 @@ import ipmx_usb_message as usb
 from ipmx_usb_message import IpmxUsbMessage, MsgType
 import ipmx_pep as pepmod
 
+# Shared USB standard-layer decoders (SETUP, descriptors, HID boot keyboard/mouse).
+# The byte-level parsing lives here so usbDissector.py decodes captured reports
+# the same way this live harness decodes them; this tool only formats the result.
+from usb_decode import (
+    HidBootProtocol, EndpointInfo, parse_config_descriptor, classify_hid,
+    decode_keyboard_report, decode_mouse_report,
+)
+
 # Import validation infrastructure from the dissector
 from usbDissector import (
     Severity, Finding, ChannelMessage, DataChannel, ControlChannel, Session,
@@ -74,70 +81,9 @@ from usbDissector import (
 # Defaults
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# HID Usage Table (Keyboard/Keypad Page 0x07) — USB HID 1.11, Section 10
-# Maps HID usage ID → (unshifted char, shifted char)
-# ---------------------------------------------------------------------------
-_HID_KEY_MAP: dict[int, tuple[str, str]] = {
-    0x04: ('a', 'A'),   0x05: ('b', 'B'),   0x06: ('c', 'C'),   0x07: ('d', 'D'),
-    0x08: ('e', 'E'),   0x09: ('f', 'F'),   0x0A: ('g', 'G'),   0x0B: ('h', 'H'),
-    0x0C: ('i', 'I'),   0x0D: ('j', 'J'),   0x0E: ('k', 'K'),   0x0F: ('l', 'L'),
-    0x10: ('m', 'M'),   0x11: ('n', 'N'),   0x12: ('o', 'O'),   0x13: ('p', 'P'),
-    0x14: ('q', 'Q'),   0x15: ('r', 'R'),   0x16: ('s', 'S'),   0x17: ('t', 'T'),
-    0x18: ('u', 'U'),   0x19: ('v', 'V'),   0x1A: ('w', 'W'),   0x1B: ('x', 'X'),
-    0x1C: ('y', 'Y'),   0x1D: ('z', 'Z'),
-    0x1E: ('1', '!'),   0x1F: ('2', '@'),   0x20: ('3', '#'),   0x21: ('4', '$'),
-    0x22: ('5', '%'),   0x23: ('6', '^'),   0x24: ('7', '&'),   0x25: ('8', '*'),
-    0x26: ('9', '('),   0x27: ('0', ')'),
-    0x28: ('\n', '\n'),   # Return
-    0x29: ('\x1b', '\x1b'),  # Escape
-    0x2A: ('\x7f', '\x7f'),  # Backspace / Delete
-    0x2B: ('\t', '\t'),      # Tab
-    0x2C: (' ', ' '),        # Space
-    0x2D: ('-', '_'),   0x2E: ('=', '+'),
-    0x2F: ('[', '{'),   0x30: (']', '}'),   0x31: ('\\', '|'),
-    0x33: (';', ':'),   0x34: ("'", '"'),   0x35: ('`', '~'),
-    0x36: (',', '<'),   0x37: ('.', '>'),   0x38: ('/', '?'),
-    # Function keys — display as label
-    0x3A: ('<F1>', '<F1>'),  0x3B: ('<F2>', '<F2>'),   0x3C: ('<F3>', '<F3>'),
-    0x3D: ('<F4>', '<F4>'),  0x3E: ('<F5>', '<F5>'),   0x3F: ('<F6>', '<F6>'),
-    0x40: ('<F7>', '<F7>'),  0x41: ('<F8>', '<F8>'),   0x42: ('<F9>', '<F9>'),
-    0x43: ('<F10>', '<F10>'),0x44: ('<F11>', '<F11>'), 0x45: ('<F12>', '<F12>'),
-    # Navigation
-    0x4F: ('<Right>', '<Right>'), 0x50: ('<Left>', '<Left>'),
-    0x51: ('<Down>', '<Down>'),   0x52: ('<Up>', '<Up>'),
-    0x49: ('<Ins>', '<Ins>'),     0x4A: ('<Home>', '<Home>'),
-    0x4B: ('<PgUp>', '<PgUp>'),   0x4C: ('<Del>', '<Del>'),
-    0x4D: ('<End>', '<End>'),     0x4E: ('<PgDn>', '<PgDn>'),
-    # Numpad
-    0x59: ('1', 'End'),    0x5A: ('2', '↓'),    0x5B: ('3', 'PgDn'),
-    0x5C: ('4', '←'),     0x5D: ('5', '5'),    0x5E: ('6', '→'),
-    0x5F: ('7', 'Home'),   0x60: ('8', '↑'),    0x61: ('9', 'PgUp'),
-    0x62: ('0', 'Ins'),    0x63: ('.', 'Del'),  0x58: ('\n', '\n'),
-    0x54: ('/', '/'),      0x55: ('*', '*'),    0x56: ('-', '-'),
-    0x57: ('+', '+'),
-}
-
-_SHIFT_MODS = 0x02 | 0x20  # L-Shift | R-Shift
-
-
-def _hid_key_to_char(keycode: int, mods: int) -> str:
-    """Return a printable representation for a HID keycode + modifier byte."""
-    shifted = bool(mods & _SHIFT_MODS)
-    pair = _HID_KEY_MAP.get(keycode)
-    if pair is None:
-        return f'<0x{keycode:02X}>'
-    ch = pair[1] if shifted else pair[0]
-    # Replace control chars with readable labels
-    if ch == '\n':
-        return '<Enter>'
-    if ch == '\t':
-        return '<Tab>'
-    if ch == '\x1b':
-        return '<Esc>'
-    if ch == '\x7f':
-        return '<Backspace>'
-    return ch
+# The HID keyboard usage table and keycode->character mapping now live in
+# usb_decode.py (see hid_key_to_char / decode_keyboard_report) so this harness
+# and usbDissector.py decode reports identically.
 
 
 DEFAULT_SENDER_CTRL_PORT = 27502
@@ -158,13 +104,18 @@ USB_REQ_SET_CONFIGURATION = 0x09
 USB_REQ_SET_IDLE         = 0x0A
 USB_REQ_SET_PROTOCOL     = 0x0B
 
-USB_DT_DEVICE  = 0x01
-USB_DT_CONFIG  = 0x02
-USB_DT_STRING  = 0x03
-USB_DT_HID     = 0x21
-USB_DT_REPORT  = 0x22
+USB_DT_DEVICE    = 0x01
+USB_DT_CONFIG    = 0x02
+USB_DT_STRING    = 0x03
+USB_DT_INTERFACE = 0x04
+USB_DT_ENDPOINT  = 0x05
+USB_DT_HID       = 0x21
+USB_DT_REPORT    = 0x22
 
 USB_CLASS_HID  = 0x03
+
+
+# HidBootProtocol is imported from usb_decode (shared with usbDissector.py).
 
 
 def _get_descriptor_req(dtype: int, index: int, length: int,
@@ -194,40 +145,8 @@ def _set_protocol_req(protocol: int) -> bytes:
 # USB configuration descriptor parser
 # ---------------------------------------------------------------------------
 
-@dataclass
-class EndpointInfo:
-    address: int       # full bEndpointAddress byte
-    endpoint_num: int  # bits 3:0
-    direction: int     # 1 = IN (device→host), 0 = OUT
-    transfer_type: int # 0=ctrl 1=iso 2=bulk 3=interrupt
-    interval: int      # bInterval (ms for FS, 125 µs units for HS)
-    max_packet: int
-
-
-def _parse_config_descriptor(data: bytes) -> list[EndpointInfo]:
-    """Walk a full configuration descriptor blob and return all endpoint descriptors."""
-    endpoints: list[EndpointInfo] = []
-    i = 0
-    while i + 2 <= len(data):
-        bLength = data[i]
-        bType   = data[i + 1]
-        if bLength < 2:
-            break
-        if bType == 0x05 and bLength >= 7:  # Endpoint descriptor
-            addr     = data[i + 2]
-            attrs    = data[i + 3]
-            maxpkt   = struct.unpack_from('<H', data, i + 4)[0] & 0x07FF
-            interval = data[i + 6]
-            endpoints.append(EndpointInfo(
-                address      = addr,
-                endpoint_num = addr & 0x0F,
-                direction    = (addr >> 7) & 0x01,
-                transfer_type= attrs & 0x03,
-                interval     = interval,
-                max_packet   = maxpkt,
-            ))
-        i += bLength
-    return endpoints
+# EndpointInfo and parse_config_descriptor are imported from usb_decode
+# (shared with usbDissector.py).
 
 
 def _hid_interrupt_in(endpoints: list[EndpointInfo]) -> Optional[EndpointInfo]:
@@ -1688,7 +1607,7 @@ class DataChannelHandler:
                 fatal = True
             if _ok(ret):
                 raw_cfg = _xfr(ret)
-                endpoints = _parse_config_descriptor(raw_cfg)
+                endpoints = parse_config_descriptor(raw_cfg)
                 int_ep = _hid_interrupt_in(endpoints)
                 sess.log(f"    Config descriptor: {len(endpoints)} endpoint(s)  "
                          f"interrupt_in={'yes' if int_ep else 'no'}  "
@@ -1774,7 +1693,7 @@ class DataChannelHandler:
                 if td != self._prev_hid:
                     self._prev_hid = td
                     if any(td):
-                        self._decode_hid(td, ep.max_packet)
+                        self._decode_hid(td, ep)
 
             # Pace polling
             time.sleep(interval)
@@ -1800,77 +1719,74 @@ class DataChannelHandler:
 
     # ------------------------------------------------------------------
 
-    def _decode_hid(self, data: bytes, max_pkt: int) -> None:
+    def _decode_hid(self, data: bytes, ep: EndpointInfo) -> None:
         """Decode a HID boot-protocol report and print human-readable output.
 
         Keyboard: shows the actual character(s) typed (using the standard HID
         usage table) plus any active modifier keys.
-        Mouse: shows button presses and movement direction as an ASCII arrow.
+        Mouse: shows button presses and movement direction as an arrow.
+
+        Classification and byte-level parsing live in :mod:`usb_decode`, shared
+        with usbDissector.py; this method only renders the structured result as
+        an emoji event line.
         """
         sess = self._session
+        kind = classify_hid(ep)
 
-        if max_pkt == 8 and len(data) >= 3:
-            # ---- Keyboard boot protocol: [mods, reserved, key0..key5] ----
-            mods = data[0]
-            keys = [k for k in data[2:min(8, len(data))] if k != 0]
-
-            # Decode each pressed key to its character
-            chars = [_hid_key_to_char(k, mods) for k in keys]
-            char_str = ''.join(chars) if chars else ''
-
-            # Build modifier label (only non-shift mods — shift is folded into char)
-            mod_parts = []
-            if mods & 0x01: mod_parts.append('Ctrl')
-            if mods & 0x04: mod_parts.append('Alt')
-            if mods & 0x08: mod_parts.append('Win')
-            if mods & 0x10: mod_parts.append('R-Ctrl')
-            if mods & 0x40: mod_parts.append('AltGr')
-            if mods & 0x80: mod_parts.append('R-Win')
-            if mods & 0x02: mod_parts.append('Shift')   # show if no printable char
-            if mods & 0x20: mod_parts.append('R-Shift')
-
-            if char_str and mod_parts:
-                non_shift_mods = [m for m in mod_parts if 'Shift' not in m]
-                prefix = '+'.join(non_shift_mods) + '+' if non_shift_mods else ''
-                sess.hid(f"  ⌨  {prefix}{char_str!r}")
-            elif char_str:
-                sess.hid(f"  ⌨  {char_str!r}")
-            elif mods:
-                sess.hid(f"  ⌨  <{'+'.join(mod_parts)}>")
-            # all-zero report = key release, skip
-
-        elif max_pkt <= 4 and len(data) >= 3:
-            # ---- Mouse boot protocol: [buttons, dx, dy, wheel?] ----
-            btns  = data[0]
-            dx    = struct.unpack_from('b', data, 1)[0]
-            dy    = struct.unpack_from('b', data, 2)[0]
-            wheel = struct.unpack_from('b', data, 3)[0] if len(data) >= 4 else 0
-
-            parts = []
-
-            # Movement arrow
-            if dx != 0 or dy != 0:
-                horiz = ('→' * min(abs(dx), 5) if dx > 0 else '←' * min(abs(dx), 5)) if dx else ''
-                vert  = ('↓' * min(abs(dy), 5) if dy > 0 else '↑' * min(abs(dy), 5)) if dy else ''
-                parts.append(f"{horiz}{vert} ({dx:+d},{dy:+d})")
-
-            # Wheel
-            if wheel > 0:
-                parts.append(f"scroll↑{wheel}")
-            elif wheel < 0:
-                parts.append(f"scroll↓{abs(wheel)}")
-
-            # Buttons
-            btn_names = {0: 'Left', 1: 'Right', 2: 'Middle'}
-            pressed = [btn_names.get(i, f'B{i+1}') for i in range(8) if btns & (1 << i)]
-            if pressed:
-                parts.append(f"[{' '.join(pressed)}]")
-
-            if parts:
-                sess.hid(f"  🖱  {' '.join(parts)}")
-
+        if kind == HidBootProtocol.KEYBOARD and len(data) >= 3:
+            self._decode_keyboard_report(data)
+        elif kind == HidBootProtocol.MOUSE and len(data) >= 3:
+            self._decode_mouse_report(data)
         else:
-            sess.hid(f"  HID raw ({max_pkt}B): {data.hex()}")
+            sess.hid(f"  HID raw ({ep.max_packet}B): {data.hex()}")
+
+    def _decode_keyboard_report(self, data: bytes) -> None:
+        """Render a keyboard boot report: [mods, reserved, key0..key5]."""
+        sess = self._session
+        report = decode_keyboard_report(data)
+        if report is None:
+            return
+        char_str = report.text
+        mod_parts = report.modifiers
+
+        if char_str and mod_parts:
+            non_shift_mods = [m for m in mod_parts if 'Shift' not in m]
+            prefix = '+'.join(non_shift_mods) + '+' if non_shift_mods else ''
+            sess.hid(f"  ⌨  {prefix}{char_str!r}")
+        elif char_str:
+            sess.hid(f"  ⌨  {char_str!r}")
+        elif report.mods:
+            sess.hid(f"  ⌨  <{'+'.join(mod_parts)}>")
+        # all-zero report = key release, skip
+
+    def _decode_mouse_report(self, data: bytes) -> None:
+        """Render a mouse boot report: [buttons, dx, dy, wheel?]."""
+        sess = self._session
+        report = decode_mouse_report(data)
+        if report is None:
+            return
+        dx, dy, wheel = report.dx, report.dy, report.wheel
+
+        parts = []
+
+        # Movement arrow
+        if dx != 0 or dy != 0:
+            horiz = ('→' * min(abs(dx), 5) if dx > 0 else '←' * min(abs(dx), 5)) if dx else ''
+            vert  = ('↓' * min(abs(dy), 5) if dy > 0 else '↑' * min(abs(dy), 5)) if dy else ''
+            parts.append(f"{horiz}{vert} ({dx:+d},{dy:+d})")
+
+        # Wheel
+        if wheel > 0:
+            parts.append(f"scroll↑{wheel}")
+        elif wheel < 0:
+            parts.append(f"scroll↓{abs(wheel)}")
+
+        # Buttons
+        if report.buttons:
+            parts.append(f"[{' '.join(report.buttons)}]")
+
+        if parts:
+            sess.hid(f"  🖱  {' '.join(parts)}")
 
     # ------------------------------------------------------------------
 

@@ -6,20 +6,25 @@ This script loads MatroxSDP and MatroxSDPCheck modules, parses an SDP file,
 loads configuration parameters from a config file, and sets up validation
 between the two sets of information.
 
-Usage: python sdp_validation_script.py <config_file> <sdp_file>
+Usage: python sdp_validation_script.py --cfg <config_file> --sdp <sdp_file>
 """
 
 import sys
 import os
+import argparse
 from typing import Dict, Any, Optional
 
-# Add the nmostesting directory to the Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nmostesting'))
+# Use the MatroxSdp / MatroxSdpCheck modules shipped alongside the stream
+# validation tools, so this script stays in sync with the ipmx_*_validate_pcap.py
+# scripts. These use flat (non-package) imports, so add that directory to the
+# Python path regardless of the current working directory.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'streams', 'ipmx-streams-tools'))
 
 try:
-    from nmostesting.MatroxSdp import MatroxSdp, MatroxSdpEnums, MediaDescriptor
-    from nmostesting.MatroxSdpCheck import SdpCheckError
-    from nmostesting.MatroxSdpCheck import (
+    from MatroxSdp import MatroxSdp, MatroxSdpEnums, MediaDescriptor
+    from MatroxSdpCheck import SdpCheckError
+    from MatroxSdpCheck import (
         check_sdp_rfc4175, check_sdp_rfc9134, check_sdp_rfc3551,
         check_sdp_rfc3640, check_sdp_rfc6416, check_sdp_rfc8331,
         check_sdp_rfc6184, check_sdp_rfc7798, check_sdp_rfc2250,
@@ -29,7 +34,7 @@ try:
     )
 except ImportError as e:
     print(f"Error importing required modules: {e}")
-    print("Make sure you're running this script from the project root directory.")
+    print("Expected MatroxSdp.py / MatroxSdpCheck.py in ipmx/streams/ipmx-streams-tools/.")
     sys.exit(1)
 
 
@@ -381,8 +386,8 @@ class SDPValidationScript:
             else:
                 print(f"[OK] ts_ref_clock_source: 'localmac' (correct for PTP disabled)")
             
-            if media.media_clock_type != "sender":
-                issues.append(f"PTP disabled but media_clock_type is '{media.media_clock_type}', expected 'sender'")
+            if media.media_clock_type != "direct" and media.media_clock_type != "sender":
+                issues.append(f"PTP disabled but media_clock_type is '{media.media_clock_type}', expected 'direct' or 'sender'")
             else:
                 print(f"[OK] media_clock_type: 'sender' (correct for PTP disabled)")
 
@@ -434,15 +439,15 @@ class SDPValidationScript:
 
 def main():
     """Main entry point for the script."""
-    if len(sys.argv) != 3:
-        print("Usage: python sdp_validation_script.py <config_file> <sdp_file>")
-        print("\nArguments:")
-        print("  config_file: Path to configuration file with parameter=value pairs")
-        print("  sdp_file:    Path to SDP file to be parsed and validated")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cfg", required=True, dest="config_file",
+                        help="Path to configuration file with parameter=value pairs")
+    parser.add_argument("--sdp", required=True, dest="sdp_file",
+                        help="Path to SDP file to be parsed and validated")
+    args = parser.parse_args()
 
-    config_file = sys.argv[1]
-    sdp_file = sys.argv[2]
+    config_file = args.config_file
+    sdp_file = args.sdp_file
 
     print("SDP Validation Script")
     print("=" * 50)

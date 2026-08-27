@@ -46,6 +46,35 @@ except ImportError:
     sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# TCP sequence number arithmetic (RFC 1982 serial-number comparison)
+#
+# TCP sequence numbers are 32-bit and wrap around to 0 after 2^32-1. Comparing
+# them with plain < / > breaks across that boundary: a segment at seq 20 that
+# follows one at seq 0xFFFFFFF0 looks like it comes *before* it, so the
+# reassembler either mistakes fresh data for an old retransmission or declares
+# a bogus gap. These helpers mirror ipmx/usb/ipmx-usb-tools/tcp_reassembler.py
+# so both dissectors reassemble streams identically.
+# ---------------------------------------------------------------------------
+
+def _seq_lt(a: int, b: int) -> bool:
+    """Return True if TCP sequence number *a* is strictly before *b* (mod 2^32)."""
+    return ((b - a) & 0xFFFFFFFF) < 0x80000000
+
+
+def _seq_add(seq: int, n: int) -> int:
+    """Advance *seq* by *n* bytes, wrapping at 2^32."""
+    return (seq + n) & 0xFFFFFFFF
+
+
+def _seq_diff(later: int, earlier: int) -> int:
+    """Signed distance from *earlier* to *later* (positive means later > earlier)."""
+    d = (later - earlier) & 0xFFFFFFFF
+    if d >= 0x80000000:
+        return d - 0x100000000
+    return d
+
+
 class HKEPExchange:
     """Represents a single HKEP protocol exchange (HKEP session identified by receiverId, nodeId, portId)"""
 
@@ -278,6 +307,11 @@ class HKEPDissector:
         self.target_port = target_port
         self.tcp_streams = {}  # Track TCP streams for reassembly
         self.seen_packets = set()  # Track packet hashes to detect retransmissions
+        # Framing diagnostics: bytes the framer could not attribute to a message,
+        # and how many times it had to resynchronise. Reported instead of being
+        # dropped silently, so a partially-framed capture is visible.
+        self._framing_skipped_bytes = 0
+        self._framing_resyncs = 0
         
     def bytes_to_hex(self, data: bytes) -> str:
         """Convert bytes to hex string representation"""
@@ -781,7 +815,33 @@ class HKEPDissector:
         dst_ip = packet[IP].dst if packet.haslayer(IP) else "0"
         payload = bytes(tcp_layer.payload) if tcp_layer.payload else b""
         return f"{src_ip}:{dst_ip}:{tcp_layer.seq}:{len(payload)}:{payload[:20].hex()}"
-    
+
+    def get_tcp_payload(self, packet: Packet) -> bytes:
+        """
+        Return a packet's TCP payload with any Ethernet padding removed.
+
+        Real TCP payload length comes from the IP total-length field. Short frames
+        (e.g. bare ACK/SYN, 54 bytes) are zero-padded to Ethernet's 60-byte
+        minimum, and scapy surfaces that padding as trailing TCP-payload bytes.
+        Using bytes(tcp.payload) directly would inject phantom bytes into the
+        reassembled stream — corrupting sequence tracking and manufacturing
+        messages that were never sent (e.g. a Receiver_AuthStatus whose header
+        lands right after a padded ACK). Bound by ip.len, which accounts for
+        IP/TCP options. When ip.len is 0 (e.g. TCP segmentation offload), fall
+        back to the raw payload bytes.
+        """
+        if not packet.haslayer(TCP):
+            return b""
+        tcp_layer = packet[TCP]
+        raw = bytes(tcp_layer.payload) if tcp_layer.payload else b""
+        if raw and packet.haslayer(IP):
+            ip_layer = packet[IP]
+            if ip_layer.len:
+                seg_len = ip_layer.len - (ip_layer.ihl * 4) - (tcp_layer.dataofs * 4)
+                if seg_len >= 0:
+                    raw = raw[:seg_len]
+        return raw
+
     def is_complete_hkep_message(self, data: bytes) -> Tuple[bool, int]:
         """
         Check if data contains a complete HKEP message
@@ -837,10 +897,10 @@ class HKEPDissector:
             if not tcp_layer.payload:
                 continue
                 
-            payload = bytes(tcp_layer.payload)
+            payload = self.get_tcp_payload(packet)
             if len(payload) < 3:
                 continue
-            
+
             # Try to parse as HKEP
             try:
                 msg_size = struct.unpack('>H', payload[0:2])[0]
@@ -949,162 +1009,27 @@ class HKEPDissector:
         
         return fixed_count
     
-    def reassemble_tcp_stream(self, packets: List, target_port: int) -> Dict[str, bytes]:
-        """
-        Reassemble TCP streams by collecting all packets for each stream
-        Returns dict mapping stream_key -> reassembled data
-        """
-        streams = {}
-        
-        for packet in packets:
-            if not packet.haslayer(TCP):
-                continue
-            
-            tcp = packet[TCP]
-            if tcp.sport != target_port and tcp.dport != target_port:
-                continue
-            
-            if not tcp.payload:
-                continue
-            
-            src_ip = packet[IP].src if packet.haslayer(IP) else "unknown"
-            dst_ip = packet[IP].dst if packet.haslayer(IP) else "unknown"
-            
-            # Create bidirectional stream key
-            if (src_ip, tcp.sport) < (dst_ip, tcp.dport):
-                stream_key = f"{src_ip}:{tcp.sport}-{dst_ip}:{tcp.dport}"
-                direction = "forward"
-            else:
-                stream_key = f"{dst_ip}:{tcp.dport}-{src_ip}:{tcp.sport}"
-                direction = "reverse"
-            
-            if stream_key not in streams:
-                streams[stream_key] = {'forward': [], 'reverse': []}
-            
-            payload = bytes(tcp.payload)
-            seq = tcp.seq
-            
-            # Store packet with sequence number
-            if direction == "forward":
-                streams[stream_key]['forward'].append((seq, payload, packet))
-            else:
-                streams[stream_key]['reverse'].append((seq, payload, packet))
-        
-        # Reassemble each stream
-        reassembled = {}
-        for stream_key, directions in streams.items():
-            # Reassemble forward direction
-            forward_data = self._reassemble_direction(directions['forward'])
-            # Reassemble reverse direction  
-            reverse_data = self._reassemble_direction(directions['reverse'])
-            
-            reassembled[f"{stream_key}_forward"] = forward_data
-            reassembled[f"{stream_key}_reverse"] = reverse_data
-        
-        return reassembled
-    
-    def _reassemble_direction(self, packets: List[Tuple[int, bytes, Packet]]) -> bytes:
-        """Reassemble packets in one direction by sequence number"""
-        if not packets:
-            return b''
-        
-        # Sort by sequence number
-        packets.sort(key=lambda x: x[0])
-        
-        # Simple reassembly - just concatenate in order
-        # (assuming no gaps or overlaps for now)
-        result = b''
-        expected_seq = None
-        
-        for seq, payload, packet in packets:
-            if expected_seq is None:
-                expected_seq = seq
-                result = payload
-                expected_seq += len(payload)
-            elif seq == expected_seq:
-                # In order - append
-                result += payload
-                expected_seq += len(payload)
-            elif seq < expected_seq:
-                # Retransmission or partial overlap
-                overlap = expected_seq - seq
-                if overlap < len(payload):
-                    # Partial overlap: append only the new suffix
-                    result += payload[overlap:]
-                    expected_seq = seq + len(payload)
-                # else: full retransmission — skip
-            else:
-                # True gap: stop reassembly to avoid inserting incorrect data
-                break
-        
-        return result
-    
-    def reassemble_tcp_stream_properly(self, packets: List[Tuple[int, int, bytes]]) -> Tuple[bytes, List[Dict]]:
-        """
-        Properly reassemble TCP stream from packets with (seq, length, payload)
-        Handles gaps, overlaps, and out-of-order packets
-
-        Returns:
-            (reassembled_data, discontinuity_info)
-
-        discontinuity_info contains info about gaps/discontinuities found
-        """
-        if not packets:
-            return b'', []
-
-        # Sort by sequence number
-        packets.sort(key=lambda x: x[0])
-
-        result = bytearray()
-        last_end = None
-        discontinuities = []
-
-        for seq, length, payload in packets:
-            if len(payload) == 0:
-                continue
-
-            if last_end is None:
-                # First packet
-                result.extend(payload)
-                last_end = seq + len(payload)
-            elif seq == last_end:
-                # Perfect continuation - no gap, no overlap
-                result.extend(payload)
-                last_end = seq + len(payload)
-            elif seq < last_end:
-                # Overlap - skip overlapping bytes
-                overlap = last_end - seq
-                if overlap < len(payload):
-                    # Partial overlap - append non-overlapping part
-                    result.extend(payload[overlap:])
-                    last_end = seq + len(payload)
-                # else: completely overlapped, skip
-            else:
-                # Gap - record the discontinuity and stop reassembly
-                gap = seq - last_end
-                discontinuities.append({
-                    'gap_start': last_end,
-                    'gap_end': seq,
-                    'gap_size': gap,
-                    'description': f'Gap of {gap} bytes between SEQ {last_end} and {seq}'
-                })
-
-                # Stop reassembly at gaps to avoid misalignment
-                break
-
-        return bytes(result), discontinuities
-
     def _find_contiguous_blocks(self, packets: List[Tuple[int, int, bytes, int, Packet]]) -> List[Tuple[bytes, List[Tuple[int, int, bytes, int, Packet]]]]:
         """
         Find contiguous blocks of packets (no gaps in sequence numbers)
+
+        Out-of-order segments are handled by the sequence-number sort below, so
+        capture order does not matter. All sequence comparisons are 32-bit
+        wraparound-safe (see _seq_lt / _seq_add / _seq_diff).
 
         Returns list of (block_data, block_packets) tuples
         """
         if not packets:
             return []
 
-        # Sort by sequence number
-        packets.sort(key=lambda x: x[0])
+        # Sort by sequence number. Sorting on the raw value would split a stream
+        # that wraps past 2^32 into two blocks in the wrong order, so order by
+        # signed distance from the lowest observed sequence number instead.
+        base_seq = packets[0][0]
+        for pkt in packets:
+            if _seq_lt(pkt[0], base_seq):
+                base_seq = pkt[0]
+        packets.sort(key=lambda x: _seq_diff(x[0], base_seq))
 
         blocks = []
         current_block = []
@@ -1119,31 +1044,31 @@ class HKEPDissector:
                 # Start new block
                 current_block = [(seq, length, payload, pkt_num, packet)]
                 current_data = bytearray(payload)
-                expected_seq = seq + len(payload)
+                expected_seq = _seq_add(seq, len(payload))
             elif seq == expected_seq:
                 # Continuation of current block
                 current_block.append((seq, length, payload, pkt_num, packet))
                 current_data.extend(payload)
-                expected_seq = seq + len(payload)
-            elif seq < expected_seq:
+                expected_seq = _seq_add(seq, len(payload))
+            elif _seq_lt(seq, expected_seq):
                 # Retransmission or partial overlap — do not start a new block.
-                overlap = expected_seq - seq
+                overlap = _seq_diff(expected_seq, seq)
                 if overlap < len(payload):
                     # Partial overlap: only the new suffix carries unseen bytes.
                     new_payload = payload[overlap:]
-                    current_block.append((seq + overlap, len(new_payload), new_payload, pkt_num, packet))
+                    current_block.append((_seq_add(seq, overlap), len(new_payload), new_payload, pkt_num, packet))
                     current_data.extend(new_payload)
-                    expected_seq = seq + len(payload)
+                    expected_seq = _seq_add(seq, len(payload))
                 # else: full retransmission — already have all these bytes; skip.
             else:
-                # True gap (seq > expected_seq) — save current block and start a new one.
+                # True gap (seq after expected_seq) — save current block and start a new one.
                 if current_block:
                     blocks.append((bytes(current_data), current_block))
 
                 # Start new block
                 current_block = [(seq, length, payload, pkt_num, packet)]
                 current_data = bytearray(payload)
-                expected_seq = seq + len(payload)
+                expected_seq = _seq_add(seq, len(payload))
 
         # Add final block
         if current_block:
@@ -1151,96 +1076,146 @@ class HKEPDissector:
 
         return blocks
 
+    # A resynchronisation point has to be justified by more than one message.
+    # Header density in HDCP key material is roughly one plausible 3-byte header
+    # per 270 bytes, so a single message — or even a pair — can line up by
+    # chance; a run of three whose lengths tile the block does not.
+    RESYNC_MIN_MESSAGES = 3
+
+    def _chain_frames_cleanly(self, block_data: bytes, start: int, min_messages: int = 1) -> bool:
+        """
+        Return True if framing forward from *start* accounts for the rest of the block.
+
+        Every message from *start* onwards must carry a valid header, the chain
+        must consume the block exactly — ending either on its final byte or on a
+        trailing message cut short by the end of the capture — and it must contain
+        at least *min_messages* complete messages.
+
+        Requiring the whole chain to close is what separates a genuine message
+        boundary from a byte pattern inside a certificate or a hash that happens
+        to look like a header. A lone plausible header is weak evidence; a run of
+        headers whose lengths tile the block is strong evidence.
+        """
+        offset = start
+        framed = 0
+
+        while offset < len(block_data):
+            if offset + 3 > len(block_data):
+                # Trailing bytes too short to hold a header: a message truncated
+                # by the end of the capture.
+                return framed >= min_messages
+
+            msg_size = struct.unpack('>H', block_data[offset:offset+2])[0]
+            if msg_size < 3 or msg_size > 1000:
+                return False
+            if block_data[offset+2] not in self.MSG_TYPES:
+                return False
+
+            if offset + msg_size > len(block_data):
+                # Trailing message truncated by the end of the capture.
+                return framed >= min_messages
+
+            offset += msg_size
+            framed += 1
+
+        return framed >= min_messages
+
+    def _next_sync_offset(self, block_data: bytes, start: int) -> Optional[int]:
+        """
+        Find the first offset at or after *start* whose message chain closes cleanly.
+
+        Prefers the strongest available evidence: a chain of RESYNC_MIN_MESSAGES
+        or more is tried first, and shorter chains are only considered when no
+        such point exists anywhere in the block. That keeps the strict rule for
+        the common case while still recovering the last message or two of a
+        block, where a long chain is impossible by definition.
+
+        Returns None when no remaining offset can frame the rest of the block, in
+        which case the caller should account for the skipped bytes rather than
+        guessing at a boundary.
+        """
+        for min_messages in range(self.RESYNC_MIN_MESSAGES, 0, -1):
+            for candidate in range(start, len(block_data) - 2):
+                if self._chain_frames_cleanly(block_data, candidate, min_messages):
+                    return candidate
+        return None
+
     def _extract_messages_from_block(self, block_data: bytes, block_packets: List, stream_key: str, direction_name: str, hkep_message_count: int) -> List[Dict]:
         """
         Extract HKEP messages from a contiguous block of data
+
+        A block is only framed from an offset whose whole message chain tiles the
+        rest of the block (see _chain_frames_cleanly). Resynchronising on the
+        first 3-byte pattern that merely looks like a header is not safe here:
+        an HKEP header is only a 2-byte length plus a 1-byte msg_id, and that
+        pattern occurs roughly once every 270 bytes of HDCP key material, so
+        scanning forward through a certificate or a hash will eventually
+        manufacture a message that was never sent.
 
         Returns list of message results
         """
         messages = []
         offset = 0
-        max_offset = len(block_data) - 2
-        last_valid_offset = -1
 
-        while offset <= max_offset:
-            # Check if we have enough bytes for msg_size
-            if offset + 2 > len(block_data):
+        # Establish a trustworthy starting point before framing anything.
+        if not self._chain_frames_cleanly(block_data, 0):
+            start = self._next_sync_offset(block_data, 1)
+            if start is None:
+                self._framing_skipped_bytes += len(block_data)
+                return messages
+            self._framing_skipped_bytes += start
+            self._framing_resyncs += 1
+            offset = start
+
+        while offset + 3 <= len(block_data):
+            # msg_size is the total on-wire length, i.e. it already covers its own
+            # two bytes and the msg_id (same convention as is_complete_hkep_message).
+            msg_size = struct.unpack('>H', block_data[offset:offset+2])[0]
+            if msg_size < 3 or msg_size > 1000 or offset + msg_size > len(block_data):
+                # Trailing message cut short by the end of the capture.
+                self._framing_skipped_bytes += len(block_data) - offset
                 break
 
-            msg_size = struct.unpack('>H', block_data[offset:offset+2])[0]
-            total_len = 2 + msg_size
+            msg_data = block_data[offset:offset+msg_size]
+            msg_id = msg_data[2]
+            if msg_id not in self.MSG_TYPES:
+                # Unreachable once the chain has been validated; kept as a guard.
+                self._framing_skipped_bytes += len(block_data) - offset
+                break
 
-            # Validate msg_size (HKEP messages are typically 3-1000 bytes)
-            if msg_size > 1000 or msg_size < 1:
-                offset += 1
-                continue
+            try:
+                hkep_data = self.dissect_hkep_message(msg_data)
+            except (ValueError, IndexError, struct.error):
+                hkep_data = None
 
-            # Check if we have a complete message
-            if offset + total_len <= len(block_data):
-                # Complete message
-                msg_data = block_data[offset:offset+total_len]
+            if hkep_data and hkep_data.get('msg_id') in self.MSG_TYPES:
+                # Set direction for Null messages based on TCP stream direction
+                # forward = server->client (Encoder->Decoder), reverse = client->server (Decoder->Encoder)
+                if hkep_data.get('message_type') == 'Null message' and 'direction' not in hkep_data:
+                    hkep_data['direction'] = 'Encoder->Decoder' if direction_name == 'forward' else 'Decoder->Encoder'
 
-                # Validate msg_id is a known HKEP message type
-                if len(msg_data) >= 3:
-                    msg_id = msg_data[2]
-                    if msg_id not in self.MSG_TYPES:
-                        offset += 1
-                        continue
+                # Find which packet contains this message
+                actual_pkt_num = block_packets[0][3]  # Default to first packet
+                actual_timestamp = float(block_packets[0][4].time) if hasattr(block_packets[0][4], 'time') else 0.0
 
-                    # Try to dissect
-                    try:
-                        hkep_data = self.dissect_hkep_message(msg_data)
+                # Track offset to find the right packet
+                current_offset = 0
+                for seq, length, payload, pkt_num, pkt in block_packets:
+                    if current_offset <= offset < current_offset + len(payload):
+                        actual_pkt_num = pkt_num
+                        actual_timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
+                        break
+                    current_offset += len(payload)
 
-                        if hkep_data and hkep_data.get('msg_id') in self.MSG_TYPES:
-                            # Set direction for Null messages based on TCP stream direction
-                            # forward = server->client (Encoder->Decoder), reverse = client->server (Decoder->Encoder)
-                            if hkep_data.get('message_type') == 'Null message' and 'direction' not in hkep_data:
-                                hkep_data['direction'] = 'Encoder->Decoder' if direction_name == 'forward' else 'Decoder->Encoder'
-                            
-                            last_valid_offset = offset
+                messages.append({
+                    "packet_number": actual_pkt_num,
+                    "timestamp": actual_timestamp,
+                    "hkep": hkep_data
+                })
 
-                            # Find which packet contains this message
-                            actual_pkt_num = block_packets[0][3]  # Default to first packet
-                            actual_timestamp = float(block_packets[0][4].time) if hasattr(block_packets[0][4], 'time') else 0.0
-
-                            # Track offset to find the right packet
-                            current_offset = 0
-                            for seq, length, payload, pkt_num, pkt in block_packets:
-                                if current_offset <= offset < current_offset + len(payload):
-                                    actual_pkt_num = pkt_num
-                                    actual_timestamp = float(pkt.time) if hasattr(pkt, 'time') else 0.0
-                                    break
-                                current_offset += len(payload)
-
-                            messages.append({
-                                "packet_number": actual_pkt_num,
-                                "timestamp": actual_timestamp,
-                                "hkep": hkep_data
-                            })
-
-                            offset += total_len
-                            continue
-                    except (ValueError, IndexError, struct.error) as e:
-                        # Parse error - skip this offset
-                        pass
-
-            # If we haven't found a valid message, try next byte
-            # But if we've moved too far from last valid message, try harder to find next
-            if offset - last_valid_offset > 100:
-                # Look ahead for next valid message start
-                found = False
-                for search in range(offset + 1, min(offset + 200, len(block_data) - 2)):
-                    test_size = struct.unpack('>H', block_data[search:search+2])[0]
-                    if 1 <= test_size <= 1000 and search + 2 < len(block_data):
-                        test_id = block_data[search + 2]
-                        if test_id in self.MSG_TYPES and search + 2 + test_size <= len(block_data):
-                            offset = search
-                            found = True
-                            break
-                if not found:
-                    offset += 1
-            else:
-                offset += 1
+            # The message boundary is trusted even when the body failed to
+            # dissect, so a single bad message does not cost us the rest.
+            offset += msg_size
 
         return messages
 
@@ -1409,10 +1384,10 @@ class HKEPDissector:
             if not tcp_layer.payload:
                 continue
             
-            payload = bytes(tcp_layer.payload)
+            payload = self.get_tcp_payload(packet)
             if len(payload) < 3:
                 continue
-            
+
             # Track seen packets for retransmission detection (but don't skip yet - might be needed for reassembly)
             pkt_hash = self.get_packet_hash(packet)
             is_retransmission = pkt_hash in self.seen_packets
@@ -1473,9 +1448,9 @@ class HKEPDissector:
                     if tcp_layer.seq == stream['expected_seq']:
                         # In-order packet - add to buffer
                         stream['buffer'] += payload
-                        stream['expected_seq'] = tcp_layer.seq + len(payload)
+                        stream['expected_seq'] = _seq_add(tcp_layer.seq, len(payload))
                         stream['packets'].append(pkt_num)
-                    elif tcp_layer.seq < stream['expected_seq']:
+                    elif _seq_lt(tcp_layer.seq, stream['expected_seq']):
                         # Old/duplicate packet - skip
                         if show_tcp_issues and verbose:
                             print(f"  [INFO] Skipping old/duplicate packet with SEQ={tcp_layer.seq}")
@@ -1703,7 +1678,7 @@ class HKEPDissector:
             
             # Collect payload for reassembly
             if tcp_layer.payload:
-                payload = bytes(tcp_layer.payload)
+                payload = self.get_tcp_payload(packet)
                 if len(payload) > 0:
                     # Create bidirectional stream key
                     if (src_ip, src_port) < (dst_ip, dst_port):
@@ -1838,7 +1813,12 @@ class HKEPDissector:
         for stream_key in stream_preinits:
             stream_preinits[stream_key].sort(key=lambda x: x[0])
         
-        # Second pass: Process all messages and associate with exchanges
+        # Second pass: Process all messages and associate with exchanges.
+        # Reset the framing diagnostics so they describe this pass only (the
+        # AKE_PreInit discovery pass above walks the same blocks).
+        self._framing_skipped_bytes = 0
+        self._framing_resyncs = 0
+
         for stream_key, directions in stream_data.items():
             # Get metadata from first packet in either direction
             first_direction = 'forward' if directions['forward'] else 'reverse'
@@ -1902,9 +1882,16 @@ class HKEPDissector:
                                     # Ensure TCP connection is registered
                                     exchange.add_tcp_connection(stream_key, src_ip, src_port, dst_ip, dst_port)
                             
-                            # Check if we already processed this message from a block
+                            # Check if we already processed this message from a block.
+                            # A single TCP segment can carry several back-to-back HKEP
+                            # messages (e.g. AKE_Init followed by AKE_Transmitter_Info),
+                            # so the message type has to be part of the identity here —
+                            # keying on the packet number alone silently drops all but
+                            # the first message of such a segment.
                             already_processed = any(
-                                msg['packet_number'] == pkt_num for msg in exchange.messages
+                                msg['packet_number'] == pkt_num
+                                and msg['hkep'].get('msg_id') == hkep_data.get('msg_id')
+                                for msg in exchange.messages
                             )
 
                             if not already_processed:
@@ -1974,9 +1961,13 @@ class HKEPDissector:
                                 # Ensure TCP connection is registered
                                 exchange.add_tcp_connection(stream_key, src_ip, src_port, dst_ip, dst_port)
                         
-                        # Check if we already processed this message from individual packet processing
+                        # Check if we already processed this message from individual packet
+                        # processing. Keyed on message type as well as packet number, since a
+                        # single TCP segment can carry several back-to-back HKEP messages.
                         already_processed = any(
-                            msg['packet_number'] == msg_result["packet_number"] for msg in exchange.messages
+                            msg['packet_number'] == msg_result["packet_number"]
+                            and msg['hkep'].get('msg_id') == hkep_data.get('msg_id')
+                            for msg in exchange.messages
                         )
 
                         if not already_processed:
@@ -2005,6 +1996,21 @@ class HKEPDissector:
                             })
 
         
+        # Surface any stream bytes the framer could not attribute to a message.
+        # Staying quiet here would let a partially-framed capture look complete
+        # and turn missing messages into bogus "never sent" conclusions.
+        if verbose and self._framing_skipped_bytes:
+            print(f"\n[!] WARNING: this capture was not fully parsed - {self._framing_skipped_bytes} "
+                  f"stream byte(s) could not be framed as HKEP messages")
+            if self._framing_resyncs:
+                print(f"  {self._framing_resyncs} block(s) did not start on a message boundary, so "
+                      f"framing was resynchronised (capture likely started mid-stream)")
+                print(f"    Resynchronised framing is best-effort: it locates a boundary that is "
+                      f"consistent with the rest of the stream, which is strong evidence but not "
+                      f"proof. Treat messages from those blocks with corresponding caution.")
+            print(f"  Messages contained in those bytes are absent from the analysis below, so "
+                  f"'not sent' conclusions may reflect the gap rather than the device.")
+
         # Add all exchanges to the analysis result
         for exchange in exchanges.values():
             analysis_result.add_exchange(exchange)
@@ -2149,6 +2155,96 @@ class HKEPDissector:
 
         return analysis_result
     
+    # Per-section reason string shown when a section is NOT VALIDATED because no
+    # complete exchange actually exercised it (positive-evidence absent).
+    SECTION_NO_EVIDENCE_REASON = {
+        "12.6": "no receiver-protocol AKE_PreInit/AKE_PreInitStatus handshake observed",
+        "12.7": "no non-receiver-protocol exchange (receiver=false, pairing=true) observed",
+        "13.1": "no locality-check activity (AKE_*_Info / LC_Init) observed",
+        "13.2": "RepeaterAuth phase not observed",
+        "13.3": "no RepeaterAuth_Stream_Manage observed (Sender may have used Null)",
+        "session_caching": "no RepeaterAuth_Send_Ack observed (no first-successful exchange to cache)",
+    }
+
+    @staticmethod
+    def _validation_status(applicable_count: int, all_errors: List[Dict]) -> str:
+        """
+        Map a section's outcome to a status string for JSON/reporting:
+          - 'NO_DATA' : no complete exchange exercised the section (nothing validated)
+          - 'FAILED'  : at least one error-severity violation
+          - 'ISSUES'  : warning-severity issues but no errors
+          - 'PASSED'  : exercised with no errors/warnings (info-severity notes don't count)
+
+        Info-severity items are informational annotations and never affect status.
+        """
+        if applicable_count == 0:
+            return 'NO_DATA'
+        if any(e.get('severity') == 'error' for e in all_errors):
+            return 'FAILED'
+        if any(e.get('severity') == 'warning' for e in all_errors):
+            return 'ISSUES'
+        return 'PASSED'
+
+    def _exchange_message_types(self, exchange: HKEPExchange) -> set:
+        """Return the set of HKEP message_type strings present in an exchange."""
+        return {m.get('hkep', {}).get('message_type') for m in exchange.messages}
+
+    def _exchange_exercises_section(self, section: str, exchange: HKEPExchange) -> bool:
+        """
+        Return True if this exchange actually contains the protocol activity that
+        section `section` is meant to validate (its "positive evidence").
+
+        A section may only report PASSED when at least one complete exchange exercises
+        it; otherwise it reports NOT VALIDATED (NO DATA) rather than a vacuous PASS.
+        Verified against VSF TR-10-5:2026. Receiver_AuthStatus (msg 18) is intentionally
+        never used here (§13.2.1: the Sender shall ignore it).
+        """
+        msgs = exchange.messages
+        types = self._exchange_message_types(exchange)
+
+        if section == "12.6":
+            # Receiver protocol: an AKE_PreInit with receiver=true plus its PreInitStatus response.
+            has_receiver_preinit = any(
+                m.get('hkep', {}).get('message_type') == 'AKE_PreInit'
+                and m.get('hkep', {}).get('receiver') is True
+                for m in msgs
+            )
+            return has_receiver_preinit and 'AKE_PreInitStatus' in types
+
+        if section == "12.7":
+            # Non-receiver protocol: AKE_PreInit with receiver=false and pairing=true (§12.7).
+            return any(
+                m.get('hkep', {}).get('message_type') == 'AKE_PreInit'
+                and m.get('hkep', {}).get('receiver') is False
+                and m.get('hkep', {}).get('pairing') is True
+                for m in msgs
+            )
+
+        if section == "13.1":
+            # Locality check (§13.1) was exercised if locality activity is present: the precompute
+            # Info messages (which carry *_LOCALITY_PRECOMPUTE_SUPPORT) and/or the LC exchange.
+            # Either Info message alone qualifies (a capture may not include both), as does LC_Init/
+            # LC_Send_L_prime/RTT_Challenge -- locality was actually performed.
+            return bool(types & {
+                'AKE_Transmitter_Info', 'AKE_Receiver_Info',
+                'LC_Init', 'LC_Send_L_prime', 'RTT_Challenge',
+            })
+
+        if section == "13.2":
+            # Authentication with repeaters: the RepeaterAuth phase was entered.
+            return bool(types & {
+                'RepeaterAuth_Send_ReceiverID_List',
+                'RepeaterAuth_Send_Ack',
+                'RepeaterAuth_Stream_Manage',
+                'RepeaterAuth_Stream_Ready',
+            })
+
+        if section == "13.3":
+            return 'RepeaterAuth_Stream_Manage' in types
+
+        # Unknown section: be conservative and treat as exercised so behavior is unchanged.
+        return True
+
     def validate_all_exchanges(self, analysis_result: HKEPAnalysisResult, verbose: bool = True, section: str = "13.2") -> Dict:
         """
         Validate HKEP section requirements for all exchanges
@@ -2193,7 +2289,12 @@ class HKEPDissector:
                     print(f"    Packet range: #{first_packet} - #{last_packet}")
                 print()
             self._incomplete_warning_shown = True
-        
+
+        # Number of complete exchanges available to validate. Used to distinguish a genuine
+        # PASS (a section was actually exercised) from a vacuous one (nothing to validate).
+        complete_count = sum(1 for ex in analysis_result.get_all_exchanges() if ex.is_complete)
+        no_evidence_reason = self.SECTION_NO_EVIDENCE_REASON.get(section, "section not exercised")
+
         validate_func = None
         section_name = ""
         if section == "12.6":
@@ -2223,8 +2324,19 @@ class HKEPDissector:
                 if session_key not in exchange_errors:
                     exchange_errors[session_key] = []
                 exchange_errors[session_key].append(error)
-            
-            if verbose and all_errors:
+
+            # Positive evidence for session caching: a session became valid, i.e. a Sender sent
+            # RepeaterAuth_Send_Ack in a complete exchange (§13.2.2). Without it there is nothing
+            # to validate the caching behavior against -> NOT VALIDATED rather than a vacuous PASS.
+            cache_applicable = sum(
+                1 for ex in analysis_result.get_all_exchanges()
+                if ex.is_complete and 'RepeaterAuth_Send_Ack' in self._exchange_message_types(ex)
+            )
+
+            # Info-severity items are informational and must not affect status (see _validation_status).
+            sc_blocking = [e for e in all_errors if e.get('severity') in ('error', 'warning')]
+
+            if verbose and sc_blocking:
                 print(f"\n{'='*80}")
                 print(f"HKEP Session Caching Validation Results")
                 print(f"{'='*80}")
@@ -2252,20 +2364,37 @@ class HKEPDissector:
                             print(f"      Note: {error['note']}")
                 
                 print(f"\n{'='*80}")
+            elif verbose and cache_applicable == 0:
+                reason = ("No complete HKEP exchanges were available to validate."
+                          if complete_count == 0
+                          else f"No HKEP exchange exercised session caching "
+                               f"({self.SECTION_NO_EVIDENCE_REASON['session_caching']}).")
+                print(f"\n{'='*80}")
+                print(f"HKEP Session Caching Validation: NOT VALIDATED (NO DATA)")
+                print(f"  {reason}")
+                print(f"{'='*80}")
             elif verbose:
                 print(f"\n{'='*80}")
                 print(f"HKEP Session Caching Validation: PASSED")
                 print(f"  All session caching requirements are satisfied:")
                 print(f"    - Sender session caching consistency met")
                 print(f"    - Receiver session reuse patterns met")
+                info_notes = [e for e in all_errors if e.get('severity') == 'info']
+                if info_notes:
+                    print(f"  ({len(info_notes)} informational note(s), not violations):")
+                    for e in info_notes:
+                        print(f"    [INFO] {e['description']}")
                 print(f"{'='*80}")
-            
+
             return {
                 'total_errors': sum(1 for e in all_errors if e['severity'] == 'error'),
                 'total_warnings': sum(1 for e in all_errors if e['severity'] == 'warning'),
                 'total_issues': len(all_errors),
                 'exchange_errors': exchange_errors,
-                'all_errors': all_errors
+                'all_errors': all_errors,
+                'status': self._validation_status(cache_applicable, all_errors),
+                'applicable_exchanges': cache_applicable,
+                'complete_exchanges': complete_count
             }
         else:
             return {
@@ -2273,21 +2402,37 @@ class HKEPDissector:
                 'total_warnings': 0,
                 'total_issues': 0,
                 'exchange_errors': {},
-                'all_errors': []
+                'all_errors': [],
+                'status': 'NO_DATA',
+                'applicable_exchanges': 0,
+                'complete_exchanges': complete_count
             }
-        
-        # Validate only complete exchanges
+
+        # Validate only complete exchanges that actually exercise this section.
+        # An exchange that never reaches the section's protocol activity carries no positive
+        # evidence for it, so it is skipped here and the section reports NOT VALIDATED below
+        # rather than a vacuous PASS. (Real violations on exercised exchanges are still raised.)
+        applicable_count = 0
         for exchange in analysis_result.get_all_exchanges():
             # Skip incomplete exchanges
             if not exchange.is_complete:
                 continue
-            
+
+            if not self._exchange_exercises_section(section, exchange):
+                continue
+
+            applicable_count += 1
             errors = validate_func(exchange)
             if errors:
                 exchange_errors[exchange.session_key] = errors
                 all_errors.extend(errors)
-        
-        if verbose and all_errors:
+
+        # Only error/warning severities affect a section's status. Info-severity items are
+        # informational annotations (e.g. "session becomes valid", "Null Topology") and must
+        # not flip a section away from PASSED; they are still displayed below for visibility.
+        blocking_errors = [e for e in all_errors if e.get('severity') in ('error', 'warning')]
+
+        if verbose and blocking_errors:
             print(f"\n{'='*80}")
             print(f"HKEP Section {section_name} Validation Results")
             print(f"{'='*80}")
@@ -2329,6 +2474,14 @@ class HKEPDissector:
                         print(f"      Note: {error['note']}")
             
             print(f"\n{'='*80}")
+        elif verbose and applicable_count == 0:
+            reason = ("No complete HKEP exchanges were available to validate."
+                      if complete_count == 0
+                      else f"No HKEP exchange exercised section {section_name} ({no_evidence_reason}).")
+            print(f"\n{'='*80}")
+            print(f"HKEP Section {section_name} Validation: NOT VALIDATED (NO DATA)")
+            print(f"  {reason}")
+            print(f"{'='*80}")
         elif verbose:
             print(f"\n{'='*80}")
             print(f"HKEP Section {section_name} Validation: PASSED")
@@ -2355,16 +2508,30 @@ class HKEPDissector:
                 print(f"    - streamCtr immutability requirements met")
                 print(f"    - k attribute bounds met")
                 print(f"    - Unique streamCtr count within limits")
+            # Informational notes do not affect PASS status, but keep them visible.
+            info_notes = sum(1 for e in all_errors if e.get('severity') == 'info')
+            if info_notes:
+                print(f"  ({info_notes} informational note(s), not violations):")
+                for session_key, errors in exchange_errors.items():
+                    sess_info = [e for e in errors if e.get('severity') == 'info']
+                    if not sess_info:
+                        continue
+                    print(f"    Exchange: {session_key}")
+                    for e in sess_info:
+                        print(f"      [INFO] {e['description']}")
             print(f"{'='*80}")
-        
+
         return {
             'total_errors': sum(1 for e in all_errors if e['severity'] == 'error'),
             'total_warnings': sum(1 for e in all_errors if e['severity'] == 'warning'),
             'total_issues': len(all_errors),
             'exchange_errors': exchange_errors,
-            'all_errors': all_errors
+            'all_errors': all_errors,
+            'status': self._validation_status(applicable_count, all_errors),
+            'applicable_exchanges': applicable_count,
+            'complete_exchanges': complete_count
         }
-    
+
     def _is_reconnect_exchange(self, exchange: HKEPExchange) -> bool:
         """
         Determine if this exchange is a reconnect scenario
@@ -2471,15 +2638,58 @@ class HKEPDissector:
             "RepeaterAuth_Stream_Ready",
             "Null message"
         ]
-        
+
+        # Substantive RepeaterAuth messages always belong to the RepeaterAuth phase.
+        substantive_repeaterauth_messages = {
+            "RepeaterAuth_Send_ReceiverID_List",
+            "RepeaterAuth_Send_Ack",
+            "RepeaterAuth_Stream_Manage",
+            "RepeaterAuth_Stream_Ready",
+        }
+
+        # Pre-RepeaterAuth handshake message types (AKE/LC/SKE/RTT phases). These always
+        # precede the RepeaterAuth phase within an exchange. Note: Receiver_AuthStatus and
+        # Null are intentionally excluded here - Receiver_AuthStatus is a post-auth status
+        # message (it can appear after the RepeaterAuth exchange) and Null is phase-agnostic,
+        # so neither marks the pre-RepeaterAuth boundary.
+        pre_repeaterauth_handshake_messages = {
+            "AKE_PreInit", "AKE_PreInitStatus",
+            "AKE_Init", "AKE_Send_Cert", "AKE_No_Stored_km", "AKE_Stored_km",
+            "AKE_Send_rrx", "AKE_Send_H_prime", "AKE_Send_Pairing_Info",
+            "AKE_Transmitter_Info", "AKE_Receiver_Info",
+            "LC_Init", "LC_Send_L_prime",
+            "SKE_Send_Eks",
+            "RTT_Ready", "RTT_Challenge",
+        }
+
+        # A "Null message" is a phase-agnostic keep-alive: it can legitimately appear in
+        # any phase (AKE/LC/SKE/RTT) as well as being a valid RepeaterAuth-phase opener
+        # (e.g. a reconnect may start with Null). Therefore a Null only counts as a
+        # RepeaterAuth message when it occurs AFTER the last pre-RepeaterAuth handshake
+        # message. This prevents a keep-alive Null interleaved in the AKE phase from being
+        # mistaken for the sender/receiver's initial RepeaterAuth message.
+        pre_ra_timestamps = [
+            m.get('timestamp', 0) for m in messages
+            if m.get('hkep', {}).get('message_type') in pre_repeaterauth_handshake_messages
+        ]
+        last_pre_ra_timestamp = max(pre_ra_timestamps) if pre_ra_timestamps else None
+
+        def is_repeaterauth_phase_msg(msg):
+            msg_type = msg.get('hkep', {}).get('message_type')
+            if msg_type in substantive_repeaterauth_messages:
+                return True
+            if msg_type == "Null message":
+                return (last_pre_ra_timestamp is None
+                        or msg.get('timestamp', 0) > last_pre_ra_timestamp)
+            return False
+
         if decoder_messages:
             sorted_decoder_msgs = sorted(decoder_messages, key=lambda x: x.get('timestamp', 0))
             
             # Find first RepeaterAuth message (skip all AKE/LC/SKE/RTT messages)
             first_repeaterauth_decoder_msg = None
             for msg in sorted_decoder_msgs:
-                msg_type = msg.get('hkep', {}).get('message_type')
-                if msg_type in repeaterauth_messages:
+                if is_repeaterauth_phase_msg(msg):
                     first_repeaterauth_decoder_msg = msg
                     break
             
@@ -2507,8 +2717,7 @@ class HKEPDissector:
             # Find first RepeaterAuth message (skip all AKE/LC/SKE/RTT messages)
             first_repeaterauth_encoder_msg = None
             for msg in sorted_encoder_msgs:
-                msg_type = msg.get('hkep', {}).get('message_type')
-                if msg_type in repeaterauth_messages:
+                if is_repeaterauth_phase_msg(msg):
                     first_repeaterauth_encoder_msg = msg
                     break
             
@@ -2553,8 +2762,8 @@ class HKEPDissector:
             hkep_data = msg.get('hkep', {})
             msg_type = hkep_data.get('message_type')
             direction = hkep_data.get('direction', '')
-            
-            if msg_type not in repeaterauth_messages + ["Null message"]:
+
+            if not is_repeaterauth_phase_msg(msg):
                 continue
             
             if direction == "Decoder->Encoder":  # Receiver
@@ -2800,12 +3009,12 @@ class HKEPDissector:
                 errors.append({
                     'type': 'null_topology_detected',
                     'severity': 'info',
-                    'description': f"RepeaterAuth_Send_ReceiverID_List (packet #{receiverid_msg.get('packet_number')}) contains Null Topology (DEVICE_COUNT=0, DEPTH=0). Receiver is making HKEP session inactive at Sender.",
+                    'description': f"RepeaterAuth_Send_ReceiverID_List (packet #{receiverid_msg.get('packet_number')}) contains Null Topology (DEVICE_COUNT=0, DEPTH=0). Receiver is requesting to make its HKEP session inactive (unsubscribing); inactivation is confirmed when the Receiver receives the RepeaterAuth_Send_Ack.",
                     'packet_number': receiverid_msg.get('packet_number'),
                     'timestamp': receiverid_msg.get('timestamp', 0),
-                    'expected': 'Null Topology indicates Receiver is unsubscribing from HDCP Content and making session inactive (per section 13.2.4)',
+                    'expected': 'Null Topology indicates Receiver is unsubscribing from HDCP Content; the Receiver must receive the RepeaterAuth_Send_Ack before treating its session inactive (per sections 13.2.1 and 13.2.4)',
                     'hkep_section': '13.2.4',
-                    'note': 'This is informational - session is transitioning to inactive state. Receiver will no longer be part of topology tree.'
+                    'note': 'Informational - inactivation is requested here and becomes effective once the Sender acknowledges it with RepeaterAuth_Send_Ack. Receiver will no longer be part of the topology tree.'
                 })
                 
                 # Check if Sender acknowledges the Null Topology with Send_Ack (session becomes INACTIVE)
@@ -2870,33 +3079,22 @@ class HKEPDissector:
                             })
         
         # 13.2.2: Session Validity Timing
-        # Per spec: "The HKEP session becomes valid at the instant the HDCP RTP v2.3 session becomes valid"
-        # HDCP RTP v2.3 session becomes valid when:
-        # 1. Receiver receives SKE_Send_Eks (initial authentication), OR
-        # 2. Sender sends RepeaterAuth_Send_Ack (subsequent exchange after Receiver sent ReceiverID_List), OR
-        # 3. Receiver sends RepeaterAuth_Stream_Ready (subsequent exchange after Sender sent Stream_Manage)
-        
+        # Per VSF TR-10-5:2026 section 13.2.2, an HKEP session becomes valid only after a FIRST
+        # successful exchange, marked by the RepeaterAuth_Send_Ack message -- when the Sender sends
+        # it and when the Receiver receives it. A subsequent (reconnect) exchange presupposes an
+        # already-valid session (section 13.2.3), so it does not (re)establish validity.
+
         # Find when session becomes valid
         session_valid_timestamp = None
         session_valid_packet = None
         session_valid_reason = None
-        
+
         # Track Send_Ack packets that respond to Null Topology (these make session INACTIVE, not valid)
         null_topology_ack_packets = set()
-        
+
         sorted_msgs = sorted(messages, key=lambda x: x.get('timestamp', 0))
-        
-        # Check for SKE_Send_Eks (initial authentication - session becomes valid for Receiver)
-        ske_send_eks_msg = next((m for m in sorted_msgs 
-                                 if m.get('hkep', {}).get('message_type') == 'SKE_Send_Eks' and
-                                    m.get('hkep', {}).get('direction') == 'Encoder->Decoder'), None)
-        
-        if ske_send_eks_msg:
-            session_valid_timestamp = ske_send_eks_msg.get('timestamp', 0)
-            session_valid_packet = ske_send_eks_msg.get('packet_number')
-            session_valid_reason = "SKE_Send_Eks received by Receiver (initial authentication)"
-        
-        # Check for RepeaterAuth_Send_Ack (subsequent exchange - session becomes valid for both)
+
+        # Check for RepeaterAuth_Send_Ack (session becomes valid for both)
         # IMPORTANT: Send_Ack after Null Topology does NOT make session valid - it acknowledges session becoming INACTIVE
         # STEP 1: First pass - identify ALL null topology acks before setting session validity
         send_ack_messages = [m for m in sorted_msgs 
@@ -2941,24 +3139,14 @@ class HKEPDissector:
             if session_valid_timestamp and send_ack_timestamp <= session_valid_timestamp:
                 continue
             
-            # This is a normal Send_Ack - session becomes valid
-            # Double check it's not in null topology acks (should never happen due to continue above)
-            if send_ack_packet not in null_topology_ack_packets:
+            # A session becomes valid only at the Send_Ack of a FIRST (non-subsequent) exchange,
+            # when the Sender sends it and the Receiver receives it (section 13.2.2). Subsequent
+            # (reconnect) exchanges presuppose an already-valid session, so they do not re-establish it.
+            if not is_reconnect and send_ack_packet not in null_topology_ack_packets:
                 session_valid_timestamp = send_ack_timestamp
                 session_valid_packet = send_ack_packet
-                session_valid_reason = "RepeaterAuth_Send_Ack sent by Sender (subsequent exchange)"
-        
-        # Check for RepeaterAuth_Stream_Ready (subsequent exchange - session becomes valid for both)
-        stream_ready_msg = next((m for m in sorted_msgs 
-                                 if m.get('hkep', {}).get('message_type') == 'RepeaterAuth_Stream_Ready' and
-                                    m.get('hkep', {}).get('direction') == 'Decoder->Encoder'), None)
-        
-        if stream_ready_msg and (not session_valid_timestamp or stream_ready_msg.get('timestamp', 0) > session_valid_timestamp):
-            # Session becomes valid when Receiver sends Stream_Ready (or revalidated)
-            session_valid_timestamp = stream_ready_msg.get('timestamp', 0)
-            session_valid_packet = stream_ready_msg.get('packet_number')
-            session_valid_reason = "RepeaterAuth_Stream_Ready sent by Receiver (subsequent exchange)"
-        
+                session_valid_reason = "RepeaterAuth_Send_Ack (sent by Sender / received by Receiver) - first successful exchange (per section 13.2.2)"
+
         # Log session validity information
         # BUT: Skip if:
         # 1. session_valid_packet is actually a Null Topology ack (session becoming INACTIVE, not valid)
@@ -3281,7 +3469,7 @@ class HKEPDissector:
                     errors.append({
                         'type': 'version_mismatch',
                         'severity': 'error',
-                        'description': f"AKE_PreInit (packet #{preinit_msg.get('packet_number')}) has version 0x{preinit_version:02x}, but AKE_PreInitStatus (packet #{preinitstatus_msg.get('packet_number')}) has version 0x{preinitstatus_version:02x}. Both sides shall use the same protocol version.",
+                        'description': f"AKE_PreInit (packet #{preinit_msg.get('packet_number')}) has version {preinit_version}, but AKE_PreInitStatus (packet #{preinitstatus_msg.get('packet_number')}) has version {preinitstatus_version}. Both sides shall use the same protocol version.",
                         'packet_number': preinitstatus_msg.get('packet_number'),
                         'timestamp': preinitstatus_msg.get('timestamp', 0),
                         'expected': 'Both client and server sides of TCP/IP connection shall use the same HKEP protocol version. Server shall match client version in AKE_PreInitStatus response (per section 12.4.1)',
@@ -3462,8 +3650,36 @@ class HKEPDissector:
                             'note': 'AKE_Stored_km messages indicate stored pairing information, which requires pairing slots to be available'
                         })
         
+        # 12.6.2: A statusOk reconnect must NOT re-authenticate.
+        # When the Receiver reconnects with restart/REAUTH_REQ=false and the Sender answers statusOk
+        # ("the HKEP session is valid and has not expired"), the Sender "shall restart an existing
+        # HDCPRTP v2.3 session at the Authentication with Repeaters stage" -- i.e. proceed to the
+        # subsequent RepeaterAuth exchange, NOT send AKE_Init. AKE_Init is reserved for the
+        # statusPairingExpired / statusSessionExpired branches. Deliberately NOT gated on the
+        # is_reconnect heuristic: that helper treats the presence of AKE_Init as "not a reconnect",
+        # which is exactly the violation this rule must catch.
+        if preinit_msg and preinitstatus_msg and restart_reauth_flag is False:
+            if preinitstatus_msg.get('hkep', {}).get('status') == 0:  # statusOk
+                preinitstatus_time = preinitstatus_msg.get('timestamp', 0)
+                ake_init_after = next(
+                    (m for m in sorted_messages
+                     if m.get('hkep', {}).get('message_type') == 'AKE_Init'
+                     and m.get('timestamp', 0) > preinitstatus_time),
+                    None
+                )
+                if ake_init_after:
+                    errors.append({
+                        'type': 'unexpected_ake_init_after_statusok_reconnect',
+                        'severity': 'error',
+                        'description': f"AKE_Init (packet #{ake_init_after.get('packet_number')}) was sent after AKE_PreInitStatus statusOk (packet #{preinitstatus_msg.get('packet_number')}) on a reconnect (restart/REAUTH_REQ=false). A valid, non-expired session shall be restarted at the Authentication with Repeaters stage, not re-authenticated.",
+                        'packet_number': ake_init_after.get('packet_number'),
+                        'timestamp': ake_init_after.get('timestamp', 0),
+                        'expected': 'When restart/REAUTH_REQ=false and AKE_PreInitStatus.status is statusOk, the Sender shall restart the existing session at the Authentication with Repeaters stage and shall not send AKE_Init (per section 12.6.2)',
+                        'hkep_section': '12.6.2'
+                    })
+
         # 12.6.3: With reconnect - restart/REAUTH_REQ should be false when reconnecting after session is valid
-        # Per spec: "A Receiver should reconnect to a Sender with the restart/REAUTH_REQ attribute 
+        # Per spec: "A Receiver should reconnect to a Sender with the restart/REAUTH_REQ attribute
         # of the AKE_PreInit message set to false after an HKEP session has become valid"
         # So reconnect per 12.6.3 specifically requires restart/REAUTH_REQ=false
         is_reconnect = self._is_reconnect_exchange(exchange)
@@ -4519,6 +4735,9 @@ The --validate-session-caching option validates session caching consistency:
                     'total_errors': validation_results_12_6['total_errors'],
                     'total_warnings': validation_results_12_6['total_warnings'],
                     'total_issues': validation_results_12_6['total_issues'],
+                    'status': validation_results_12_6.get('status'),
+                    'applicable_exchanges': validation_results_12_6.get('applicable_exchanges'),
+                    'complete_exchanges': validation_results_12_6.get('complete_exchanges'),
                     'exchanges_with_errors': len(validation_results_12_6['exchange_errors']),
                     'errors_by_exchange': {
                         session_key: [
@@ -4543,6 +4762,9 @@ The --validate-session-caching option validates session caching consistency:
                     'total_errors': validation_results_12_7['total_errors'],
                     'total_warnings': validation_results_12_7['total_warnings'],
                     'total_issues': validation_results_12_7['total_issues'],
+                    'status': validation_results_12_7.get('status'),
+                    'applicable_exchanges': validation_results_12_7.get('applicable_exchanges'),
+                    'complete_exchanges': validation_results_12_7.get('complete_exchanges'),
                     'exchanges_with_errors': len(validation_results_12_7['exchange_errors']),
                     'errors_by_exchange': {
                         session_key: [
@@ -4567,6 +4789,9 @@ The --validate-session-caching option validates session caching consistency:
                     'total_errors': validation_results_13_1['total_errors'],
                     'total_warnings': validation_results_13_1['total_warnings'],
                     'total_issues': validation_results_13_1['total_issues'],
+                    'status': validation_results_13_1.get('status'),
+                    'applicable_exchanges': validation_results_13_1.get('applicable_exchanges'),
+                    'complete_exchanges': validation_results_13_1.get('complete_exchanges'),
                     'exchanges_with_errors': len(validation_results_13_1['exchange_errors']),
                     'errors_by_exchange': {
                         session_key: [
@@ -4591,6 +4816,9 @@ The --validate-session-caching option validates session caching consistency:
                     'total_errors': validation_results_13_2['total_errors'],
                     'total_warnings': validation_results_13_2['total_warnings'],
                     'total_issues': validation_results_13_2['total_issues'],
+                    'status': validation_results_13_2.get('status'),
+                    'applicable_exchanges': validation_results_13_2.get('applicable_exchanges'),
+                    'complete_exchanges': validation_results_13_2.get('complete_exchanges'),
                     'exchanges_with_errors': len(validation_results_13_2['exchange_errors']),
                     'errors_by_exchange': {
                         session_key: [
@@ -4615,6 +4843,9 @@ The --validate-session-caching option validates session caching consistency:
                     'total_errors': validation_results_13_3['total_errors'],
                     'total_warnings': validation_results_13_3['total_warnings'],
                     'total_issues': validation_results_13_3['total_issues'],
+                    'status': validation_results_13_3.get('status'),
+                    'applicable_exchanges': validation_results_13_3.get('applicable_exchanges'),
+                    'complete_exchanges': validation_results_13_3.get('complete_exchanges'),
                     'exchanges_with_errors': len(validation_results_13_3['exchange_errors']),
                     'errors_by_exchange': {
                         session_key: [
@@ -4639,6 +4870,9 @@ The --validate-session-caching option validates session caching consistency:
                     'total_errors': validation_results_session_caching['total_errors'],
                     'total_warnings': validation_results_session_caching['total_warnings'],
                     'total_issues': validation_results_session_caching['total_issues'],
+                    'status': validation_results_session_caching.get('status'),
+                    'applicable_exchanges': validation_results_session_caching.get('applicable_exchanges'),
+                    'complete_exchanges': validation_results_session_caching.get('complete_exchanges'),
                     'exchanges_with_errors': len(validation_results_session_caching['exchange_errors']),
                     'errors_by_exchange': {
                         session_key: [

@@ -42,8 +42,14 @@ from ipmx_validate_common import (
     Requirement,
     RequirementResult,
     ValidationContext,
+    configure_utf8_output,
     build_rtp_report,
     build_timeline,
+    check_dscp_rtp_marking,
+    check_dscp_sr_matches_rtp,
+    check_multicast_mac_mapping,
+    check_sr_mac_mapping,
+    check_sr_rtcp_port,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
@@ -51,6 +57,7 @@ from ipmx_validate_common import (
     check_sr_ntp_self_consistent,
     check_sr_ntp_vs_capture_rate,
     check_sr_rc_zero,
+    check_sr_compound_packet,
     check_sr_rtp_timestamp_nominal,
     compute_nominal_period,
     cross_validate_exactframerate,
@@ -68,6 +75,7 @@ from ipmx_validate_common import (
     nominal_ticks_per_period_from_seconds,
     parse_exactframerate_arg,
     parse_sender_reports,
+    print_first_sr_block_version,
     rate_matches,
     resolve_exact_ticks_per_frame,
     run_cmax_hrd_check,
@@ -292,6 +300,7 @@ def build_context(args: argparse.Namespace) -> ValidationContext:
         stream_info=si,
         encrypted=rtp_report.encrypted,
         allow_superset_profile=getattr(args, "allow_superset_profile", False),
+        is_444=getattr(args, "is_444", False),
     )
 
 
@@ -1887,9 +1896,14 @@ def build_requirements(ctx: ValidationContext) -> list[Requirement]:
     add("TR-10-9-11.2b", "shall", "IPMX Senders shall send IPMX Sender Reports for each frame at regular intervals that correspond to the Frame-to-Frame Interval. The difference between maximum and minimum of this interval measured over a 2 second period shall not exceed 2 mSec.", lambda c=ctx: check_sr_interval_tr10_9(c))
     add("TR-10-9-11.2c", "shall", "For a Baseband IPMX Sender the Frame-to-Frame Interval shall correspond to the timing of their baseband input signal.", lambda _: untestable("Baseband input not observable"))
     add("TR-10-9-11.2d", "shall", "For IPMX Senders not based on the conversion of a baseband signal, the Frame-to-Frame interval shall correspond to the nominal frame rate of the media signal.", lambda _: untestable("Sender type not observable"))
+    add("TR-10-9-16a", "shall", "IPMX Senders conforming to TR-10-7 (compressed video) shall mark RTP packets with the TR-10-9 §16 default DSCP AF42(36).", lambda c=ctx: check_dscp_rtp_marking(c.pcap, c.stream_info, 36))
+    add("TR-10-9-16b", "shall", "IPMX Senders shall mark outgoing RTCP Sender Report packets with the same DSCP value as the respective RTP stream packets (TR-10-9 §16).", lambda c=ctx: check_dscp_sr_matches_rtp(c.pcap, c.stream_info, c.sender_reports))
+    add("RFC1112-MCAST-MAC", "shall", "IPv4 multicast RTP packets SHALL use the RFC 1112 §6.4 Ethernet destination MAC derived from the group address (01:00:5e + low 23 bits).", lambda c=ctx: check_multicast_mac_mapping(c.pcap, c.stream_info))
+    add("RFC1112-SR-MAC", "shall", "IPv4 multicast RTCP Sender Report packets SHALL use the RFC 1112 §6.4 Ethernet destination MAC of the group address.", lambda c=ctx: check_sr_mac_mapping(c.sender_reports))
+    add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports SHALL be sent on the RTP destination port + 1 (TR-10-1 §8.7 / RFC 3550 §11).", lambda c=ctx: check_sr_rtcp_port(c.pcap, c.stream_info))
     add("TR-10-15b-100", "shall", "PACI packets defined in RFC 7798 shall not be produced by an IPMX Sender.", lambda c=ctx: check_paci(c))
     add("TR-10-15b-101", "shall", "A UDP/IP packet shall not contain more than one VCL NAL Unit.", lambda c=ctx: check_packet_vcl_limit(c))
-    add("TR-10-15b-103", "shall", "H.265 coded video shall be transmitted and decoded using the HRD transmitter and decoder schedules.", lambda c=ctx: untestable("HRD presence verified by TR-10-15b-114; schedule conformance not testable from PCAP"))
+    add("TR-10-15b-103", "shall", "H.265 coded video shall be transmitted and decoded using the HRD transmitter and decoder schedules.", lambda _: untestable("HRD presence verified by TR-10-15b-114; schedule conformance not testable from PCAP"))
     add("TR-10-1-MIB-SIG", "shall", "MIB baseband signal parameters shall be internally consistent (htotal >= width, vtotal >= height, pixclk = htotal*vtotal*fps).", lambda c=ctx: check_mib_signal_sanity(c))
     add("TR-10-15b-105", "shall", "Traffic shaping mode shall be set to TP=2110TPW and explicitly declared in the SDP fmtp attribute.", lambda c=ctx: check_sdp_tp_mode(c))
     add("TR-10-15b-107", "shall", "Buffering Period SEI messages shall be provided at each recovery point.", lambda c=ctx: check_buffering_period_sei(c))
@@ -1906,15 +1920,22 @@ def build_requirements(ctx: ValidationContext) -> list[Requirement]:
     add("TR-10-15b-119", "shall", "A coded stream shall include a random access point at least once every 5 seconds.", lambda c=ctx: check_random_access(c))
     add("TR-10-15b-120", "shall", "Each random access point shall provide IDR/CRA/BLA and VPS/SPS/PPS, or SEI recovery_point.", lambda c=ctx: check_random_access_content(c))
     add("TR-10-15b-121", "shall", "The use of GDR shall be signaled through the recovery point SEI recovery_poc_cnt attribute.", lambda _: untestable("GDR signaling not parsed"))
-    add("TR-10-15b-123", "shall", "An HEVC Sender compliant with the IPMX HEVC Profile shall support producing a bitstream compliant with Main/Main10 YCbCr-420.", lambda c=ctx: check_profile_levels(c))
     add("TR-10-15b-124", "shall", "An HEVC encoder supporting a monochrome bitstream shall support producing Main-444/Main10-444 4:0:0.", lambda c=ctx: check_monochrome_profile(c))
-    add("TR-10-15b-126", "shall", "An HEVC Receiver compliant with the IPMX HEVC Profile shall be capable of consuming Main/Main10 YCbCr-420.", lambda _: untestable("Receiver capability not observable"))
     add("TR-10-15b-127", "shall", "An HEVC decoder supporting a monochrome bitstream shall support consuming Main-444/Main10-444 4:0:0.", lambda _: untestable("Decoder capability not observable"))
     add("TR-10-15b-128", "shall", "An HEVC Receiver compliant with the IPMX HEVC Profile shall be capable of consuming Level 5.1 main tier.", lambda _: untestable("Receiver level capability not observable"))
-    add("TR-10-15b-131", "shall", "An HEVC Sender compliant with the IPMX HEVC 4:4:4 Profile Mode shall be compliant with the IPMX HEVC Profile.", lambda _: untestable("Profile mode capability not observable"))
-    add("TR-10-15b-132", "shall", "An HEVC Sender compliant with the IPMX HEVC 4:4:4 Profile Mode shall support producing Main-444/Main10-444 YCbCr-444.", lambda c=ctx: check_444_profile(c))
-    add("TR-10-15b-133", "shall", "An HEVC Receiver compliant with the IPMX HEVC 4:4:4 Profile Mode shall be compliant with the IPMX HEVC Profile.", lambda _: untestable("Receiver profile mode capability not observable"))
-    add("TR-10-15b-134", "shall", "An HEVC Receiver compliant with the IPMX HEVC 4:4:4 Profile Mode shall be capable of consuming Main-444/Main10-444 YCbCr-444.", lambda _: untestable("Receiver profile mode capability not observable"))
+    # The base IPMX HEVC Profile (4:2:0) and the 4:4:4 Profile Mode are validated
+    # from separate captures, selected by --444 — mirroring the jxsv --tdc gating.
+    # A single capture exhibits one profile; the other mode's "shall also be
+    # compliant with the base Profile" leg (131/133) is untestable here and is
+    # validated from a separate run without --444 (cf. TR-10-15a-TDC-BASE).
+    if ctx.is_444:
+        add("TR-10-15b-131", "shall", "An HEVC Sender compliant with the IPMX HEVC 4:4:4 Profile Mode shall be compliant with the IPMX HEVC Profile.", lambda _: untestable("Base IPMX HEVC Profile (4:2:0) leg not observable in a 4:4:4 capture — validate it from a separate capture without --444"))
+        add("TR-10-15b-132", "shall", "An HEVC Sender compliant with the IPMX HEVC 4:4:4 Profile Mode shall support producing Main-444/Main10-444 YCbCr-444.", lambda c=ctx: check_444_profile(c))
+        add("TR-10-15b-133", "shall", "An HEVC Receiver compliant with the IPMX HEVC 4:4:4 Profile Mode shall be compliant with the IPMX HEVC Profile.", lambda _: untestable("Base IPMX HEVC Profile (4:2:0) leg not observable in a 4:4:4 capture — validate it from a separate capture without --444"))
+        add("TR-10-15b-134", "shall", "An HEVC Receiver compliant with the IPMX HEVC 4:4:4 Profile Mode shall be capable of consuming Main-444/Main10-444 YCbCr-444.", lambda _: untestable("Receiver profile mode capability not observable"))
+    else:
+        add("TR-10-15b-123", "shall", "An HEVC Sender compliant with the IPMX HEVC Profile shall support producing a bitstream compliant with Main/Main10 YCbCr-420.", lambda c=ctx: check_profile_levels(c))
+        add("TR-10-15b-126", "shall", "An HEVC Receiver compliant with the IPMX HEVC Profile shall be capable of consuming Main/Main10 YCbCr-420.", lambda _: untestable("Receiver capability not observable"))
     add("TR-10-15b-137", "shall", "A decoder shall support consuming both H.265 CBR and VBR bitstreams.", lambda _: untestable("Decoder capability not observable"))
     add("TR-10-15b-139a", "shall", "Annexes F, G, H, and I of H.265 shall not be used.", lambda c=ctx: check_no_annexes_fghi(c))
     add("TR-10-15b-139b", "shall", "Multi-layer video coding shall be disabled, and nuh_layer_id shall be set to 0.", lambda c=ctx: check_nuh_layer_id(c))
@@ -1962,6 +1983,10 @@ def build_requirements(ctx: ValidationContext) -> list[Requirement]:
     add("TR-10-1-8.7-RC", "should",
         "RTCP SR reception report count (RC) should be 0 (TR-10-1 §8.7).",
         lambda c=ctx: check_sr_rc_zero(c.sender_reports))
+    add("TR-10-1-8.7-COMPOUND", "shall",
+        "RTCP Sender Reports shall be sent in a compound RTCP packet — report "
+        "packet first and an SDES CNAME item present (RFC 3550 §6.1, TR-10-1 §8.7).",
+        lambda c=ctx: check_sr_compound_packet(c.pcap, c.stream_info))
     add("TR-10-1-10.1-IPMX-FMTP", "shall",
         "SDP a=fmtp line shall contain the IPMX keyword (TR-10-1 §10.1).",
         lambda c=ctx: check_sdp_ipmx_fmtp(c.sdp_media))
@@ -2099,8 +2124,10 @@ def _run_cmax_check(ctx: ValidationContext) -> list[RequirementResult]:
 
 
 def main() -> int:
+    configure_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pcap", type=Path, help="PCAP file containing RTP/RTCP")
+    parser.add_argument("pcap", type=Path, nargs="?", help="PCAP file containing RTP/RTCP")
+    parser.add_argument("--list-requirements", action="store_true", help="List all requirement IDs this validator checks, then exit (no PCAP needed)")
     parser.add_argument("--port", type=int, help="Filter RTP packets by UDP port")
     parser.add_argument("--rtcp-port", type=int, help="Filter RTCP packets by UDP port")
     parser.add_argument("--frames", type=int, default=5, help="Frames to sample with ffmpeg")
@@ -2188,7 +2215,39 @@ def main() -> int:
         action="store_true",
         help="Accept superset profiles (e.g. Rext 4:2:2 includes Main 10 4:2:0 capability)",
     )
+    parser.add_argument(
+        "--444",
+        dest="is_444",
+        action="store_true",
+        help="Test conformance to the IPMX HEVC 4:4:4 Profile Mode; enables the "
+             "TR-10-15b-131..134 4:4:4 Profile Mode requirements (authoritative, "
+             "analogous to --tdc for JPEG XS)",
+    )
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        help="Stream descriptor (streams/cfg/*.cfg, by path or bare name) to seed "
+             "expected-value flags (--exactframerate/--width/--height/--sampling/"
+             "--bit-depth); explicit flags on the command line override the cfg",
+    )
     args = parser.parse_args()
+
+    if args.list_requirements:
+        from types import SimpleNamespace
+        from ipmx_validate_common import print_requirements_list
+        print_requirements_list(Path(__file__).name, build_requirements(SimpleNamespace(is_444=bool(args.is_444))))
+        return 0
+
+    if args.pcap is None:
+        parser.error("the pcap argument is required unless --list-requirements is used")
+
+    if args.cfg:
+        from ipmx_validate_common import (
+            apply_video_cfg,
+            parse_cfg_file,
+            resolve_cfg_path,
+        )
+        apply_video_cfg(args, parse_cfg_file(resolve_cfg_path(args.cfg)), ycbcr_only=True)
 
     if not args.pcap.exists():
         raise SystemExit(f"{args.pcap} does not exist")
@@ -2202,6 +2261,7 @@ def main() -> int:
     if ctx.encrypted:
         print("[INFO] Encryption detected — payload content is not accessible.")
         print("       NAL content checks will be marked as untestable.\n")
+    print_first_sr_block_version(ctx.sender_reports)
     results = run_validation(ctx)
 
     hrd_results = ipmx_validate_hrd.run_hrd_checks(

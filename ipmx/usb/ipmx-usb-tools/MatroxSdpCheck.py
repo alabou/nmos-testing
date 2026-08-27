@@ -440,7 +440,7 @@ def check_sdp_st2110_21(md: MediaDescriptor) -> None:
     
     valid_senders = {MatroxSdpEnums.SenderType2110TPN, MatroxSdpEnums.SenderType2110TPNL, MatroxSdpEnums.SenderType2110TPW}
     if md.sender_type not in valid_senders:
-        raise SdpCheckError("ST2110-21 invalid45@0 TP")
+        raise SdpCheckError("ST2110-21 invalid TP")
 
 
 def check_sdp_st2110_22(md: MediaDescriptor) -> None:

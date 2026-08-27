@@ -11,6 +11,8 @@ This document provides step-by-step instructions for running the IPMX TR-10 test
 
 ## Prerequisites Checklist
 
+The following steps, as described in IPMX-README.txt, ensure that your environment is properly setup.
+
 Before running tests, ensure:
 
 - ✅ Python virtual environment is activated (`.venv\Scripts\activate.bat`)
@@ -47,14 +49,16 @@ This phase assumes an environment with a unicast NMOS Registry server and a full
     #### If testing a Receiver
 	- Run IPMX-GUIDr.bat if you are testing Receivers of the DuT. You should observe among the listed Receiver's GUID those that you selected for testing the DuT and that are stored in the `ipmx-test-receivers.guid` file.
 
-	- Activate the Receivers specified in the `ipmx-test-receivers.guid` file and for each of them have a Sender produce a stream for the Receiver to subscribe. Make sure Senders are streaming the streams and that your personal assessment is that the Receivers operate normally and are ready for testing.
+	- Activate the Receivers specified in the `ipmx-test-receivers.guid` file and for each of them have a Sender produce a stream for the Receiver to subscribe. Make sure Senders are streaming and that your personal assessment is that the Receivers operate normally and are ready for testing.
 
     #### If testing a Sender
 	- Run IPMX-GUIDs.bat if you are testing Senders of the DuT. You should observe among the listed Sender's GUID those that you selected for testing the DuT and that are stored in the `ipmx-test-senders.guid` file.
 
 	- Activate the Senders specified in the `ipmx-test-senders.guid` file and for each of them have a Receiver subscribe to the stream. Make sure Receivers are receiving the streams and that your personal assessment is that the Senders operate normally and are ready for testing.
 
-	If you plan on using the automated script for retreiving the SDP and PCAP file used during these tests; verify the proper configuration of the system as follow.
+	If you plan on using the automated script for retrieving the SDP and PCAP file used during these tests; verify the proper configuration of the system as follow.
+
+    - If using the VB440 as the capture tool, have the VB440 subscribe to the audio and/or video streams of the DuT Sender.
 
 	- Run IPMX-PCAPs.bat and verify the information listed as the capture test executes. The following lines describe the most important information displayed during the capture of the SDP and PCAP files. It is expected that a tool like the VB440 will be used for official IPMX testing but a LOCAL capture is also possible. The test operator must press any key after the capture of each PCAP file: after the video capture and after the audio capture. If using a tools like the VB440, the subscribed Receivers are those of the capture tool.
 
@@ -134,10 +138,10 @@ Follow the manual tests described in TP-1 sections 12.4
 
 For TP-1 sections 13
 
-Python scripts are used to verify conformance to TP-1 section 13. For a given format described in a cfg file the SDP file is retreived from the Sender. A PCAP file of the stream from the Sender is then analyzed and compared to the SDP file and cfg file to test conformance. There is a automated script IPMX-PCAPs.bat that retreives the SDP file and captures a PCAP file automatically. It does this using either the network card of the computer used to run the test script or a VB440 device. The steps are described further down. Alternatively the retreival of the SDP file and capture of the PCAP file can be done manually.
+Python scripts are used to verify conformance to TP-1 section 13. For a given format described in a cfg file the SDP file is retrieved from the Sender. A PCAP file of the stream from the Sender is then analyzed and compared to the SDP file and cfg file to test conformance. There is a automated script IPMX-PCAPs.bat that retrieves the SDP file and captures a PCAP file automatically. It does this using either the network card of the computer used to run the test script or a VB440 device. The steps are described further down. Alternatively the retrieval of the SDP file and capture of the PCAP file can be done manually.
 
    #### Manual Capture
-   The test scripts for section 13 rely on the PCAP capture coresponding to the moment the stream is first activated. When doing the aquisition of the PCAP file manually the sugested methodology is:
+   The test scripts for section 13 rely on the PCAP capture corresponding to the moment the stream is first activated. When doing the acquisition of the PCAP file manually the suggested methodology is:
    - Disable the Sender under test.
    - Start the Capture process. 
    - Activate the Sender under test using a configuration from the `cfg` directory
@@ -169,9 +173,11 @@ Python scripts are used to verify conformance to TP-1 section 13. For a given fo
    - `IPMX_VENDOR_XYZ\audio-<guid>.pcap` - Audio stream PCAP
    - `IPMX_VENDOR_XYZ\video-<guid>.sdp` - Video SDP file
    - `IPMX_VENDOR_XYZ\audio-<guid>.sdp` - Audio SDP file
+   - `IPMX_VENDOR_XYZ\video-<guid>.sender.caps.json` - Video Sender Capabilities file
+   - `IPMX_VENDOR_XYZ\audio-<guid>.sender.caps.json` - Audio Sender Capabilities file
 
 
-#### Running the scripts for each section
+#### Running the legacy scripts for each section
    **Section 13.1 Tests**
    ```batch
    python TP-10-1Sec13.1.py cfg\Test*.cfg IPMX_VENDOR_XYZ\video-*.pcap
@@ -195,6 +201,45 @@ Python scripts are used to verify conformance to TP-1 section 13. For a given fo
    python TP-10-1Sec13.3b.py cfg\Test*.cfg IPMX_VENDOR_XYZ\video-*.pcap
    python TP-10-1Sec13.3b.py cfg\Test*.cfg IPMX_VENDOR_XYZ\audio-*.pcap
    ```
+#### Running the new scripts for each section
+   **Section 13.1 Tests**
+   **Section 13.2 Tests**
+   **Section 13.3a Tests**
+   **Section 13.3b Tests**
+
+   #### Verifying the PCAP file
+
+   Select the script based on the format of the streams: raw, jxsv, h264 or h265 for video, pcm or am824 for audio. The list of requirements verified by a given script can be obtained by running a script ipmx_*_validate_pcap.py with the --list-requirements command line option.
+
+   ```batch
+   python ipmx\streams\ipmx-streams-tools\ipmx_raw_validate_pcap.py --cmax --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp IPMX_VENDOR_XYZ\video-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_jxsv_validate_pcap.py --cmax --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp IPMX_VENDOR_XYZ\video-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_jxsv_validate_pcap.py --tdc --cmax --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp IPMX_VENDOR_XYZ\video-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_h264_validate_pcap.py --cmax --hrd --hrd-sim --hrd-timing --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp IPMX_VENDOR_XYZ\video-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_h265_validate_pcap.py --cmax --hrd --hrd-sim --hrd-timing --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp IPMX_VENDOR_XYZ\video-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_h265_validate_pcap.py --444 --cmax --hrd --hrd-sim --hrd-timing --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp IPMX_VENDOR_XYZ\video-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_pcm_validate_pcap.py --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\audio-*.sdp IPMX_VENDOR_XYZ\audio-*.pcap
+
+   python ipmx\streams\ipmx-streams-tools\ipmx_am824_validate_pcap.py --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\audio-*.sdp IPMX_VENDOR_XYZ\audio-*.pcap
+   ```
+
+   For the previous commands if HKEP encryption is used add the --hkep command line parameter, if PEP encryption is used add the --pep command line parameter. It is also useful to add the --cannot-test-report command line option to figure out the requirements that cannot be verified.
+
+   The script must succeed (not FAIL) for all the SHALL and SHOULD requirements being tested.
+
+   #### Verifying the SDP file
+
+   ```batch
+   python ipmx\sdp_validation_script.py --cfg cfg\Test*.cfg --sdp IPMX_VENDOR_XYZ\video-*.sdp
+   ```
+
+   The script must succeed (not FAIL) for all the requirements being tested.
 
 Follow the manual tests described in TP-1 sections 13.4
 Follow the manual tests described in TP-1 sections 13.5
@@ -292,6 +337,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
     ```
     - Results are sorted with FAILED tests printed last
     - Review output for any failures (some may be expected per test plan)
+    - The multicast address and port of the DuT must be re-configured after this test.
 
     - Activate reference or preferred Senders, each one using a configuration from the `cfg` directory and have the Receivers of the DuT subscribe to the streams.
 
@@ -304,7 +350,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
 4. **IS-11 Stream Compatibility Tests**
 
-    - For HDMI, use a source that follows the EDID’s preferred mode. If such a source is not available, set the CONFIG.IS11_SOURCE_EDID_VERIFICATION option to True and connect a source device (e.g., a Kramer) that allows verifying the EDID produced by the DuT. The test suite will pause and indicate the expected refresh/sample rate value to be verified in the EDID’s preferred mode using the tool. 
+    - For HDMI, use a source that follows the EDID’s preferred mode. If such a source is not available, set in UserConfig.py the CONFIG.IS11_SOURCE_EDID_VERIFICATION to False and let the test verify the EDID or set the CONFIG.IS11_SOURCE_EDID_VERIFICATION option to True and verify manually, connecting a source device (e.g., a Kramer) that allows verifying the EDID produced by the DuT. For manual verification, the test suite will pause and indicate the expected refresh/sample rate value to be verified in the EDID’s preferred mode using the tool.
     - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory
     - The source must be directly connected to the Sender.
 
@@ -327,7 +373,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
     IPMX-CHECK-HDMI-IS11s.bat
     ```
     - Activate reference or preferred Senders, each one using a configuration from the `cfg` directory and have the Receivers of the DuT subscribe to the streams.
-    - Make sure the reference or preferred Senders are properly configured in the UserConfig.py file. The reference or preferred Sender must be used by only one Receiver at a time because the test will de-activate and re-activate it.
+    - Make sure the reference or preferred Senders are properly configured in the UserConfig.py file. The reference or preferred Sender must be used by only one Receiver at a time because the test may de-activate and re-activate it.
     - The DuT output must be connected.
 
     - Test the Receivers of the DuT:
@@ -364,6 +410,10 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
     - Results are sorted with FAILED tests printed last
     - Review output for any failures (some may be expected per test plan)
 
+    - Those files are generated:
+        - `IPMX_VENDOR_XYZ\video-<guid>.receiver.caps.json` - Video Receiver Capabilities file
+        - `IPMX_VENDOR_XYZ\audio-<guid>.receiver.caps.json` - Audio Receiver Capabilities file
+
 6. **Sender and Receiver Capabilities Tests**
 
     - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory
@@ -386,7 +436,8 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
 7. **Compressed Stream Profile Tests**
 
-    - JPEG XS
+    - JPEG XS and JPEG XS TDC Profile Mode
+        #### BCP-006-01
         - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory for a JPEG XS video stream.
 
         - Test the Senders of the DuT:
@@ -404,6 +455,25 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
         ```
         - Results are sorted with FAILED tests printed last
         - Review output for any failures (some may be expected per test plan)
+
+        #### SDP Transport File and Capabilities
+
+        - Run the test of section 5 "SDP Validation Tests" with the DuT Sender or a reference Sender configured for the IPMX JPEG XS Profile.
+        - Additionally, when testing compliance for the IPMX JPEG XS TDC Profile Mode run the test of section 5 "SDP Validation Tests" with the DuT Sender or a reference Sender configured for the IPMX JPEG XS TDC Profile Mode.
+
+        #### TR-10-15 Part 1
+
+        - Test the Senders of the DuT:
+
+            - Redo Phase one "For TP-1 sections 13" PCAP and SDP files capture with the DuT Sender configured for the IPMX JPEG XS Profile.
+                - Rerun the legacy or new scripts that validate the PCAP and SDP files and verify the script results and the perform visual inspection.
+            - Additionally, when testing compliance for the IPMX JPEG XS TDC Profile Mode redo Phase one "For TP-1 sections 13" PCAP and SDP files capture with the DuT Sender configured for the IPMX JPEG XS TDC Profile Mode.
+                - Rerun the legacy or new scripts that validate the PCAP and SDP files using the --tdc command line option, and verify the script results and the perform visual inspection.
+
+        - Test the Receivers of the DuT:
+
+            - Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the IPMX JPEG XS Profile.
+            - Additionally, when testing compliance for the IPMX JPEG XS TDC Profile Mode Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the IPMX JPEG XS TDC Profile Mode.
 
     - H.264
         - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory for an H.264 video stream.
@@ -446,6 +516,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
 9. **HKEP Capability Tests**
 
+    #### BCP-005-02
     - Disable the PEP feature of the DuT
     - Connect an HDCP compliant source to the inputs of the DuT
     - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory
@@ -470,7 +541,29 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
     - Review output for any failures (some may be expected per test plan)
     - Assess that the Receivers are receiving from reference Senders without disruptions.
 
+    #### HKEP as a Profile Capability
+
+    - Test the Senders of the DuT:
+
+        - Redo Phase one "For TP-1 sections 13" PCAP and SDP files capture with the DuT Sender configured for the vendor selected IPMX Profile with HKEP enabled.
+            - Rerun the legacy or new scripts along with the --hkep command line option that validate the PCAP and SDP files and verify the script results and the perform visual inspection.
+
+    - Test the Receivers of the DuT:
+
+        - Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the vendor selected IPMX Profile with HKEP enabled.
+
+    #### HKEP protocol
+
+    - Configure the Sender for the vendor selected IPMX Profile with HKEP enabled, streaming from a reference Sender to a DuT Receiver or streaming from a DuT Sender to a reference Receiver. The media must visually and audibly playback properly on the DuT Receiver or the Reference Receiver without Disruptions. A DuT tested for both audio and video profiles shall support them simultaneously. Once the DuT streaming assessment is completed the following validation shall be performed. 
+
+    - A PCAP of the TCP exchange of the HKEP protocol between a DuT and its Reference peer must be captured, starting the PCAP capture just prior to connecting the Receiver to the Sender and disconnecting the Receiver from the Sender prior to stop the PCAP capture. The media must visually and audibly playback properly on the Receiver for at least 10 seconds prior to disconnecting it from the Sender. After the disconnect the capture must record for at least 10 seconds prior to stopping the PCAP capture.
+
+    - The PCAP shall be analysed with the ipmx/hkep/hkepDissector.py script with the --validate-all command line option, and all the HKEP validations must PASS.
+
+
 10. **PEP Capability Tests**
+
+    #### BCP-005-03
 
     - If PEP is not supported along with HKEP disable the HKEP feature.
     - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory
@@ -493,6 +586,27 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
     - Results are sorted with FAILED tests printed last
     - Review output for any failures (some may be expected per test plan)
     - Assess that the Receivers are receiving from reference Senders without disruptions.
+
+    #### PEP as a Profile Capability
+
+    - Test the Senders of the DuT:
+
+        - Redo Phase one "For TP-1 sections 13" PCAP and SDP files capture with the DuT Sender configured for the vendor selected IPMX Profile with PEP enabled.
+            - Rerun the legacy or new scripts along with the --pep command line option that validate the PCAP and SDP files and verify the script results and the perform visual inspection.
+
+    - Test the Receivers of the DuT:
+
+        - Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the vendor selected IPMX Profile with PEP enabled.
+
+    #### PEP privacy requirements
+
+    - An IPMX Reference Sender RS2 shall be configured without PSK and not privacy encrypting its media stream.
+
+    - An IPMX Reference Receiver RR2 shall be configured without PSK and not privacy decrypting its media stream.
+
+    - The DuT Receiver shall not accept to receive the non-encrypted media stream from the RS2 reference Sender.
+
+    - The DuT Receiver shall receive the privacy encrypted media stream from the RS1 reference Sender.
 
 ## Important Notes
 

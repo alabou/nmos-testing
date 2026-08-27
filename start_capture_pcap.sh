@@ -12,11 +12,11 @@ fi
 # for VB440 capture
 if [ "$IPMX_VENDOR_PCAP_CAPTURE" == "VB440" ]; then
     if [ "$4" == "video" ]; then
-        curl -k "https://25.30.10.112/probe/api/captures/?responseMode=pcap&deleteOnComplete" -H "Content-Type: application/json" -d '{"receiverIds":["e64f24f4-e584-5d4a-9d26-0507dde17e65"],"frameLimit":30,"timeLimit":5000,"captureRTCP":true}' -o "$1" 2>&1
+        curl -k "https://25.30.10.112/probe/api/captures/?responseMode=pcap&deleteOnComplete" -H "Content-Type: application/json" -d '{"receiverIds":["e64f24f4-e584-5d4a-9d26-0507dde17e65"],"frameLimit":30,"timeLimit":8000,"captureRTCP":true}' -o "$1" 2>&1
         if [ $? -ne 0 ]; then echo "ERROR: curl command failed for video capture"; fi
     fi
     if [ "$4" == "audio" ]; then
-        curl -k "https://25.30.10.112/probe/api/captures/?responseMode=pcap&deleteOnComplete" -H "Content-Type: application/json" -d '{"receiverIds":["ea47ad4c-6c49-5b87-a23c-6ab8391f5b87"],"packetLimit":1000,"timeLimit":5000,"captureRTCP":true}' -o "$1" 2>&1
+        curl -k "https://25.30.10.112/probe/api/captures/?responseMode=pcap&deleteOnComplete" -H "Content-Type: application/json" -d '{"receiverIds":["ea47ad4c-6c49-5b87-a23c-6ab8391f5b87"],"packetLimit":1000,"timeLimit":8000,"captureRTCP":true}' -o "$1" 2>&1
         if [ $? -ne 0 ]; then echo "ERROR: curl command failed for audio capture"; fi
     fi
 fi

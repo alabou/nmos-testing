@@ -104,6 +104,7 @@ VideoH264 = "video/H264"
 AudioL16 = "audio/L16"
 AudioL24 = "audio/L24"
 AudioAM824 = "audio/AM824"
+DataUsb = "application/usb"
 
 SamplingYCbCr_444 = "YCbCr-4:4:4"
 SamplingYCbCr_422 = "YCbCr-4:2:2"
@@ -480,13 +481,15 @@ class IpmxSdpTest(GenericTest):
                         clock_found = True
                         if clock["ref_type"] == "ptp":
                             if (sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or
-                                sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize() or
+                                (not clock["traceable"] and (sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize())) or
+                                (clock["traceable"] and not sdp.primary_media.ts_ref_clock_ptp_traceable) or
                                     sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]):
-                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, version {}"
+                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, traceable {}, version {}"
                                                  " do not match Node clock {}"
                                                  .format(sender["id"], sdp.primary_media.ts_ref_clock_source,
                                                          sdp.primary_media.ts_delay,
                                                          sdp.primary_media.ts_ref_clock_ptp_gmid,
+                                                         sdp.primary_media.ts_ref_clock_ptp_traceable,
                                                          sdp.primary_media.ts_ref_clock_ptp_version, clock))
                         else:
                             if sdp.primary_media.ts_ref_clock_source != "localmac":
@@ -814,13 +817,15 @@ class IpmxSdpTest(GenericTest):
                         clock_found = True
                         if clock["ref_type"] == "ptp":
                             if (sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or
-                                sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize() or
+                                (not clock["traceable"] and (sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize())) or
+                                (clock["traceable"] and not sdp.primary_media.ts_ref_clock_ptp_traceable) or
                                     sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]):
-                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, version {}"
+                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, traceable {}, version {}"
                                                  " do not match Node clock {}"
                                                  .format(sender["id"], sdp.primary_media.ts_ref_clock_source,
                                                          sdp.primary_media.ts_delay,
                                                          sdp.primary_media.ts_ref_clock_ptp_gmid,
+                                                         sdp.primary_media.ts_ref_clock_ptp_traceable,
                                                          sdp.primary_media.ts_ref_clock_ptp_version, clock))
                         else:
                             if sdp.primary_media.ts_ref_clock_source != "localmac":
@@ -2108,8 +2113,10 @@ class IpmxSdpTest(GenericTest):
                                if receiver["format"] == FormatVideo]
             audio_receivers = [receiver for receiver in self.is04_resources["receivers"].values()
                                if receiver["format"] == FormatAudio]
+            data_receivers = [receiver for receiver in self.is04_resources["receivers"].values()
+                               if receiver["format"] == FormatData]
 
-            receivers = video_receivers + audio_receivers
+            receivers = video_receivers + audio_receivers + data_receivers
 
             receiver_tested = list()
 
@@ -2119,6 +2126,8 @@ class IpmxSdpTest(GenericTest):
                     format = "video"
                 elif receiver in audio_receivers:
                     format = "audio"
+                elif receiver in data_receivers:
+                    format = "data"
                 else:
                     return test.FAIL("UNEXPECTED receiver {}".format(receiver["id"]))
 
@@ -2683,13 +2692,15 @@ class IpmxSdpTest(GenericTest):
                         clock_found = True
                         if clock["ref_type"] == "ptp":
                             if (sdp.primary_media.ts_ref_clock_source != "ptp" or sdp.primary_media.ts_delay != 0 or
-                                sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize() or
+                                (not clock["traceable"] and (sdp.primary_media.ts_ref_clock_ptp_gmid.capitalize() != clock["gmid"].capitalize())) or
+                                (clock["traceable"] and not sdp.primary_media.ts_ref_clock_ptp_traceable) or
                                     sdp.primary_media.ts_ref_clock_ptp_version != clock["version"]):
-                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, version {}"
+                                return test.FAIL("Sender {} SDP media clock: source {}, delay {}, gmid {}, traceable {}, version {}"
                                                  " do not match Node clock {}"
                                                  .format(sender["id"], sdp.primary_media.ts_ref_clock_source,
                                                          sdp.primary_media.ts_delay,
                                                          sdp.primary_media.ts_ref_clock_ptp_gmid,
+                                                         sdp.primary_media.ts_ref_clock_ptp_traceable,
                                                          sdp.primary_media.ts_ref_clock_ptp_version, clock))
                         else:
                             if sdp.primary_media.ts_ref_clock_source != "localmac":
@@ -3086,6 +3097,13 @@ class IpmxSdpTest(GenericTest):
                         make_con(CapFormatChannelCount, 2, 8),
                         make_con(CapTransportPacketTime, 1))
                 ]
+            elif flow_media_type == "application/usb":
+                checkCons = check_conset("Check USB", primary_capset,
+                    CapFormatMediaType)
+                or_consets = [
+                    alt_conset("Check USB",
+                        make_con(CapFormatMediaType, DataUsb))
+                ]
             else:
                 return False, "Sender {} invalid media type {}".format(sender["id"], flow_media_type)
 
@@ -3325,7 +3343,10 @@ class IpmxSdpTest(GenericTest):
                         make_con(CapFormatSampleRate, 48000),
                         make_con(CapFormatChannelCount, 2, 8),
                         make_con(CapTransportPacketTime, 1))
-                ]                
+                ]
+            elif flow_media_type == "application/usb":
+                checkCons = check_conset("Check USB", primary_capset,
+                    CapFormatMediaType)
             else:
                 return False, "Receiver {} invalid media type {}".format(receiver["id"], flow_media_type)
 

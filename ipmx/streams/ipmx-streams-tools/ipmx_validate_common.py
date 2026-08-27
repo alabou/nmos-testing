@@ -16,9 +16,11 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 import re
 import shutil
+import sys
 import tempfile
 import subprocess
 from dataclasses import dataclass, field
@@ -134,6 +136,12 @@ class SenderReportInfo:
     ipmx_info: ipmx_sender_report.ParsedIPMXInfoBlock | None
     raw_blocks: list[ipmx_sender_report.ParsedMediaInfoBlock]
     reception_report_count: int = 0
+    # DS-field DSCP (top 6 bits) of the IP packet carrying this RTCP SR;
+    # used to enforce TR-10-9 §16 (SR marked identically to the RTP stream).
+    dscp: int | None = None
+    # Ethernet (L2) destination MAC (lowercase colon-hex) of the frame carrying
+    # this RTCP SR; used to validate the RFC 1112 §6.4 multicast MAC mapping.
+    dst_mac: str | None = None
 
     @property
     def ntp_unix(self) -> float:
@@ -200,6 +208,7 @@ class ValidationContext:
     stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None" = None
     encrypted: bool = False
     allow_superset_profile: bool = False
+    is_444: bool = False  # IPMX HEVC 4:4:4 Profile Mode under test (h265 --444)
 
 
 @dataclass
@@ -306,6 +315,8 @@ def parse_sender_reports(
                     ipmx_info=parsed.info_block,
                     raw_blocks=parsed.raw_blocks,
                     reception_report_count=parsed.reception_report_count,
+                    dscp=udp.dscp,
+                    dst_mac=udp.dst_mac,
                 )
             )
     reports.sort(key=lambda sr: sr.capture_time)
@@ -1402,6 +1413,132 @@ def check_sr_rc_zero(
     return True, f"All {len(sender_reports)} SR(s) have RC=0"
 
 
+# RTCP packet types (RFC 3550 §12.1) and SDES item types (§6.5).
+_RTCP_PT_SR = 200
+_RTCP_PT_RR = 201
+_RTCP_PT_SDES = 202
+_SDES_ITEM_END = 0
+_SDES_ITEM_CNAME = 1
+
+
+def _sdes_contains_cname(packet: bytes) -> bool:
+    """Return True if an RTCP SDES packet (PT=202) carries a CNAME item.
+
+    Parses the chunk/item structure of RFC 3550 §6.5: the source count (SC)
+    field gives the number of SDES chunks; each chunk is an SSRC/CSRC (4 bytes)
+    followed by a list of items terminated by a null (type 0) octet and padded
+    to the next 32-bit boundary.  A CNAME item has item type 1.
+    """
+    if len(packet) < 4:
+        return False
+    source_count = packet[0] & 0x1F
+    offset = 4
+    n = len(packet)
+    for _ in range(source_count):
+        if offset + 4 > n:
+            return False
+        offset += 4  # SSRC/CSRC of this chunk
+        while offset < n:
+            item_type = packet[offset]
+            offset += 1
+            if item_type == _SDES_ITEM_END:
+                # Null item ends the chunk; skip padding to the 32-bit boundary.
+                while offset % 4 != 0 and offset < n:
+                    offset += 1
+                break
+            if offset >= n:
+                return False
+            item_len = packet[offset]
+            offset += 1
+            if item_type == _SDES_ITEM_CNAME:
+                return True
+            offset += item_len
+    return False
+
+
+def check_sr_compound_packet(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """RTCP Sender Reports SHALL be sent in a compound packet (RFC 3550 §6.1).
+
+    RFC 3550 §6.1 places three MUSTs on every RTCP transmission:
+
+      1. it MUST be a compound packet of at least two individual RTCP packets;
+      2. the first RTCP packet MUST be a report packet (SR=200 or RR=201) to
+         facilitate header validation;
+      3. an SDES packet (PT=202) containing a CNAME item MUST be included in
+         each compound packet.
+
+    The §9.1 exception applies only to *encrypted* RTCP; IPMX sends RTCP in
+    cleartext (the SR fields and IPMX Info Block are read directly), so all
+    three MUSTs bind unconditionally here.
+
+    Evaluates every UDP datagram on the RTCP port (filtered by destination IP
+    when known) whose RTCP content includes a Sender Report, and reports the
+    datagrams that violate any of the three rules.
+    """
+    port = stream_info.rtcp_port if stream_info is not None else None
+    dst_ip = stream_info.dst_ip if stream_info is not None else None
+
+    total = 0
+    violations: list[str] = []
+    for udp in iter_udp_packets(pcap_path, port):
+        if dst_ip is not None and udp.dst_ip != dst_ip:
+            continue
+        subpackets = list(ipmx_sender_report.iter_rtcp_packets(udp.payload))
+        if not subpackets:
+            continue
+        pts = [pkt[1] for pkt in subpackets if len(pkt) >= 2]
+        # Only evaluate datagrams that actually carry a Sender Report.
+        if _RTCP_PT_SR not in pts:
+            continue
+        total += 1
+
+        problems: list[str] = []
+        # MUST #1 — compound packet of at least two individual RTCP packets.
+        if len(subpackets) < 2:
+            problems.append(
+                f"only {len(subpackets)} RTCP packet(s); a compound packet "
+                f"requires at least 2"
+            )
+        # MUST #2 — the first RTCP packet is a report packet (SR or RR).
+        first_pt = pts[0] if pts else None
+        if first_pt not in (_RTCP_PT_SR, _RTCP_PT_RR):
+            problems.append(
+                f"first RTCP packet PT={first_pt} is not a report packet (SR/RR)"
+            )
+        # MUST #3 — an SDES packet carrying a CNAME item is present.
+        sdes_pkts = [pkt for pkt in subpackets
+                     if len(pkt) >= 2 and pkt[1] == _RTCP_PT_SDES]
+        if not sdes_pkts:
+            problems.append("no SDES (PT=202) packet present")
+        elif not any(_sdes_contains_cname(pkt) for pkt in sdes_pkts):
+            problems.append("SDES present but no CNAME item found")
+
+        if problems:
+            violations.append(
+                f"datagram @ {udp.capture_time:.6f}s (PTs={pts}): "
+                + "; ".join(problems)
+            )
+
+    if total == 0:
+        return untestable("No RTCP datagrams containing a Sender Report found")
+    if violations:
+        shown = " | ".join(violations[:5])
+        more = "" if len(violations) <= 5 else f" (+{len(violations) - 5} more)"
+        return (
+            False,
+            f"{len(violations)}/{total} SR-bearing RTCP datagram(s) violate "
+            f"RFC 3550 §6.1 compound-packet rules: {shown}{more}",
+        )
+    return (
+        True,
+        f"All {total} SR-bearing RTCP datagram(s) are RFC 3550 §6.1 compound "
+        f"packets (report packet first, SDES CNAME present)",
+    )
+
+
 def compute_cmax_type_w(npackets: int | float | Fraction, tframe: Fraction) -> int:
     """Compute CMAX for a Type W sender per TR-10-1 §8.1 / ST 2110-21 §7.1.4.
 
@@ -1747,6 +1884,363 @@ def check_sdp_multicast_source_filter(
     )
 
 
+# ---------------------------------------------------------------------------
+# TR-10-9 §16 — Quality of service (DiffServ / DSCP marking)
+# ---------------------------------------------------------------------------
+
+# RFC 2474 / 2597 / 3246 code-point names, for human-readable verdicts.
+_DSCP_NAMES: dict[int, str] = {
+    46: "EF",
+    34: "AF41", 36: "AF42", 38: "AF43",
+    26: "AF31", 28: "AF32", 30: "AF33",
+    18: "AF21", 20: "AF22", 22: "AF23",
+    10: "AF11", 12: "AF12", 14: "AF13",
+    0: "CS0/BE",
+}
+
+
+def _fmt_dscp(value: int | None) -> str:
+    """Render a DSCP value as ``36 (AF42)`` for verdict messages."""
+    if value is None:
+        return "unknown"
+    name = _DSCP_NAMES.get(value)
+    return f"{value} ({name})" if name else f"{value}"
+
+
+# Cache of observed RTP DSCP distributions, keyed by (pcap, stream identity),
+# so the RTP marking check and the SR-matches-RTP check share a single pass.
+_RTP_DSCP_CACHE: dict[tuple, "Counter[int | None]"] = {}
+
+
+def scan_rtp_dscp(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> "Counter[int | None]":
+    """Return a distribution of DS-field DSCP values across the RTP stream.
+
+    Keys are the per-packet DSCP (``None`` when the packet is not IP); values
+    are packet counts. A well-formed sender marks every packet identically, so
+    a healthy stream yields a single key. The result is memoised per capture.
+    """
+    key = (
+        str(pcap_path),
+        getattr(stream_info, "dst_ip", None),
+        getattr(stream_info, "dst_port", None),
+        getattr(stream_info, "ssrc", None),
+    )
+    cached = _RTP_DSCP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    dist: "Counter[int | None]" = Counter()
+    port = stream_info.dst_port if stream_info is not None else None
+    for pkt in ipmx_parse_rtp_pcap.iter_rtp_packets_stream(
+        pcap_path, port, stream_info=stream_info
+    ):
+        dist[pkt.dscp] += 1
+    _RTP_DSCP_CACHE[key] = dist
+    return dist
+
+
+def _dominant_rtp_dscp(
+    dist: "Counter[int | None]",
+) -> tuple[int | None, bool]:
+    """Reduce an RTP DSCP distribution to ``(value, consistent)``.
+
+    ``consistent`` is False when the stream carries more than one distinct
+    IP-layer DSCP value. ``value`` is the sole observed DSCP when consistent,
+    else the most common one (for reporting). Returns ``(None, ...)`` when no
+    IP-layer DSCP was observed at all.
+    """
+    observed = {d: c for d, c in dist.items() if d is not None}
+    if not observed:
+        return None, True
+    consistent = len(observed) == 1
+    dominant = max(observed, key=lambda d: observed[d])
+    return dominant, consistent
+
+
+def check_dscp_rtp_marking(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+    expected_dscp: int,
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """RTP media packets SHALL carry the TR-10-9 §16 default DSCP for the
+    media type (AF42/36 for TR-10-2/4/7/11 video, AF41/34 for TR-10-3/12
+    audio), and the marking SHALL be consistent across the stream.
+
+    §16 also states devices *should* provide a user mechanism to select DSCP
+    markings, so a value that differs from the default is a violation only if
+    it was not intentionally configured. The verdict message flags that.
+    """
+    if stream_info is None:
+        return untestable("RTP stream not detected — cannot read DSCP")
+    dist = scan_rtp_dscp(pcap_path, stream_info)
+    total = sum(dist.values())
+    if total == 0:
+        return untestable("No RTP packets in stream — cannot read DSCP")
+    dominant, consistent = _dominant_rtp_dscp(dist)
+    if dominant is None:
+        return untestable("RTP packets carry no IP-layer DSCP")
+
+    readable = {_fmt_dscp(d): c for d, c in dist.items()}
+    if not consistent:
+        return False, (
+            f"RTP stream marks inconsistent DSCP values {readable}; "
+            f"TR-10-9 §16 requires a single default marking of "
+            f"{_fmt_dscp(expected_dscp)}"
+        )
+    if dominant != expected_dscp:
+        return False, (
+            f"RTP marked {_fmt_dscp(dominant)}; TR-10-9 §16 default for this "
+            f"media type is {_fmt_dscp(expected_dscp)} "
+            f"(a non-default DSCP is permitted by §16 only when the user has "
+            f"intentionally configured it)"
+        )
+    return True, (
+        f"RTP marked {_fmt_dscp(dominant)} across {total} packets — matches "
+        f"TR-10-9 §16 default"
+    )
+
+
+def check_dscp_sr_matches_rtp(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+    sender_reports: list[SenderReportInfo],
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """RTCP Sender Report packets SHALL be marked with the same DSCP value as
+    the RTP stream they describe (TR-10-9 §16). Unlike the default-value rule,
+    this is unconditional: whatever DSCP the RTP stream uses, the SRs must
+    match it.
+    """
+    if not sender_reports:
+        return untestable("No RTCP Sender Reports — cannot compare DSCP")
+    if stream_info is None:
+        return untestable("RTP stream not detected — cannot compare SR DSCP")
+    rtp_dominant, rtp_consistent = _dominant_rtp_dscp(
+        scan_rtp_dscp(pcap_path, stream_info)
+    )
+    if rtp_dominant is None:
+        return untestable(
+            "RTP stream carries no IP-layer DSCP — nothing to match against"
+        )
+    if not rtp_consistent:
+        return untestable(
+            "RTP stream DSCP is inconsistent — resolve RTP marking first"
+        )
+
+    sr_dist = Counter(sr.dscp for sr in sender_reports)
+    if all(d is None for d in sr_dist):
+        return untestable("RTCP SR packets carry no IP-layer DSCP")
+    mismatched = {d for d in sr_dist if d is not None and d != rtp_dominant}
+    if mismatched:
+        readable = {_fmt_dscp(d): c for d, c in sr_dist.items()}
+        return False, (
+            f"RTCP SR DSCP {readable} does not match RTP stream DSCP "
+            f"{_fmt_dscp(rtp_dominant)}; TR-10-9 §16 requires SRs marked "
+            f"identically to their RTP stream"
+        )
+    return True, (
+        f"RTCP SR marked {_fmt_dscp(rtp_dominant)} across "
+        f"{len(sender_reports)} report(s) — matches RTP stream (TR-10-9 §16)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# RFC 1112 §6.4 — IPv4 multicast → Ethernet MAC mapping
+# ---------------------------------------------------------------------------
+
+def _ipv4_multicast_to_mac(addr: str) -> str | None:
+    """Map an IPv4 multicast dotted-quad to its Ethernet MAC per RFC 1112 §6.4.
+
+    The MAC is ``01:00:5e`` followed by the low 23 bits of the group address
+    (lowercase colon-hex). Returns ``None`` if *addr* is not a dotted-quad IPv4
+    literal. Mirrors ``ipv4_multicast_to_mac`` in TP-10-1Sec13.1.py exactly.
+    """
+    parts = addr.split(".") if addr else []
+    if len(parts) != 4:
+        return None
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if any(o < 0 or o > 255 for o in octets):
+        return None
+    ipint = (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]
+    low23 = ipint & 0x7FFFFF
+    o3 = (low23 >> 16) & 0x7F
+    o4 = (low23 >> 8) & 0xFF
+    o5 = low23 & 0xFF
+    return f"01:00:5e:{o3:02x}:{o4:02x}:{o5:02x}"
+
+
+# Cache of observed RTP destination-MAC distributions, keyed like the DSCP cache.
+_RTP_MAC_CACHE: dict[tuple, "Counter[str | None]"] = {}
+
+
+def scan_rtp_dst_mac(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> "Counter[str | None]":
+    """Return a distribution of Ethernet destination MACs across the RTP stream.
+
+    Keys are the per-packet L2 destination MAC (``None`` when unavailable);
+    values are packet counts. A well-formed multicast stream marks every frame
+    with the same group MAC, so a healthy stream yields a single key. Memoised
+    per capture.
+    """
+    key = (
+        str(pcap_path),
+        getattr(stream_info, "dst_ip", None),
+        getattr(stream_info, "dst_port", None),
+        getattr(stream_info, "ssrc", None),
+    )
+    cached = _RTP_MAC_CACHE.get(key)
+    if cached is not None:
+        return cached
+    dist: "Counter[str | None]" = Counter()
+    port = stream_info.dst_port if stream_info is not None else None
+    for pkt in ipmx_parse_rtp_pcap.iter_rtp_packets_stream(
+        pcap_path, port, stream_info=stream_info
+    ):
+        dist[pkt.dst_mac] += 1
+    _RTP_MAC_CACHE[key] = dist
+    return dist
+
+
+def check_multicast_mac_mapping(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """For IPv4 multicast RTP streams, the Ethernet destination MAC SHALL be
+    the RFC 1112 §6.4 mapping of the group address (``01:00:5e`` + low 23 bits).
+
+    Only applies to IPv4 multicast destinations — unicast and IPv6 are N/A —
+    matching the multicast-only scope of TP-10-1Sec13.1.py. The marking SHALL
+    also be consistent across the stream.
+    """
+    if stream_info is None:
+        return untestable("RTP stream not detected — cannot read destination MAC")
+    dst_ip = getattr(stream_info, "dst_ip", None) or ""
+    if not _is_ipv4_multicast(dst_ip):
+        return untestable(
+            f"destination {dst_ip or 'unknown'} is not IPv4 multicast — "
+            f"RFC 1112 L2 mapping N/A"
+        )
+    expected = _ipv4_multicast_to_mac(dst_ip)
+    if expected is None:
+        return untestable(f"cannot derive expected MAC from {dst_ip}")
+
+    dist = scan_rtp_dst_mac(pcap_path, stream_info)
+    observed = {m: c for m, c in dist.items() if m is not None}
+    total = sum(dist.values())
+    if total == 0:
+        return untestable("No RTP packets in stream — cannot read destination MAC")
+    if not observed:
+        return untestable("RTP packets carry no L2 destination MAC")
+    if len(observed) > 1:
+        return False, (
+            f"RTP stream uses inconsistent destination MACs {observed}; "
+            f"IPv4 multicast {dst_ip} SHALL map to {expected} (RFC 1112 §6.4)"
+        )
+    found = next(iter(observed))
+    if found != expected:
+        return False, (
+            f"RTP destination MAC {found} does not match the RFC 1112 §6.4 "
+            f"mapping {expected} for multicast group {dst_ip}"
+        )
+    return True, (
+        f"RTP destination MAC {found} matches the RFC 1112 §6.4 mapping for "
+        f"multicast group {dst_ip} (across {total} packets)"
+    )
+
+
+def check_sr_mac_mapping(
+    sender_reports: list[SenderReportInfo],
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """RTCP Sender Report packets sent to an IPv4 multicast group SHALL carry
+    the RFC 1112 §6.4 Ethernet destination MAC of that group (``01:00:5e`` +
+    low 23 bits) — the SR-packet counterpart of ``check_multicast_mac_mapping``.
+
+    Only IPv4 multicast SR destinations are in scope; unicast/IPv6 are N/A.
+    """
+    if not sender_reports:
+        return untestable("No RTCP Sender Reports — cannot read SR destination MAC")
+    mcast = [sr for sr in sender_reports if _is_ipv4_multicast(sr.dst_ip or "")]
+    if not mcast:
+        return untestable(
+            "No IPv4 multicast RTCP SR destination — RFC 1112 L2 mapping N/A"
+        )
+    if all(sr.dst_mac is None for sr in mcast):
+        return untestable("RTCP SR packets carry no L2 destination MAC")
+    mismatches: list[tuple[str, str, str]] = []
+    for sr in mcast:
+        if sr.dst_mac is None:
+            continue
+        expected = _ipv4_multicast_to_mac(sr.dst_ip)
+        if expected is not None and sr.dst_mac != expected:
+            mismatches.append((sr.dst_ip, sr.dst_mac, expected))
+    if mismatches:
+        ip, found, expected = mismatches[0]
+        return False, (
+            f"RTCP SR destination MAC {found} does not match the RFC 1112 §6.4 "
+            f"mapping {expected} for multicast group {ip} "
+            f"({len(mismatches)}/{len(mcast)} SR(s) mismatched)"
+        )
+    sample = next(sr for sr in mcast if sr.dst_mac is not None)
+    return True, (
+        f"RTCP SR destination MAC {sample.dst_mac} matches the RFC 1112 §6.4 "
+        f"mapping for multicast group {sample.dst_ip} (across {len(mcast)} SR(s))"
+    )
+
+
+def check_sr_rtcp_port(
+    pcap_path: Path,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """RTCP Sender Reports SHALL be sent on the RTP destination port + 1
+    (TR-10-1 §8.7 / RFC 3550 §11).
+
+    The capture is re-scanned for RTCP SRs belonging to this stream (matched by
+    the group destination IP and SSRC) *without* assuming the RTCP port, so a
+    sender that placed RTCP on the wrong port is reported as a port mismatch
+    rather than silently appearing as "no Sender Reports".
+    """
+    if stream_info is None:
+        return untestable("RTP stream not detected — cannot check RTCP port")
+    rtp_port = getattr(stream_info, "dst_port", None)
+    dst_ip = getattr(stream_info, "dst_ip", None)
+    ssrc = getattr(stream_info, "ssrc", None)
+    if rtp_port is None:
+        return untestable("RTP port unknown — cannot derive expected RTCP port")
+    expected = rtp_port + 1
+
+    observed: "Counter[int | None]" = Counter()
+    for udp in iter_udp_packets(pcap_path, None):
+        if dst_ip is not None and udp.dst_ip != dst_ip:
+            continue
+        for packet in ipmx_sender_report.iter_rtcp_packets(udp.payload):
+            parsed = ipmx_sender_report.parse_rtcp_sender_report(packet)
+            if parsed is None:
+                continue
+            if ssrc is not None and parsed.ssrc != ssrc:
+                continue
+            observed[udp.dst_port] += 1
+    if not observed:
+        return untestable(
+            "No RTCP Sender Reports found for the stream — cannot check RTCP port"
+        )
+    bad = sorted(p for p in observed if p != expected)
+    if bad:
+        return False, (
+            f"RTCP SR observed on destination port(s) {bad}; TR-10-1 §8.7 "
+            f"requires RTP port + 1 = {expected} (RTP port {rtp_port})"
+        )
+    return True, (
+        f"RTCP SR on destination port {expected} = RTP port {rtp_port} + 1 "
+        f"({sum(observed.values())} SR(s))"
+    )
+
+
 def check_sdp_dst_ip_vs_stream(
     sdp_media: "MediaDescriptor | None",
     stream_info: "Any | None",
@@ -1844,3 +2338,210 @@ def summarize_results(results: list[RequirementResult]) -> str:
     passed = sum(1 for res in results if res.passed)
     failed = total - passed
     return f"{passed}/{total} passed, {failed} failed"
+
+
+def print_first_sr_block_version(sender_reports: list[SenderReportInfo]) -> None:
+    """Print the IPMX Info Block version of the first Sender Report in the PCAP.
+
+    The IPMX Info Block (TR-10-1 §8.7, tag 0x5831) opens with a one-byte
+    version field that identifies its layout revision (see
+    ``ipmx_sender_report.ParsedIPMXInfoBlock.version``). This reports that
+    version from the first Sender Report in the capture that actually carries
+    an IPMX Info Block, labelled "initial block version", and states plainly
+    when none is present.
+    """
+    for sr in sender_reports:
+        if sr.ipmx_info is not None:
+            print(
+                f"Initial block version (first Sender Report in PCAP): "
+                f"{sr.ipmx_info.version}"
+            )
+            return
+    print(
+        "Initial block version (first Sender Report in PCAP): "
+        "none (no IPMX Info Block present)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CFG transport-descriptor parsing (streams/cfg/*.cfg)
+# ---------------------------------------------------------------------------
+#
+# The streams/cfg/*.cfg files are simple INI-style key=value descriptors of a
+# single test stream.  The --cfg option on each validator loads one of these
+# and seeds the matching expected-value arguments so they need not be typed by
+# hand.  A cfg value only fills an argument still unset after argparse — an
+# explicit CLI flag always wins.
+
+CFG_DIR = Path(__file__).resolve().parent / "cfg"
+
+
+def parse_cfg_file(path: Path) -> dict[str, str]:
+    """Parse an INI-style ``key=value`` cfg file into a lowercase-keyed dict.
+
+    Blank lines and comment lines (``#``, ``;``, ``//``) are skipped.
+    """
+    cfg: dict[str, str] = {}
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith(("#", ";", "//")):
+            continue
+        if "=" in raw:
+            key, value = raw.split("=", 1)
+            cfg[key.strip().lower()] = value.strip()
+    return cfg
+
+
+def resolve_cfg_path(value: str) -> Path:
+    """Resolve a --cfg argument to a file.
+
+    Accepts a real path, or a bare name resolved against ``streams/cfg/`` (with
+    or without the ``.cfg`` suffix).
+    """
+    direct = Path(value)
+    if direct.is_file():
+        return direct
+    for candidate in (CFG_DIR / value, CFG_DIR / f"{value}.cfg"):
+        if candidate.is_file():
+            return candidate
+    raise SystemExit(f"cfg file not found: {value}")
+
+
+def require_cfg_type(cfg: dict[str, str], expected: str) -> None:
+    """Raise SystemExit if the cfg ``type`` field is present and not ``expected``."""
+    actual = cfg.get("type")
+    if actual is not None and actual != expected:
+        raise SystemExit(
+            f"cfg type={actual!r} does not match this validator (expected {expected!r})"
+        )
+
+
+def cfg_set_default(args: Any, attr: str, value: Any) -> None:
+    """Set ``args.attr = value`` only if that argument exists and is still unset.
+
+    This guarantees an explicit CLI flag (already non-None after argparse) is
+    never overwritten by a cfg value.
+    """
+    if value is None:
+        return
+    if hasattr(args, attr) and getattr(args, attr) is None:
+        setattr(args, attr, value)
+
+
+def apply_video_cfg(args: Any, cfg: dict[str, str], *, ycbcr_only: bool = False) -> None:
+    """Seed video expected-value args from a parsed cfg dict.
+
+    Only arguments that exist on ``args`` and are still unset are filled.  For
+    YCbCr-only codecs (H.264/H.265) a non-YCbCr sampling (e.g. RGB) is skipped
+    with a warning rather than applied, since it cannot match the codec.
+    """
+    require_cfg_type(cfg, "video")
+    if "exactframerate" in cfg:
+        cfg_set_default(args, "exactframerate", cfg["exactframerate"])
+    if "width" in cfg:
+        cfg_set_default(args, "width", int(cfg["width"]))
+    if "height" in cfg:
+        cfg_set_default(args, "height", int(cfg["height"]))
+    if "depth" in cfg:
+        cfg_set_default(args, "bit_depth", int(cfg["depth"]))
+    if "sampling" in cfg and hasattr(args, "sampling"):
+        sampling = cfg["sampling"]
+        if ycbcr_only and not sampling.startswith("YCbCr"):
+            print(
+                f"warning: cfg sampling={sampling!r} is not applicable to this "
+                f"YCbCr-only codec; --sampling left unset",
+                file=sys.stderr,
+            )
+        else:
+            cfg_set_default(args, "sampling", sampling)
+
+
+def apply_audio_cfg(args: Any, cfg: dict[str, str], ptime_parser: Any) -> None:
+    """Seed audio expected-value args from a parsed cfg dict.
+
+    ``rtpclock`` → ``--sample-rate``; ``samplesize`` is the channel count (cfg
+    convention) → ``--nchan``; ``ptime`` → ``--ptime`` (parsed by the caller's
+    ``ptime_parser``); ``samplefmt`` (L16/L20/L24) → both ``--bit-depth`` (PCM
+    payload width, where that flag exists) and ``--sample-size`` (RTCP SR audio
+    MIB value).  ``--measured-sample-rate`` is a measured value and is not set.
+    """
+    from ipmx_pcm import bit_depth_from_encoding
+
+    require_cfg_type(cfg, "audio")
+    if "rtpclock" in cfg:
+        cfg_set_default(args, "sample_rate", int(cfg["rtpclock"]))
+    if "samplesize" in cfg:
+        cfg_set_default(args, "nchan", int(cfg["samplesize"]))
+    if "ptime" in cfg:
+        cfg_set_default(args, "ptime", ptime_parser(cfg["ptime"]))
+    if "samplefmt" in cfg:
+        depth = bit_depth_from_encoding(cfg["samplefmt"])
+        cfg_set_default(args, "bit_depth", depth)
+        cfg_set_default(args, "sample_size", depth)
+
+
+def requirement_is_untestable_by_design(check: Any) -> bool:
+    """True if a requirement can never be tested from a PCAP.
+
+    Such requirements are registered with the ``lambda _: untestable(...)``
+    sentinel — a single parameter named ``_`` (the capture is ignored). Real
+    checks capture the context as ``lambda c=ctx: ...`` (parameter ``c`` with a
+    default), so they are distinguishable by signature without being executed.
+    """
+    try:
+        params = list(inspect.signature(check).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    return (
+        len(params) == 1
+        and params[0].name == "_"
+        and params[0].default is inspect.Parameter.empty
+    )
+
+
+def configure_utf8_output() -> None:
+    """Force stdout/stderr to UTF-8 so validator output never crashes.
+
+    Requirement text and verdict details legitimately contain non-ASCII
+    characters (``§``, ``≤``, ``≥``, ``×``, ``·``, em dashes). On Windows the
+    default console/pipe codepage is cp1252, which cannot encode several of
+    them, so an unguarded ``print`` raises ``UnicodeEncodeError`` mid-report.
+    Reconfiguring to UTF-8 with ``errors="replace"`` makes output portable and
+    crash-proof regardless of the host codepage. Safe to call more than once.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # not a TextIOWrapper (e.g. redirected to a custom sink)
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass  # stream already detached/closed — leave it as-is
+
+
+def print_requirements_list(source: str, reqs: list[Requirement]) -> None:
+    """Print the requirement catalogue grouped by level for --list-requirements.
+
+    Each row is prefixed with ``NA`` when the requirement is untestable by design
+    (never observable from a PCAP — e.g. receiver/NMOS/decoder capabilities);
+    otherwise the row has a real check that yields PASS/FAIL/CANNOT_TEST at run
+    time depending on the capture.
+    """
+    order = ["shall", "should", "info"]
+    groups: dict[str, list[Requirement]] = {}
+    for r in reqs:
+        groups.setdefault(r.level, []).append(r)
+    na_total = sum(1 for r in reqs if requirement_is_untestable_by_design(r.check))
+    print(
+        f"{source} — {len(reqs)} requirements "
+        f"({len(reqs) - na_total} testable, {na_total} NA)"
+    )
+    for level in order + [lv for lv in groups if lv not in order]:
+        group = groups.get(level)
+        if not group:
+            continue
+        width = max(len(r.req_id) for r in group)
+        print(f"\n{level.upper()} ({len(group)}):")
+        for r in group:
+            flag = "NA" if requirement_is_untestable_by_design(r.check) else "  "
+            print(f"  {flag}  {r.req_id:<{width}}  {r.text}")

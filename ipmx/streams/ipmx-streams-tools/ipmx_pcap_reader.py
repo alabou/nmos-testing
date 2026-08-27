@@ -36,18 +36,82 @@ from typing import Iterator, Sequence
 
 try:
     from scapy.all import PcapReader
+    from scapy.layers.l2 import Ether
     from scapy.layers.inet import IP, UDP
     from scapy.layers.inet6 import IPv6
     SCAPY_AVAILABLE = True
 except Exception:
     PcapReader = None  # type: ignore[assignment]
-    IP = UDP = IPv6 = None  # type: ignore[assignment]
+    Ether = IP = UDP = IPv6 = None  # type: ignore[assignment]
     SCAPY_AVAILABLE = False
 
 
 PCAP_GLOBAL_HEADER_SIZE = 24
 PCAP_PACKET_HEADER_SIZE = 16
 ETHERNET_HEADER_SIZE = 14
+
+# Build-time switch for the exact capture-timestamp representation below.
+# Set to False to emit plain float64 capture times, byte-for-byte identical to
+# the values produced before CaptureTime existed.
+CAPTURE_TIME_EXACT_NS = False
+
+
+class CaptureTime(float):
+    """Capture timestamp in seconds that remembers its exact nanosecond value.
+
+    A capture timestamp is Unix-epoch seconds, and float64 cannot hold that
+    instant to nanosecond resolution: 1.79e9 s needs 61 bits of mantissa and
+    float64 has 53, so values quantize to one ULP — 238 ns for a 2026 capture,
+    coarser than the sub-microsecond spacing TR-10-1 §8.10.1 asks to be
+    resolved. Deltas and orderings computed from such values are wrong by up
+    to one ULP, and two packets less than a ULP apart can compare equal.
+
+    This is a *float subclass*, so every consumer that formats, serialises,
+    or does mixed arithmetic with a capture time keeps working unchanged. Only
+    subtraction and comparison BETWEEN two capture times are redirected to the
+    exact integers, which is where the precision is needed and where float64
+    loses it. Operations mixing a capture time with a plain float fall back to
+    ordinary float64 behaviour.
+    """
+
+    __slots__ = ("ns",)
+
+    def __new__(cls, nanoseconds: int) -> "CaptureTime":
+        self = super().__new__(cls, nanoseconds / 1_000_000_000)
+        self.ns = nanoseconds
+        return self
+
+    def __sub__(self, other):
+        if isinstance(other, CaptureTime):
+            return (self.ns - other.ns) / 1_000_000_000
+        return float.__sub__(self, other)
+
+    def __rsub__(self, other):
+        if isinstance(other, CaptureTime):
+            return (other.ns - self.ns) / 1_000_000_000
+        return float.__rsub__(self, other)
+
+    def __lt__(self, other):
+        return self.ns < other.ns if isinstance(other, CaptureTime) else float.__lt__(self, other)
+
+    def __le__(self, other):
+        return self.ns <= other.ns if isinstance(other, CaptureTime) else float.__le__(self, other)
+
+    def __gt__(self, other):
+        return self.ns > other.ns if isinstance(other, CaptureTime) else float.__gt__(self, other)
+
+    def __ge__(self, other):
+        return self.ns >= other.ns if isinstance(other, CaptureTime) else float.__ge__(self, other)
+
+    def __eq__(self, other):
+        return self.ns == other.ns if isinstance(other, CaptureTime) else float.__eq__(self, other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    # Equal capture times always hold the same nanosecond count and therefore
+    # the same float value, so the inherited hash stays consistent with __eq__.
+    __hash__ = float.__hash__
 
 
 @dataclass
@@ -59,6 +123,14 @@ class UdpPacket:
     dst_ip: str | None
     src_port: int | None
     dst_port: int | None
+    # DSCP (6-bit Differentiated Services Code Point) from the IP header's
+    # DS field: IPv4 ToS byte >> 2, or IPv6 Traffic Class >> 2. None when the
+    # packet is neither IPv4 nor IPv6. Needed for TR-10-9 §16 QoS validation.
+    dscp: int | None = None
+    # Ethernet (L2) destination MAC as lowercase colon-hex ("01:00:5e:xx:yy:zz"),
+    # or None when unavailable. Needed to validate the RFC 1112 IPv4-multicast
+    # → Ethernet MAC mapping.
+    dst_mac: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,17 +153,34 @@ def iter_udp_packets_scapy(
             payload = bytes(udp.payload)
             if not payload:
                 continue
-            capture_time = float(pkt.time)
+            # Scapy exposes the record timestamp as an EDecimal of seconds, so
+            # scaling it to nanoseconds is exact; float() is the lossy view.
+            capture_time = (
+                CaptureTime(int(pkt.time * 1_000_000_000))
+                if CAPTURE_TIME_EXACT_NS
+                else float(pkt.time)
+            )
             src_ip: str | None = None
             dst_ip: str | None = None
+            dscp: int | None = None
+            # Ethernet destination MAC (scapy renders it lowercase colon-hex).
+            dst_mac: str | None = None
+            if Ether is not None and pkt.haslayer(Ether):
+                dst_mac = str(pkt[Ether].dst).lower()
             if pkt.haslayer(IP):
                 ip_layer = pkt[IP]
                 src_ip = ip_layer.src
                 dst_ip = ip_layer.dst
+                # Scapy exposes the full 8-bit IPv4 ToS/DS byte as `tos`;
+                # DSCP is its top 6 bits.
+                dscp = (int(ip_layer.tos) >> 2) & 0x3F
             elif pkt.haslayer(IPv6):
                 ip6_layer = pkt[IPv6]
                 src_ip = ip6_layer.src
                 dst_ip = ip6_layer.dst
+                # Scapy exposes the 8-bit IPv6 Traffic Class as `tc`;
+                # DSCP is its top 6 bits.
+                dscp = (int(ip6_layer.tc) >> 2) & 0x3F
             yield UdpPacket(
                 payload=payload,
                 capture_time=capture_time,
@@ -99,6 +188,8 @@ def iter_udp_packets_scapy(
                 dst_ip=dst_ip,
                 src_port=int(udp.sport),
                 dst_port=int(udp.dport),
+                dscp=dscp,
+                dst_mac=dst_mac,
             )
 
 
@@ -132,6 +223,8 @@ def iter_udp_packets_manual(
             return
         endian, is_nsec = _parse_pcap_magic(global_header[:4])
         frac_divisor = 1_000_000_000 if is_nsec else 1_000_000
+        # Scale factor turning the record's fractional field into nanoseconds.
+        frac_to_ns = 1 if is_nsec else 1_000
         _, _, _, _, _, network = struct.unpack(
             endian + "HHIIII", global_header[4:]
         )
@@ -153,8 +246,11 @@ def iter_udp_packets_manual(
 
             eth_type = int.from_bytes(packet_data[12:14], "big")
             ip_payload = packet_data[ETHERNET_HEADER_SIZE:]
+            # Ethernet destination MAC is the first 6 octets of the frame.
+            dst_mac: str | None = ":".join(f"{b:02x}" for b in packet_data[0:6])
             src_ip: str | None = None
             dst_ip: str | None = None
+            dscp: int | None = None
             udp_src_port: int | None = None
             udp_dst_port: int | None = None
             udp_payload = b""
@@ -165,6 +261,8 @@ def iter_udp_packets_manual(
                     continue
                 if ip_payload[9] != 17:
                     continue
+                # IPv4 ToS/DS byte is octet 1; DSCP is its top 6 bits.
+                dscp = (ip_payload[1] >> 2) & 0x3F
                 src_ip = socket.inet_ntoa(ip_payload[12:16])
                 dst_ip = socket.inet_ntoa(ip_payload[16:20])
                 udp_offset = ihl
@@ -181,6 +279,10 @@ def iter_udp_packets_manual(
                 )
                 udp_payload = ip_payload[udp_offset + 8 : udp_offset + udp_len]
             elif eth_type == 0x86DD and len(packet_data) >= 54:
+                # IPv6 Traffic Class spans the low nibble of octet 0 and the
+                # high nibble of octet 1; DSCP is the top 6 bits of that byte.
+                traffic_class = ((ip_payload[0] & 0x0F) << 4) | (ip_payload[1] >> 4)
+                dscp = (traffic_class >> 2) & 0x3F
                 src_ip = socket.inet_ntop(
                     socket.AF_INET6, packet_data[22:38]
                 )
@@ -212,11 +314,15 @@ def iter_udp_packets_manual(
 
             yield UdpPacket(
                 payload=udp_payload,
-                capture_time=sec + (usec / frac_divisor),
+                capture_time=CaptureTime(sec * 1_000_000_000 + usec * frac_to_ns)
+                if CAPTURE_TIME_EXACT_NS
+                else sec + (usec / frac_divisor),
                 src_ip=src_ip,
                 dst_ip=dst_ip,
                 src_port=udp_src_port,
                 dst_port=udp_dst_port,
+                dscp=dscp,
+                dst_mac=dst_mac,
             )
 
 

@@ -13,6 +13,13 @@
 # limitations under the License.
 
 import sys
+import warnings
+
+# Silence Authlib's deprecation warning about the authlib.jose module. The project still
+# uses authlib.jose (in IS10Utils and the auth mocks); migrating to joserfc is deferred.
+from authlib.deprecate import AuthlibDeprecationWarning
+warnings.filterwarnings("ignore", category=AuthlibDeprecationWarning)
+
 from nmostesting import NMOSTesting
 
 if __name__ == '__main__':

@@ -3060,6 +3060,8 @@ class BCP0050301Test(GenericTest):
         i = 0
         for leg in constraints:
             for k in leg.keys():
+                if not k.startswith("ext_privacy"):
+                    continue
                 if constraints[i][k] != constraints[0][k]:
                     return False, "{} {} : {} parameter constraints value of leg {} not matching leg 0".format(
                         identity, sender_receiver["id"], k, i)

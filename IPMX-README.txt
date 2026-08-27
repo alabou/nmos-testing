@@ -5,14 +5,14 @@ This folder contains the IPMX NMOS Testing package. Follow these instructions to
 
 - Uncompress the archive into the folder IPMX-Testing-13
 
-- Install the latest Python 3 executables on your system (Python 3.12 has been validated)
+- Install the latest Python 3.12 executables on your system (Python 3.12 has been validated)
 - Install the GIT executables on your system (Git 2.17.1 has been validated)
 - Create a Python virtual environment
-    cd IPMX-Testing-13
+    cd IPMX-Testing-18
     python3 -m venv .venv
     .venv\Scripts\activate.bat
 - Install the required Python dependencies
-    cd IPMX-Testing-13
+    cd IPMX-Testing-18
     python3 -m pip install -r requirements.txt
 - OPTIONAL (not used by IPMX tests) install sdpoker. For Windows, install Node.js and then run: npm install -g sdpoker
 - OPTIONAL (not used by IPMX tests) install testssl by following the instructions in the testssl\README.md file.
@@ -57,21 +57,39 @@ This folder contains the IPMX NMOS Testing package. Follow these instructions to
 
     notepad nmostesting\UserConfig.py
 
-    # same as IPMX_REGISTRY_ADDRESS as a string
-    CONFIG.QUERY_API_HOST = '10.208.10.55'     
+    # Example of setting ENABLE_HTTPS, any value from Config.py can be overridden using the same pattern.
+    CONFIG.ENABLE_HTTPS = False
 
-    # same as the registry query port defined in IPMX_REGISTRY_PORT
-    CONFIG.QUERY_API_PORT = 8870
+    CONFIG.ENABLE_DNS_SD = False
+    CONFIG.DNS_SD_MODE = 'unicast'
 
-    # IP address and port of the reference Sender to be used for IS-11 testing of the Receivers
-    CONFIG.IS11_REFERENCE_SENDER_CONNECTION_API_URL = "http://10.20.10.64:5050/x-nmos/connection/v1.1/"
-    CONFIG.IS11_REFERENCE_SENDER_NODE_API_URL = "http://10.20.10.64:5050/x-nmos/node/v1.3/"
+    # Read the registry host/port from the environment variables set by the
+    # IPMX-SETUP-XYZ scripts, falling back to these defaults if they are not set.
+    CONFIG.QUERY_API_HOST = os.environ.get('IPMX_REGISTRY_ADDRESS', '25.30.10.45')
+    CONFIG.QUERY_API_PORT = int(os.environ.get('IPMX_REGISTRY_PORT', 8870))
 
-    # IP address of the Network interface connected to the media network (for PCAP capture)
-    CONFIG.MULTICAST_INTERFACE = "10.20.10.61"
+    CONFIG.IS11_REFERENCE_SENDER_CONNECTION_API_URL = "http://25.30.10.163:5050/x-nmos/connection/v1.1/"
+    CONFIG.IS11_REFERENCE_SENDER_NODE_API_URL = "http://25.30.10.163:5050/x-nmos/node/v1.3/"
 
-    # Setup to a multicast address that is known not to be used by any DuT
-    CONFIG.MULTICAST_STREAM_TARGET=239.1.0.100
+    # The "any" value should work in most cases but in some scenarios the specific interface
+    # IP address must be specified in order to join on the proper network interface.
+    # CONFIG.MULTICAST_INTERFACE = "any"
+    CONFIG.MULTICAST_INTERFACE = "25.30.10.214"
+
+    # A multicast address that is known not to be used by any DuT
+    CONFIG.MULTICAST_STREAM_TARGET = '239.1.0.100'
+
+    # Make sure no one fail because accesses are slow
+    CONFIG.HTTP_TIMEOUT=30
+
+    # Reference Kramer source taking a long time to respond
+    CONFIG.STABLE_STATE_ATTEMPTS=10
+
+    # Manually check that the DuT produces an EDID with expected refresh/sample rate
+    CONFIG.IS11_SOURCE_EDID_VERIFICATION=False
+
+    # Geneva testing event required to have this set form 3 to 10
+    CONFIG.API_PROCESSING_TIMEOUT=10
 
 - Setup the PCAP capture script start_capture_pcap.bat
 
@@ -83,6 +101,10 @@ This folder contains the IPMX NMOS Testing package. Follow these instructions to
     !!! Note that you need to press a key when the message "Press any key to continue..." appears right after displaying "IPMX_VENDOR_PCAP_CAPTURE is ..."
 
     !!! Note that the script now gets the LOCAL interface as a parameter.
+
+    !!! Do not forget to have the VB440 subscrining to the Sender's streams if the VB440 capture mode is used. 
+
+- The following steps, a) un IPMX-SETUP-XYZ.bat, b) Run the IS-04 test suite on your Receiver, c) Run the IS-04 test suite on your Sender, and d) Activate your Sender and capture an SDP transport file and a PCAP, should be performed to make sure your environment is properly setup.
 
 - Run IPMX-SETUP-XYZ.bat
 
@@ -106,7 +128,7 @@ Check IPMX_VENDOR_XYZ for the resulting files.
 
 - In general the DuT must be configured and activated prior to each test. Both Senders and Receivers must be streaming. There are a few exceptions where the test may request the Senders and Receivers to be inactive. In those cases first run with them active and then deactivate them and rerun the test to get all the results.
 
-- PCAP analysis scripts require proper Wireshark configuration as they depend on tshark:
+- Legacy TP-10-1Sec13.*.py PCAP analysis scripts require proper Wireshark configuration as they depend on tshark:
 
     Active Protocols:
     - RTP: Enable rtp_udp
@@ -116,6 +138,8 @@ Check IPMX_VENDOR_XYZ for the resulting files.
 
     Additional Setup:
     - Install Lua dissector for IPMX RTCP Sender Reports
+
+    The new ipmx\streams scripts have no such dependencies.
 
 - IS-11 test results
 
