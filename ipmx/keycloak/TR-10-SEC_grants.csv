@@ -1,0 +1,33 @@
+#apis=channelmapping connection node streamcompatibility manufacturer,,,,,,,,
+subject_name,subject_type,application,resource_url,api,read,write,enabled,notes
+studio-a,g,TR-10-SEC,"device-a, device-b, device-c",*,true,true,true,Studio A devices
+,,,,,,,,
+local-admin,u,TR-10-SEC,*,*,true,true,true,admin access everything
+admin-SNX00001,u,TR-10-SEC,XYZ-SNX00001,*,true,true,true,limited admin
+admin-SNX00001,u,TR-10-SEC,XYZ-SNX00002,*,true,true,true,limited admin
+,,,,,,,,
+admin-SNX00002,u,TR-10-SEC,*,*,true,true,true,admin access everything
+,,,,,,,,
+controller-SNX00001,c,TR-10-SEC,*,*,true,true,true,Controller on Node SNX00001 (auth_code OAuth2 client)
+controller-SNX00002,c,TR-10-SEC,*,*,true,true,true,Controller on Node SNX00002 (auth_code OAuth2 client)
+,,,,,,,,
+user1,c,TR-10-SEC,*,*,true,false,true,observer read-only
+user1,c,TR-10-SEC,*,connection,false,false,true,no connection access
+,,,,,,,,
+user2,u,TR-10-SEC,https://device-a:5050,*,true,true,true,device-a full access
+,,,,,,,,
+user3,u,TR-10-SEC,*,*,true,false,true,read all
+user3,u,TR-10-SEC,@studio-a,,true,true,true,+ write Studio A devices
+,,,,,,,,
+user4,u,TR-10-SEC,*,*,true,false,true,read all
+user4,u,TR-10-SEC,@studio-a,,true,true,true,+ write Studio A devices
+,,,,,,,,
+example-subject,u,TR-10-SEC,https://device.example.com:5050,*,true,false,false,Example device-specific read-only grant
+example-subject,u,TR-10-SEC,https://device.example.com:5050,register,true,false,false,Example device-specific read-only grant
+example-subject,u,TR-10-SEC,https://device.example.com:5050,query,true,false,false,Example device-specific read-only grant
+example-subject,c,TR-10-SEC,*,*,true,false,false,Example wildcard read-only grant
+example-subject,c,TR-10-SEC,*,register,true,false,false,Example wildcard read-only grant
+example-subject,c,TR-10-SEC,*,query,true,false,false,Example wildcard read-only grant
+,,,,,,,,
+Example.Company.Device.Client.ABC.SNX00000.example.com,c,TR-10-SEC,*,*,true,true,true,testing with full access
+Example.Company.Device.Client.ABC.SNX00001.example.com,c,TR-10-SEC,*,*,true,true,true,testing with full access

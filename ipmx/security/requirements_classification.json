@@ -1,0 +1,754 @@
+{
+  "SEC-10.1-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-10.1-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-10.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-10.2-2": {
+    "bucket": "A",
+    "reason": "api_proto=https in the registry's DNS-SD TXT record \u2014 the validator does not exercise mDNS / DNS-SD; vendor attests that the registry advertisement is correct"
+  },
+  "SEC-10.2-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.1-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.1-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.1-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.2-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.2-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.3-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-11.3-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.1-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.10-1": {
+    "bucket": "A",
+    "reason": "Factory-default value for the Node-endpoints Server Trusted CA(s) \u2014 manufacturer attestation"
+  },
+  "SEC-12.10-2": {
+    "bucket": "A",
+    "reason": "Admin capacity guarantee (multi-CA / multi-CRL) \u2014 attestation"
+  },
+  "SEC-12.11-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.12-1": {
+    "bucket": "A",
+    "reason": "Factory-default value for the Control-endpoints Server Trusted CA(s) \u2014 manufacturer attestation"
+  },
+  "SEC-12.12-2": {
+    "bucket": "A",
+    "reason": "Admin capacity guarantee (multi-CA / multi-CRL) \u2014 attestation"
+  },
+  "SEC-12.13-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.14-1": {
+    "bucket": "A",
+    "reason": "Admin lifecycle / retrieval surface \u2014 verified via vendor attestation"
+  },
+  "SEC-12.14-2": {
+    "bucket": "D",
+    "reason": "CRL behaviour \u2014 reference-node does not implement CRL handling"
+  },
+  "SEC-12.14-3": {
+    "bucket": "A",
+    "reason": "Existing sessions continue with the configuration in effect at session start when admin reconfigures \u2014 requires runtime admin-config change + existing-session observation; admin/lifecycle territory"
+  },
+  "SEC-12.14-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.14-5": {
+    "bucket": "A",
+    "reason": "Private-key non-retrievability \u2014 attestation"
+  },
+  "SEC-12.14-6": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.14-7": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.14-8": {
+    "bucket": "A",
+    "reason": "Operator-side transfer-channel security \u2014 attestation"
+  },
+  "SEC-12.14-9": {
+    "bucket": "A",
+    "reason": "Operator-side password-transfer security \u2014 attestation"
+  },
+  "SEC-12.15-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.15-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.3-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.3-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.4-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.5-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.5-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.5-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.5-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.6-1": {
+    "bucket": "A",
+    "reason": "Factory-default value for the TLS Server Certificate (\"Vendor certificates or None\") \u2014 manufacturer attestation"
+  },
+  "SEC-12.7-1": {
+    "bucket": "A",
+    "reason": "Admin capacity guarantee (multi-CA / multi-CRL) \u2014 attestation"
+  },
+  "SEC-12.8-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-12.9-1": {
+    "bucket": "A",
+    "reason": "Factory-default value for the TLS Client Certificate \u2014 manufacturer attestation"
+  },
+  "SEC-13.1-1": {
+    "bucket": "C",
+    "reason": "Generic 'implementation supporting OAuth 2.0 shall comply with IS-10 + BCP-003-02' \u2014 meta-spec"
+  },
+  "SEC-14.1-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.1-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.1-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.2-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.2-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.1-1": {
+    "bucket": "A",
+    "reason": "Node estimation within 30 min of true NTP/PTP \u2014 requires controlled DUT clock skew; partial wire via expired-token test"
+  },
+  "SEC-14.3.1-2": {
+    "bucket": "A",
+    "reason": "Token-validation clock alignment \u2014 same as above"
+  },
+  "SEC-14.3.1-3": {
+    "bucket": "A",
+    "reason": "Key-fetch clock alignment \u2014 same as above"
+  },
+  "SEC-14.3.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-10": {
+    "bucket": "A",
+    "reason": "Multi-AS deployment consistency \u2014 same as 14.3.2-9; vendor / deployment attestation"
+  },
+  "SEC-14.3.2-11": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-12": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-13": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-4": {
+    "bucket": "A",
+    "reason": "36h hard JWKS invalidation window \u2014 vendor attestation. Compressed-clock fixture was sketched (fake AS Cache-Control: max-age=0 + clock-source mock) but not wired; attest via manufacturer sign-off citing nmos/oauth2/tests/test_jwks_cache.py"
+  },
+  "SEC-14.3.2-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2-6": {
+    "bucket": "B",
+    "reason": "Exponential backoff 1\u201364s \u2014 multi-failure observation; verified by nmos/oauth2/tests/test_jwks_cache.py"
+  },
+  "SEC-14.3.2-7": {
+    "bucket": "A",
+    "reason": "Log event on invalidation \u2014 requires DUT log-stream observation. Vendor attestation."
+  },
+  "SEC-14.3.2-8": {
+    "bucket": "A",
+    "reason": "DNS-SD `_nmos-auth._tcp` discovery of the AS URL \u2014 the validator does not exercise mDNS / DNS-SD. The spec allows the configured-URL alternative; vendor attests the DNS-SD branch works when the AS is discovered that way"
+  },
+  "SEC-14.3.2-9": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2.1-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2.1-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2.1-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2.1-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.2.1-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.1-1": {
+    "bucket": "C",
+    "reason": "Token lifetime [1h, 24h] applies to token issuance \u2014 the spec's \u00a714.3.3.4 validation pseudocode only checks exp > now(); enforcing the upper/lower bound is the AS's responsibility, not the Node's"
+  },
+  "SEC-14.3.3.1-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.2-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.2-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.2-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.2-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-1": {
+    "bucket": "C",
+    "reason": "Requirement on Controller behaviour, not the Node under test \u2014 meta"
+  },
+  "SEC-14.3.3.3-10": {
+    "bucket": "C",
+    "reason": "Duplicated x-nmos-* shall be identical \u2014 applies to token issuance. The \u00a714.3.3.4 validation pseudocode reads ext OR top-level (never both), so the Node cannot enforce this rule via the spec's algorithm. AS-side concern."
+  },
+  "SEC-14.3.3.3-2": {
+    "bucket": "C",
+    "reason": "Requirement on Controller behaviour, not the Node under test \u2014 meta"
+  },
+  "SEC-14.3.3.3-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-6": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-7": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-8": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.3-9": {
+    "bucket": "C",
+    "reason": "Token issuer should place x-nmos-* in ext OR top-level \u2014 applies to the AS / token issuer; the Node accepts both forms (demonstrated by SEC-14.3.3.3-8)"
+  },
+  "SEC-14.3.3.4-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-10": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-11": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-12": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-13": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-14": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-15": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-16": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-17": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-18": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-19": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-20": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-21": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-22": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-23": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-24": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-25": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-26": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-27": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-28": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-29": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-30": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-31": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-32": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-33": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-34": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-35": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-36": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-37": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-38": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-39": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-40": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-41": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-42": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-43": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-44": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-45": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-46": {
+    "bucket": "A",
+    "reason": "Audit status counters \u2014 vendor attestation; compare device's post-run counter values against the predicted deltas in this manifest"
+  },
+  "SEC-14.3.3.4-47": {
+    "bucket": "A",
+    "reason": "64-bit monotonic audit counters \u2014 vendor attestation"
+  },
+  "SEC-14.3.3.4-48": {
+    "bucket": "A",
+    "reason": "Persisted-counter reset requires admin action \u2014 attestation"
+  },
+  "SEC-14.3.3.4-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-6": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-7": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-8": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.4-9": {
+    "bucket": "C",
+    "reason": "Recommended authorization scoping to serial number \u2014 informative best practice for the AS, not directly testable on the Node"
+  },
+  "SEC-14.3.3.5-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.5-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.5-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.5-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.5-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.5-6": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.6-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.6-10": {
+    "bucket": "C",
+    "reason": "Requirement on Authorization-Server or OAuth client side, not Node \u2014 meta"
+  },
+  "SEC-14.3.3.6-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.6-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.6-4": {
+    "bucket": "A",
+    "reason": "Wildcards not matched for binding \u2014 vendor attestation. Wire-testing requires minting a wildcard-SAN client cert (e.g. CN=*.example.com) chained to the trust anchor. Operators understandably prefer not to mint wildcard certs they would not use in production, so this SHALL falls to the manifest: vendor confirms Node refuses to match a token client_id against a wildcard SAN entry"
+  },
+  "SEC-14.3.3.6-5": {
+    "bucket": "A",
+    "reason": "Wildcard SAN treated as non-matching \u2014 vendor attestation; same wire-test constraint as SEC-14.3.3.6-4 (wildcard-SAN cert needed). The two SHALLs restate the same rule"
+  },
+  "SEC-14.3.3.6-6": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.6-7": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-14.3.3.6-8": {
+    "bucket": "C",
+    "reason": "Client provisioning rule: OAuth 2.0 clients shall be provisioned such that client_id matches the cert CN/SAN \u2014 applies to the AS at client-registration time, not the Node"
+  },
+  "SEC-14.3.3.6-9": {
+    "bucket": "C",
+    "reason": "Wildcards shall not be used in OAuth client provisioning \u2014 applies to the AS / client-registration tooling, not the Node"
+  },
+  "SEC-14.3.3.7-1": {
+    "bucket": "C",
+    "reason": "Feature-gated SHOULD \u2014 exercised only when --supports guest-ws is declared. Default behaviour: OPTIONAL-ABSENT (device does not claim the optional feature). When claimed and the device fails, this becomes a real REF-NODE GAP."
+  },
+  "SEC-14.3.3.7-2": {
+    "bucket": "C",
+    "reason": "Feature-gated SHOULD \u2014 same as SEC-14.3.3.7-1; OPTIONAL-ABSENT unless --supports guest-ws is declared."
+  },
+  "SEC-14.3.3.7-3": {
+    "bucket": "A",
+    "reason": "Classification statement (not a separate Node behaviour): 'Subscribing to notification messages shall be considered a read-only operation.' The underlying access-control logic is already covered by our read-only-token probes; the spec is just defining how to bucket the WS subscribe op for the purposes of the \u00a714.3.3.4 read/write evaluation. Vendor attests that its WS subscribe handler is classified as read-only in the token-validation pipeline."
+  },
+  "SEC-14.3.3.7-4": {
+    "bucket": "C",
+    "reason": "Informative: connection-state side-effects not considered Node side-effects"
+  },
+  "SEC-14.3.4-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-4-1": {
+    "bucket": "C",
+    "reason": "RFC 2119 conformance vocabulary (\u00a74) \u2014 meta-spec, not a device behaviour"
+  },
+  "SEC-4-2": {
+    "bucket": "C",
+    "reason": "RFC 2119 conformance vocabulary (\u00a74) \u2014 meta-spec, not a device behaviour"
+  },
+  "SEC-4-3": {
+    "bucket": "C",
+    "reason": "RFC 2119 conformance vocabulary (\u00a74) \u2014 meta-spec, not a device behaviour"
+  },
+  "SEC-4-4": {
+    "bucket": "C",
+    "reason": "RFC 2119 conformance vocabulary (\u00a74) \u2014 meta-spec, not a device behaviour"
+  },
+  "SEC-4-5": {
+    "bucket": "C",
+    "reason": "RFC 2119 conformance vocabulary (\u00a74) \u2014 meta-spec, not a device behaviour"
+  },
+  "SEC-4-6": {
+    "bucket": "C",
+    "reason": "RFC 2119 conformance vocabulary (\u00a74) \u2014 meta-spec, not a device behaviour"
+  },
+  "SEC-7-1": {
+    "bucket": "C",
+    "reason": "Spec-precedence rule \u2014 meta, not a device behaviour"
+  },
+  "SEC-7-2": {
+    "bucket": "A",
+    "reason": "Factory-default attestation \u2014 verified via manufacturer sign-off"
+  },
+  "SEC-7.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-7.2-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-7.2-3": {
+    "bucket": "A",
+    "reason": "api_auth=false in the registry's DNS-SD TXT record \u2014 the validator does not exercise mDNS / DNS-SD; vendor attests that the registry advertisement is correct"
+  },
+  "SEC-7.3-1": {
+    "bucket": "A",
+    "reason": "Admin configurability \u2014 verified via vendor attestation"
+  },
+  "SEC-8-1": {
+    "bucket": "C",
+    "reason": "Generic compliance statement ('IPMX device shall comply with this TR') \u2014 meta-spec"
+  },
+  "SEC-8-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-4": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-5": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-6": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-7": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-8": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-8-9": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9.1-1": {
+    "bucket": "C",
+    "reason": "Self-disqualifying: device 'shall not claim compliance' under NAP=0 \u2014 not a testable behaviour against a certified DUT"
+  },
+  "SEC-9.1-2": {
+    "bucket": "C",
+    "reason": "Same \u2014 describes NAP=0 (non-compliant) read access"
+  },
+  "SEC-9.1-3": {
+    "bucket": "C",
+    "reason": "Same \u2014 describes NAP=0 (non-compliant) write access"
+  },
+  "SEC-9.2-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9.2-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9.2-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9.3-1": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9.3-2": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  },
+  "SEC-9.3-3": {
+    "bucket": "W",
+    "reason": "Wire-tested by the validator's check function for this req_id"
+  }
+}

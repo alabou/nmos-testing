@@ -1,0 +1,66 @@
+# IPMX security validator — Stage 2 scenario file.
+#
+# Each row describes one (subject, DUT-path, method, expected-status) test
+# case. The runner fetches a token for `subject_name` from the Keycloak
+# realm (which must be pre-provisioned from keycloak/TR-10-SEC_grants.csv)
+# and asserts the DUT's HTTP response matches `expected_status`.
+#
+# Columns:
+#   test_id           — maps to a TR-10-SEC §14.3.3.4 requirement
+#   subject_name      — must match a subject_name in TR-10-SEC_grants.csv
+#   subject_type      — u (user-password) / c (client-credentials)
+#                       / a (authorization_code) / g (group)
+#   dut_path          — HTTP path on the DUT, no host
+#   http_method       — GET / POST / PATCH / PUT / DELETE
+#   expected_status   — numeric HTTP status the DUT must return
+#   expected_reason   — optional diagnostic tag
+#   notes             — free text
+#   via_client        — only for type='a': the OAuth client_id the
+#                       user logs into (typically a controller-* client)
+#   via_redirect_uri  — only for type='a': the redirect URI registered
+#                       against the via_client in Keycloak
+#
+# Subject-type → grant-type rules:
+#   `u` — user-password grant via nmos-test-client (always driveable)
+#   `c` — client_credentials grant (driveable for non-controller clients)
+#   `a` — authorization_code grant, programmatically driven against
+#         Keycloak's login form (no browser). The user in subject_name
+#         logs in via the OAuth client in via_client.
+#   `g` — group (not directly fetchable)
+#
+test_id,subject_name,subject_type,dut_path,http_method,expected_status,expected_reason,notes,via_client,via_redirect_uri
+# --- Positive: full-access user reads the Node resource (user-password) ---
+SEC-14.3.3.4-localadmin-read,local-admin,u,/x-nmos/node/v1.3/self,GET,200,,Full-access admin user reads /self,,
+SEC-14.3.3.4-adminxyz1-read,admin-SNX00001,u,/x-nmos/node/v1.3/self,GET,200,,SNX00001-scoped admin reads /self,,
+# --- Positive: client_credentials client reads the Node resource ---
+SEC-14.3.3.4-fullaccess-client,Example.Company.Device.Client.ABC.SNX00000.example.com,c,/x-nmos/node/v1.3/self,GET,200,,Full-access client (client_credentials) reads /self,,
+# --- Read-only client should still read ---
+SEC-14.3.3.4-user1-read,user1,c,/x-nmos/node/v1.3/self,GET,200,,Read-only client reads /self,,
+# --- Read across resource kinds (each kind exercises the scope claim) ---
+SEC-14.3.3.4-admin-read-sources,local-admin,u,/x-nmos/node/v1.3/sources,GET,200,,Admin reads /sources,,
+SEC-14.3.3.4-admin-read-flows,local-admin,u,/x-nmos/node/v1.3/flows,GET,200,,Admin reads /flows,,
+SEC-14.3.3.4-admin-read-senders,local-admin,u,/x-nmos/node/v1.3/senders,GET,200,,Admin reads /senders,,
+SEC-14.3.3.4-admin-read-receivers,local-admin,u,/x-nmos/node/v1.3/receivers,GET,200,,Admin reads /receivers,,
+# --- Connection API read via Connection scope ---
+SEC-14.3.3.4-admin-conn-senders,local-admin,u,/x-nmos/connection/v1.1/single/senders/,GET,200,,Admin reads connection /single/senders,,
+SEC-14.3.3.4-admin-conn-receivers,local-admin,u,/x-nmos/connection/v1.1/single/receivers/,GET,200,,Admin reads connection /single/receivers,,
+#
+# --- authorization_code mirror: every cc/u positive test, driven
+# --- via Keycloak's login form (programmatic — no browser). The user
+# --- in subject_name logs into the via_client OAuth client; the
+# --- resulting token carries client_id=via_client, sub=user-id.
+SEC-14.3.3.4-authcode-localadmin-read,local-admin,a,/x-nmos/node/v1.3/self,GET,200,,Auth_code: local-admin via controller-SNX00001 reads /self,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-adminxyz1-read,admin-SNX00001,a,/x-nmos/node/v1.3/self,GET,200,,Auth_code: admin-SNX00001 via controller-SNX00001 reads /self,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-admin-read-sources,local-admin,a,/x-nmos/node/v1.3/sources,GET,200,,Auth_code: admin reads /sources,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-admin-read-flows,local-admin,a,/x-nmos/node/v1.3/flows,GET,200,,Auth_code: admin reads /flows,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-admin-read-senders,local-admin,a,/x-nmos/node/v1.3/senders,GET,200,,Auth_code: admin reads /senders,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-admin-read-receivers,local-admin,a,/x-nmos/node/v1.3/receivers,GET,200,,Auth_code: admin reads /receivers,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-admin-conn-senders,local-admin,a,/x-nmos/connection/v1.1/single/senders/,GET,200,,Auth_code: admin reads connection /single/senders,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+SEC-14.3.3.4-authcode-admin-conn-receivers,local-admin,a,/x-nmos/connection/v1.1/single/receivers/,GET,200,,Auth_code: admin reads connection /single/receivers,controller-SNX00001,https://xyz-snx00001:5050/controller/oauth2/callback
+#
+# Future rows (require new subjects in TR-10-SEC_grants.csv):
+#   - user-empty-aud (aud=[]) → 401 token_invalid
+#   - user-aud-mismatch (aud=["other-host"]) → 403 audience
+#   - user-readonly (read=["*"], write=[""]) → PATCH 403
+#   - user-deny-write (x-nmos-connection.write=[""]) → POST connection 403
+#   - user-scope-missing (scope="" or omitted "node") → 401 token_invalid

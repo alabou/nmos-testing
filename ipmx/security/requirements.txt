@@ -1,0 +1,10 @@
+# IPMX security certification test suite — runtime dependencies.
+#
+# Inherits the keycloak/ deps (requests + PyJWT[crypto]) via the -r
+# directive. The security suite imports from keycloak/ (provisioning +
+# token fetch) so anything keycloak/ needs is also a transitive need.
+-r ../keycloak/requirements.txt
+
+# Additional deps specific to the validator.
+aiohttp                # Stage 1 fake AS HTTP server + outbound probes
+cryptography           # X.509 cert/key handling for the fake AS + TLS tests
