@@ -31,14 +31,14 @@ from MatroxSdpCheck import (
 )
 from ipmx_pcm import (
     PcmStreamReport,
+    acceptable_nominal_packet_times_us,
+    aes67_integer_ms_alias_target_us,
     analyze_pcm_packets,
     bit_depth_from_encoding,
     bytes_per_sample,
+    compute_audio_sender_report_interval_packets,
     encoding_name_for_depth,
     iter_selected_rtp_packets,
-)
-from ipmx_am824 import (
-    compute_audio_sender_report_interval_packets,
     legal_ptimes_us,
     resolve_nominal_packet_time_us,
     resolve_packet_samples_per_packet,
@@ -47,11 +47,16 @@ from ipmx_validate_common import (
     Requirement,
     RequirementResult,
     SenderReportInfo,
+    SR_COUNTER_MODULUS,
     configure_utf8_output,
     check_dscp_rtp_marking,
     check_dscp_sr_matches_rtp,
     check_multicast_mac_mapping,
     check_sr_mac_mapping,
+    check_sr_rtcp_port,
+    check_udp_port_even,
+    check_udp_port_above_5000,
+    check_sdp_port_vs_stream,
     check_sdp_ipmx_fmtp,
     check_sdp_multicast_source_filter,
     check_sdp_session_consistency,
@@ -566,6 +571,20 @@ def check_sdp_ptime_legal(ctx: PcmValidationContext) -> tuple[bool, str] | tuple
             f"SDP ptime={format_ptime_us(ctx.sdp_media.p_time_us)} is not legal for "
             f"{ctx.sdp_media.sample_rate} Hz"
         )
+    # AES67-2018 §8.1 lets a sender confine a non-integral-millisecond ptime to
+    # whole milliseconds when its connection-management partner would otherwise
+    # misread it. That is an accepted description here, not a failure — but say
+    # so in the verdict, so a reader can see an allowance was applied rather
+    # than reading it as an unqualified match.
+    aliased = aes67_integer_ms_alias_target_us(
+        ctx.sdp_media.sample_rate, ctx.sdp_media.p_time_us
+    )
+    if aliased is not None:
+        return True, (
+            f"SDP ptime={format_ptime_us(ctx.sdp_media.p_time_us)} accepted for "
+            f"{ctx.sdp_media.sample_rate} Hz as the AES67 §8.1 integer-millisecond form "
+            f"of ptime={format_ptime_us(aliased)}"
+        )
     return True, f"SDP ptime={format_ptime_us(ctx.sdp_media.p_time_us)} is legal for {ctx.sdp_media.sample_rate} Hz"
 
 
@@ -573,11 +592,11 @@ def check_sdp_payload_match(ctx: PcmValidationContext) -> tuple[bool, str] | tup
     if ctx.sdp_media is None:
         return untestable("No SDP provided")
     if len(ctx.pcm_report.payload_type_set) != 1:
-        return untestable("Observed RTP payload type is not constant")
+        return False, f"Observed RTP payload type is not constant: {sorted(ctx.pcm_report.payload_type_set)}"
     observed = next(iter(ctx.pcm_report.payload_type_set))
-    if ctx.sdp_media.payload_type != observed:
-        return False, f"SDP payload type {ctx.sdp_media.payload_type} != RTP payload type {observed}"
-    return True, f"SDP payload type {ctx.sdp_media.payload_type} matches RTP"
+    if ctx.sdp_media.format_code != observed:
+        return False, f"SDP payload type {ctx.sdp_media.format_code} != RTP payload type {observed}"
+    return True, f"SDP payload type {ctx.sdp_media.format_code} matches RTP"
 
 
 def check_sdp_channel_order(ctx: PcmValidationContext) -> tuple[bool, str] | tuple[bool, str, bool]:
@@ -807,14 +826,22 @@ def check_sr_counts(ctx: PcmValidationContext) -> tuple[bool, str]:
     # tied to pkt_offset * payload_size, so packet/octet mutual consistency is
     # still enforced (this identity holds for both counter conventions and for
     # mid-stream offsets, given the constant PCM payload size).
+    #
+    # Both counters are 32-bit fields that wrap (SR_COUNTER_MODULUS), and the
+    # octet counter wraps first, so every comparison is done modulo 2**32.
+    # Reducing pkt_offset is lossless here: any whole-modulus ambiguity in the
+    # anchor contributes k * 2**32 * payload_size to the octet expectation,
+    # which is itself a multiple of the modulus and therefore vanishes.
     first_report, first_idx = associations[0]
-    pkt_offset = first_report.packet_count - (first_idx + 1)
+    pkt_offset = (first_report.packet_count - (first_idx + 1)) % SR_COUNTER_MODULUS
 
     payload_size = len(ctx.rtp_packets[0].payload) if ctx.rtp_packets else 0
 
     for report, pkt_idx in associations:
-        expected_pkt_count = pkt_idx + 1 + pkt_offset
-        expected_octet_count = octets_by_packet[pkt_idx] + pkt_offset * payload_size
+        expected_pkt_count = (pkt_idx + 1 + pkt_offset) % SR_COUNTER_MODULUS
+        expected_octet_count = (
+            octets_by_packet[pkt_idx] + pkt_offset * payload_size
+        ) % SR_COUNTER_MODULUS
         if report.packet_count != expected_pkt_count:
             return False, (
                 f"SR for packet index {pkt_idx} reports packet_count={report.packet_count}, "
@@ -825,12 +852,15 @@ def check_sr_counts(ctx: PcmValidationContext) -> tuple[bool, str]:
                 f"SR for packet index {pkt_idx} reports octet_count={report.octet_count}, "
                 f"expected {expected_octet_count}"
             )
-    if pkt_offset == 0:
+    # Re-center the modular offset so the 0-based convention reads as -1 rather
+    # than as 2**32 - 1.
+    signed_offset = pkt_offset - SR_COUNTER_MODULUS if pkt_offset > SR_COUNTER_MODULUS // 2 else pkt_offset
+    if signed_offset == 0:
         basis = "1-based, capture from stream start"
-    elif pkt_offset == -1:
+    elif signed_offset == -1:
         basis = "0-based, capture from stream start"
     else:
-        basis = f"consistent counter offset {pkt_offset:+d} (capture started mid-stream)"
+        basis = f"consistent counter offset {signed_offset:+d} (capture started mid-stream)"
     return True, f"SR packet_count and octet_count match cumulative RTP payload counters ({basis})"
 
 
@@ -907,16 +937,37 @@ def check_mib_channels(ctx: PcmValidationContext) -> tuple[bool, str] | tuple[bo
 def check_mib_packet_time(ctx: PcmValidationContext) -> tuple[bool, str] | tuple[bool, str, bool]:
     if ctx.resolved_sample_rate is None or ctx.resolved_ptime_us is None:
         return untestable("Sample rate or ptime unresolved")
-    expected = resolve_nominal_packet_time_us(ctx.resolved_sample_rate, ctx.resolved_ptime_us)
-    if expected is None:
+    # Normally the single nominal value. For a ptime accepted under the AES67
+    # §8.1 integer-millisecond allowance the signaled value is accepted here
+    # too: a sender that rounds its SDP description to whole milliseconds may
+    # carry that same rounding into the packet time its MIB reports, and that
+    # must not be scored as a failure. All blocks must still agree with each
+    # other — the allowance widens what is acceptable, not how consistent the
+    # stream has to be.
+    accepted = acceptable_nominal_packet_times_us(
+        ctx.resolved_sample_rate, ctx.resolved_ptime_us
+    )
+    if accepted is None:
         return untestable("Resolved ptime does not map to a nominal packet-time bucket")
     blocks = _audio_mib_blocks(ctx)
     if not blocks:
         return False, "No PCM audio MIB present"
     values = {int(b["packet_time"]) for b in blocks}
-    if values != {expected}:
-        return False, f"MIB packet_time values {sorted(values)} do not match expected {expected}"
-    return True, f"All MIB packet_time values match nominal {expected} us"
+    if len(values) != 1:
+        return False, f"MIB packet_time is not constant across blocks: {sorted(values)}"
+    if not values <= accepted:
+        return False, (
+            f"MIB packet_time values {sorted(values)} do not match expected "
+            f"{sorted(accepted)}"
+        )
+    nominal = resolve_nominal_packet_time_us(ctx.resolved_sample_rate, ctx.resolved_ptime_us)
+    observed = next(iter(values))
+    if observed != nominal:
+        return True, (
+            f"All MIB packet_time values are {observed} us — accepted as the AES67 §8.1 "
+            f"integer-millisecond form of the {nominal} us nominal packet time"
+        )
+    return True, f"All MIB packet_time values match nominal {nominal} us"
 
 
 def check_mib_measured_sample_rate(ctx: PcmValidationContext) -> tuple[bool, str] | tuple[bool, str, bool]:
@@ -1065,13 +1116,23 @@ def check_cli_ptime(ctx: PcmValidationContext) -> tuple[bool, str] | tuple[bool,
     if ctx.sdp_media is not None:
         validated = True
     if ctx.resolved_sample_rate is not None:
-        expected_nominal = resolve_nominal_packet_time_us(ctx.resolved_sample_rate, ctx.cli_ptime_us)
+        # Same AES67 §8.1 integer-millisecond allowance as check_mib_packet_time:
+        # accept the signaled value alongside the nominal one when the resolved
+        # ptime is an alias, so the allowance holds end to end.
+        accepted_nominal = acceptable_nominal_packet_times_us(
+            ctx.resolved_sample_rate, ctx.cli_ptime_us
+        )
         blocks = _audio_mib_blocks(ctx)
-        if expected_nominal is not None and blocks:
+        if accepted_nominal is not None and blocks:
             mib_values = {int(b["packet_time"]) for b in blocks}
-            if mib_values != {expected_nominal}:
+            if len(mib_values) != 1:
                 return False, (
-                    f"CLI ptime={format_ptime_us(ctx.cli_ptime_us)} maps to nominal {expected_nominal} us, "
+                    f"MIB packet_time is not constant across blocks: {sorted(mib_values)}"
+                )
+            if not mib_values <= accepted_nominal:
+                return False, (
+                    f"CLI ptime={format_ptime_us(ctx.cli_ptime_us)} maps to nominal "
+                    f"{sorted(accepted_nominal)} us, "
                     f"but MIB packet_time values are {sorted(mib_values)}"
                 )
             validated = True
@@ -1269,6 +1330,15 @@ def build_requirements() -> list[Requirement]:
     add("SDP-DST-IP", "shall",
         "SDP connection address SHALL match the detected destination IP.",
         check_sdp_dst_ip_vs_stream_pcm)
+    add("SDP-PORT", "shall",
+        "SDP media port SHALL match the detected RTP destination port (TR-10-1 §10).",
+        lambda c: check_sdp_port_vs_stream(c.sdp_media, c.stream_info))
+    add("TR-10-3-7a", "shall",
+        "UDP destination port SHALL be even and > 1024 (TR-10-3 §7).",
+        lambda c: check_udp_port_even(c.stream_info.dst_port if c.stream_info else None, "TR-10-3 §7"))
+    add("TR-10-3-7b", "should",
+        "UDP destination port SHOULD be > 5000 (TR-10-3 §7).",
+        lambda c: check_udp_port_above_5000(c.stream_info.dst_port if c.stream_info else None, "TR-10-3 §7"))
     add("TR-10-9-16a", "shall",
         "IPMX Senders conforming to TR-10-3 (PCM audio) shall mark RTP packets "
         "with the TR-10-9 §16 default DSCP AF41(34).",
@@ -1287,7 +1357,7 @@ def build_requirements() -> list[Requirement]:
         lambda c: check_sr_mac_mapping(c.sender_reports))
     add("TR-10-1-8.7-SR-PRESENT", "shall", "RTCP Sender Reports shall be present", check_sr_present)
     add("TR-10-1-8.7-SR-IP", "shall", "RTCP Sender Reports shall use the same destination IP as RTP", check_sr_ip)
-    add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports shall use the expected RTCP destination port", check_sr_port)
+    add("TR-10-1-8.7-SR-PORT", "shall", "RTCP Sender Reports shall use the expected RTCP destination port (TR-10-1 §8.7)", lambda c: check_sr_rtcp_port(c.pcap, c.stream_info))
     add("TR-10-1-8.7-SSRC", "shall", "RTCP Sender Report SSRC shall match RTP SSRC", check_sr_ssrc)
     add("TR-10-1-8.7-IPMXINFO", "shall", "RTCP Sender Reports shall include the IPMX Info Block", check_sr_ipmx_info)
     add("TR-10-1-8.7-IPMXTAG", "shall", "RTCP Sender Report IPMX tag shall be 0x5831", check_sr_ipmx_tag)
@@ -1491,6 +1561,11 @@ def main() -> int:
     if args.pcap is None:
         parser.error("the pcap argument is required unless --list-requirements is used")
 
+    if not args.pcap.exists():
+        raise SystemExit(f"{args.pcap} does not exist")
+    if getattr(args, "sdp", None) is not None and not args.sdp.exists():
+        raise SystemExit(f"SDP file {args.sdp} does not exist")
+
     if args.cfg:
         from ipmx_validate_common import (
             apply_audio_cfg,
@@ -1500,6 +1575,13 @@ def main() -> int:
         apply_audio_cfg(args, parse_cfg_file(resolve_cfg_path(args.cfg)), parse_ptime_arg)
 
     ctx = build_context(args)
+
+    if ctx.stream_info is not None:
+        si = ctx.stream_info
+        print(f"Detected RTP stream: dst={si.dst_ip}:{si.dst_port} "
+              f"SSRC=0x{si.ssrc:08X} ({si.ssrc}) RTCP port={si.rtcp_port}")
+    else:
+        print("WARNING: Could not auto-detect RTP stream parameters")
 
     if ctx.encrypted:
         print("[INFO] Encryption detected — PCM payload content is not accessible.")

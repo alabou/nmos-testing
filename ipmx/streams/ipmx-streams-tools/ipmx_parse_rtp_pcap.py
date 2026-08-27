@@ -234,6 +234,8 @@ class JXSVStreamState:
     last_f_counter: int | None = None
     last_timestamp: int | None = None
     seq_analysis: RtpSequenceAnalysis = field(default_factory=RtpSequenceAnalysis)
+    payload_type_set: set[int] = field(default_factory=set)
+    ssrc_set: set[int] = field(default_factory=set)
     issues: list[str] = field(default_factory=list)
 
 
@@ -348,6 +350,8 @@ def process_jxsv_stream(
         return summary
 
     for pkt in iter_rtp_packets_stream(pcap_path, port, stream_info=stream_info):
+        stream.payload_type_set.add(pkt.payload_type)
+        stream.ssrc_set.add(pkt.ssrc)
         if not pkt.payload or len(pkt.payload) < JXSV_PAYLOAD_HEADER_SIZE:
             continue
         if payload_type_filter is not None and pkt.payload_type != payload_type_filter:
@@ -637,6 +641,8 @@ class RawStreamState:
     last_timestamp: int | None = None
     last_ext_seq32: int | None = None
     seq_analysis: RtpSequenceAnalysis = field(default_factory=RtpSequenceAnalysis)
+    payload_type_set: set[int] = field(default_factory=set)
+    ssrc_set: set[int] = field(default_factory=set)
     issues: list[str] = field(default_factory=list)
 
 
@@ -747,6 +753,8 @@ def process_raw_stream(
         return summary
 
     for pkt in iter_rtp_packets_stream(pcap_path, port, stream_info=stream_info):
+        stream.payload_type_set.add(pkt.payload_type)
+        stream.ssrc_set.add(pkt.ssrc)
         if not pkt.payload or len(pkt.payload) < RAW_MIN_PAYLOAD:
             continue
         if payload_type_filter is not None and pkt.payload_type != payload_type_filter:

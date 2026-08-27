@@ -12,8 +12,8 @@ from fractions import Fraction
 # Add project root to path
 sys.path.insert(0, '.')
 
-from nmostesting.suites.FlowToCapabilities import FlowToCapabilitiesConverter, convert_flow_to_capabilities
-from nmostesting.suites.MatroxCCF import (
+from nmostesting.FlowToCapabilities import FlowToCapabilitiesConverter, convert_flow_to_capabilities
+from nmostesting.MatroxCCF import (
     FormatVideo, FormatAudio, FormatData, FormatMux,
     CapFormatMediaType, CapFormatGrainRate, CapFormatFrameWidth, CapFormatFrameHeight,
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatTransferCharacteristic,
@@ -77,10 +77,7 @@ class TestFlowToCapabilities(unittest.TestCase):
                     "height": 1080,
                     "bit_depth": 10
                 }
-            ],
-            "urn:x-matrox:layer": 0,
-            "hkep": True,
-            "privacy": False
+            ]
         }
         
         source = {
@@ -104,13 +101,16 @@ class TestFlowToCapabilities(unittest.TestCase):
             }
         ]
         
-        caps = self.converter.convert(flow, source, node_clocks)
+        sender = {"hkep": True, "privacy": False}
+        caps = self.converter.convert(flow, source, sender, node_clocks)
         
         # Verify capabilities
         self.assertEqual(len(caps.capsets), 1)
         capset = caps.capsets[0]
-        self.assertEqual(capset.format, FormatVideo)
-        self.assertEqual(capset.layer, 0)
+        # A standalone Flow is a trunk CapSet: only mux sub-flows, which carry
+        # urn:x-matrox:layer, are tagged with a format.
+        self.assertIsNone(capset.format)
+        self.assertIsNone(capset.layer)
         
         # Check specific capabilities
         self.assertEqual(capset.caps[CapFormatMediaType].value.enumerated, {"video/raw"})
@@ -121,8 +121,10 @@ class TestFlowToCapabilities(unittest.TestCase):
         self.assertEqual(capset.caps[CapFormatColorSampling].value.enumerated, {"YCbCr-4:2:2"})
         self.assertEqual(capset.caps[CapFormatComponentDepth].value.enumerated, {10})
         self.assertEqual(capset.caps[CapFormatGrainRate].value.enumerated, {Fraction(25, 1)})
+        # hkep and privacy are reported only when true, matching SdpToCapabilities;
+        # a false value is omitted rather than stated.
         self.assertEqual(capset.caps[CapTransportHkep].value.enumerated, {True})
-        self.assertEqual(capset.caps[CapTransportPrivacy].value.enumerated, {False})
+        self.assertNotIn(CapTransportPrivacy, capset.caps)
         self.assertEqual(capset.caps[CapTransportSynchronousMedia].value.enumerated, {True})
         
         print(f"✓ ST 2110-20 Raw Video Test Passed - Generated {len(capset.caps)} capabilities")
@@ -173,10 +175,7 @@ class TestFlowToCapabilities(unittest.TestCase):
             "bit_rate": 25000000,  # 25 Mbps
             "constant_bit_rate": False,
             "profile": "high",
-            "level": "4.0",
-            "urn:x-matrox:layer": 0,
-            "hkep": False,
-            "privacy": True
+            "level": "4.0"
         }
         
         source = {
@@ -200,12 +199,15 @@ class TestFlowToCapabilities(unittest.TestCase):
             }
         ]
         
-        caps = self.converter.convert(flow, source, node_clocks)
+        sender = {"hkep": False, "privacy": True}
+        caps = self.converter.convert(flow, source, sender, node_clocks)
         
         # Verify capabilities
         self.assertEqual(len(caps.capsets), 1)
         capset = caps.capsets[0]
-        self.assertEqual(capset.format, FormatVideo)
+        # A standalone Flow is a trunk CapSet: only mux sub-flows, which carry
+        # urn:x-matrox:layer, are tagged with a format.
+        self.assertIsNone(capset.format)
         
         # Check coded video specific capabilities
         self.assertEqual(capset.caps[CapFormatMediaType].value.enumerated, {"video/H264"})
@@ -213,7 +215,7 @@ class TestFlowToCapabilities(unittest.TestCase):
         self.assertEqual(capset.caps[CapFormatConstantBitRate].value.enumerated, {False})
         self.assertEqual(capset.caps[CapFormatProfile].value.enumerated, {"high"})
         self.assertEqual(capset.caps[CapFormatLevel].value.enumerated, {"4.0"})
-        self.assertEqual(capset.caps[CapTransportHkep].value.enumerated, {False})
+        self.assertNotIn(CapTransportHkep, capset.caps)
         self.assertEqual(capset.caps[CapTransportPrivacy].value.enumerated, {True})
         
         print(f"✓ H.264 Coded Video Test Passed - Generated {len(capset.caps)} capabilities")
@@ -237,9 +239,7 @@ class TestFlowToCapabilities(unittest.TestCase):
                 "denominator": 1
             },
             "bit_depth": 24,
-            "urn:x-matrox:layer": 0,
-            "hkep": True,
-            "privacy": False
+            "urn:x-matrox:layer": 0
         }
         
         source = {
@@ -273,7 +273,8 @@ class TestFlowToCapabilities(unittest.TestCase):
             }
         ]
         
-        caps = self.converter.convert(flow, source, node_clocks)
+        sender = {"hkep": True, "privacy": False}
+        caps = self.converter.convert(flow, source, sender, node_clocks)
         
         # Verify capabilities
         self.assertEqual(len(caps.capsets), 1)
@@ -334,12 +335,15 @@ class TestFlowToCapabilities(unittest.TestCase):
             "synchronous_media": False
         }
         
-        caps = self.converter.convert(flow, source)
+        sender = {}
+        caps = self.converter.convert(flow, source, sender)
         
         # Verify capabilities
         self.assertEqual(len(caps.capsets), 1)
         capset = caps.capsets[0]
-        self.assertEqual(capset.format, FormatAudio)
+        # A standalone Flow is a trunk CapSet: only mux sub-flows, which carry
+        # urn:x-matrox:layer, are tagged with a format.
+        self.assertIsNone(capset.format)
         
         # Check coded audio specific capabilities
         self.assertEqual(capset.caps[CapFormatMediaType].value.enumerated, {"audio/mpeg4-generic"})
@@ -365,9 +369,7 @@ class TestFlowToCapabilities(unittest.TestCase):
             "device_id": "d5e3c3c0-ca4a-11eb-b8bc-0242ac130003",
             "parents": [],
             "media_type": "application/ST2110-40",
-            "urn:x-matrox:layer": 1,
-            "hkep": True,
-            "privacy": False
+            "urn:x-matrox:layer": 1
         }
         
         source = {
@@ -384,7 +386,8 @@ class TestFlowToCapabilities(unittest.TestCase):
             "synchronous_media": True
         }
         
-        caps = self.converter.convert(flow, source)
+        sender = {"hkep": True, "privacy": False}
+        caps = self.converter.convert(flow, source, sender)
         
         # Verify capabilities
         self.assertEqual(len(caps.capsets), 1)
@@ -414,9 +417,7 @@ class TestFlowToCapabilities(unittest.TestCase):
             "video_layers": 2,
             "audio_layers": 4,
             "data_layers": 1,
-            "urn:x-matrox:layer": 0,
-            "hkep": False,
-            "privacy": True
+            "urn:x-matrox:layer": 0
         }
         
         source = {
@@ -433,7 +434,8 @@ class TestFlowToCapabilities(unittest.TestCase):
             "synchronous_media": False
         }
         
-        caps = self.converter.convert(flow, source)
+        sender = {"hkep": False, "privacy": True}
+        caps = self.converter.convert(flow, source, sender)
         
         # Verify capabilities
         self.assertEqual(len(caps.capsets), 1)
@@ -448,6 +450,252 @@ class TestFlowToCapabilities(unittest.TestCase):
         
         print(f"✓ Mux Flow Test Passed - Generated {len(capset.caps)} capabilities")
         
+    def test_transport_caps_only_on_trunk_flows(self):
+        """Transport capabilities belong to the trunk, never to a mux sub-flow.
+
+        The same Flow, Source and Sender are converted twice: once standalone and
+        once carrying urn:x-matrox:layer. Only the standalone conversion may report
+        transport capabilities, and only the layered one is tagged with a format.
+        This is the invariant Go and nmos-reference share, and it is what makes a
+        fixture that sets a layer while expecting hkep/privacy self-contradictory.
+        """
+        print("\n=== Testing Transport Caps Are Trunk-Only ===")
+
+        def make_flow(layer):
+            flow = {
+                "id": "f7e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0",
+                "label": "Layered vs Trunk Video",
+                "format": "urn:x-nmos:format:video",
+                "source_id": "s7e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "device_id": "d7e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [],
+                "media_type": "video/raw",
+                "frame_width": 1920,
+                "frame_height": 1080,
+                "interlace_mode": "progressive",
+                "colorspace": "BT709",
+                "transfer_characteristic": "SDR",
+                "grain_rate": {"numerator": 50, "denominator": 1},
+                "components": [
+                    {"name": "Y", "width": 1920, "height": 1080, "bit_depth": 10},
+                    {"name": "Cb", "width": 960, "height": 1080, "bit_depth": 10},
+                    {"name": "Cr", "width": 960, "height": 1080, "bit_depth": 10}
+                ]
+            }
+            if layer is not None:
+                flow["urn:x-matrox:layer"] = layer
+            return flow
+
+        source = {
+            "id": "s7e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "version": "1625097600:0",
+            "label": "Layered Source",
+            "format": "urn:x-nmos:format:video",
+            "caps": {},
+            "tags": {},
+            "device_id": "d7e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "parents": [],
+            "clock_name": "clk0",
+            "synchronous_media": True
+        }
+        sender = {"hkep": True, "privacy": True}
+        node_clocks = [{"name": "clk0", "ref_type": "ptp"}]
+
+        TRANSPORT = (CapTransportHkep, CapTransportPrivacy,
+                     CapTransportSynchronousMedia, CapTransportClockRefType)
+
+        trunk = self.converter.convert(make_flow(None), source, sender, node_clocks).capsets[0]
+        layered = self.converter.convert(make_flow(0), source, sender, node_clocks).capsets[0]
+
+        # The trunk carries every transport capability, including the false ones:
+        # absent would mean unconstrained, which is a different claim.
+        for cap in TRANSPORT:
+            self.assertIn(cap, trunk.caps)
+        self.assertEqual(trunk.caps[CapTransportHkep].value.enumerated, {True})
+        self.assertEqual(trunk.caps[CapTransportPrivacy].value.enumerated, {True})
+        self.assertIsNone(trunk.format)
+        self.assertIsNone(trunk.layer)
+
+        # The sub-flow carries none of them, and is tagged with its format instead.
+        for cap in TRANSPORT:
+            self.assertNotIn(cap, layered.caps)
+        self.assertEqual(layered.format, FormatVideo)
+        self.assertEqual(layered.layer, 0)
+
+        # Format capabilities are unaffected by the distinction.
+        self.assertEqual(trunk.caps[CapFormatFrameWidth].value.enumerated, {1920})
+        self.assertEqual(layered.caps[CapFormatFrameWidth].value.enumerated, {1920})
+
+        print(f"✓ Trunk-Only Transport Test Passed - trunk={len(trunk.caps)} "
+              f"layered={len(layered.caps)} capabilities")
+
+    def test_mux_zero_layer_counts(self):
+        """A layer count of zero is a value, not an absence.
+
+        A mux carrying audio only genuinely has zero video and zero data layers,
+        and the capability must say so: an omitted capability is not checked at all
+        by conset_included_in_caps, so dropping it silently removes the constraint
+        instead of failing it.
+        """
+        print("\n=== Testing Mux Zero Layer Counts ===")
+
+        flow = {
+            "id": "f8e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "version": "1625097600:0",
+            "label": "Audio-only Multiplex",
+            "format": "urn:x-nmos:format:mux",
+            "source_id": "s8e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "device_id": "d8e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "parents": [],
+            "media_type": "application/mxf",
+            "video_layers": 0,
+            "audio_layers": 2,
+            "data_layers": 0,
+            "urn:x-matrox:layer": 0
+        }
+        source = {
+            "id": "s8e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "version": "1625097600:0",
+            "label": "Audio-only Mux Source",
+            "format": "urn:x-nmos:format:mux",
+            "caps": {},
+            "tags": {},
+            "device_id": "d8e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+            "parents": [],
+            "clock_name": "clk0",
+            "synchronous_media": True
+        }
+
+        sender = {}
+        caps = self.converter.convert(flow, source, sender)
+        capset = caps.capsets[0]
+
+        for cap in (CapFormatVideoLayers, CapFormatAudioLayers, CapFormatDataLayers):
+            self.assertIn(cap, capset.caps)
+        self.assertEqual(capset.caps[CapFormatVideoLayers].value.enumerated, {0})
+        self.assertEqual(capset.caps[CapFormatAudioLayers].value.enumerated, {2})
+        self.assertEqual(capset.caps[CapFormatDataLayers].value.enumerated, {0})
+
+        print("✓ Mux Zero Layer Counts Test Passed - 0/2/0 all reported")
+
+    def test_data_json_has_no_transport_caps_but_sdianc_does(self):
+        """Only clocked data essence reports transport capabilities.
+
+        video/smpte291 is an ST 2110-40 RTP stream, so it is PTP-locked and reports
+        clock_ref_type and synchronous_media - which is also what SdpToCapabilities
+        reports for the same stream. application/json is IS-07 event data over MQTT
+        or WebSocket with no RTP timing, so it reports neither.
+        """
+        print("\n=== Testing Data Sub-type Transport Caps ===")
+
+        def convert(media_type):
+            flow = {
+                "id": "f9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0",
+                "label": "Data Flow",
+                "format": "urn:x-nmos:format:data",
+                "source_id": "s9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "device_id": "d9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [],
+                "media_type": media_type
+            }
+            source = {
+                "id": "s9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0",
+                "label": "Data Source",
+                "format": "urn:x-nmos:format:data",
+                "caps": {},
+                "tags": {},
+                "device_id": "d9e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [],
+                "clock_name": "clk0",
+                "synchronous_media": True
+            }
+            sender = {"hkep": True, "privacy": True}
+            node_clocks = [{"name": "clk0", "ref_type": "ptp"}]
+            return self.converter.convert(flow, source, sender, node_clocks).capsets[0]
+
+        TRANSPORT = (CapTransportSynchronousMedia, CapTransportClockRefType,
+                     CapTransportHkep, CapTransportPrivacy)
+
+        sdianc = convert("video/smpte291")
+        for cap in TRANSPORT:
+            self.assertIn(cap, sdianc.caps)
+        self.assertEqual(sdianc.caps[CapTransportClockRefType].value.enumerated, {"ptp"})
+
+        json_flow = convert("application/json")
+        for cap in TRANSPORT:
+            self.assertNotIn(cap, json_flow.caps)
+        self.assertIn(CapFormatMediaType, json_flow.caps)
+
+        print("✓ Data Sub-type Test Passed - smpte291 clocked, json not")
+
+    def test_color_sampling_corner_cases(self):
+        """Sampling is derived from the component array alone, by name.
+
+        IS-04's flow_video_raw declares components as a plain array (minItems 1,
+        no maxItems, no tuple form), so order and count are unconstrained. An
+        undeterminable sampling yields no capability at all rather than a guess:
+        an omitted capability is not checked by conset_included_in_caps, whereas
+        a wrong one would be.
+        """
+        print("\n=== Testing Color Sampling Corner Cases ===")
+        W, H = 1920, 1080
+
+        def sampling(components):
+            flow = {
+                "id": "e1e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0", "label": "Sampling probe",
+                "format": "urn:x-nmos:format:video",
+                "source_id": "e2e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "device_id": "e3e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [], "media_type": "video/raw",
+                "frame_width": W, "frame_height": H,
+                "interlace_mode": "progressive", "colorspace": "BT709",
+                "transfer_characteristic": "SDR",
+                "grain_rate": {"numerator": 50, "denominator": 1},
+                "components": [{"name": n, "width": w, "height": h, "bit_depth": 10}
+                               for n, w, h in components],
+            }
+            source = {
+                "id": "e2e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "version": "1625097600:0", "label": "src",
+                "format": "urn:x-nmos:format:video", "caps": {}, "tags": {},
+                "device_id": "e3e3c3c0-ca4a-11eb-b8bc-0242ac130003",
+                "parents": [], "clock_name": "clk0", "synchronous_media": True,
+            }
+            caps = self.converter.convert(flow, source, {}).capsets[0].caps
+            cap = caps.get(CapFormatColorSampling)
+            return next(iter(cap.value.enumerated)) if cap else None
+
+        # canonical layouts
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W, H), ("Cr", W, H)]), "YCbCr-4:4:4")
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", W // 2, H)]), "YCbCr-4:2:2")
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H // 2), ("Cr", W // 2, H // 2)]),
+                         "YCbCr-4:2:0")
+        self.assertEqual(sampling([("R", W, H), ("G", W, H), ("B", W, H)]), "RGB")
+
+        # order is not constrained by the schema
+        self.assertEqual(sampling([("Cb", W // 2, H), ("Y", W, H), ("Cr", W // 2, H)]), "YCbCr-4:2:2")
+        # nor is the count: an auxiliary plane must not break classification
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", W // 2, H), ("A", W, H)]),
+                         "YCbCr-4:2:2")
+        # luma need not equal frame_width; IS-04 asserts no such relationship
+        self.assertEqual(sampling([("Y", 3840, 2160), ("Cb", 1920, 2160), ("Cr", 1920, 2160)]),
+                         "YCbCr-4:2:2")
+        # YCbCr is decided before RGB, so a mixed array is not reported as RGB
+        self.assertEqual(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", W // 2, H),
+                                   ("R", W, H), ("G", W, H), ("B", W, H)]), "YCbCr-4:2:2")
+
+        # undeterminable -> no capability, never a guess
+        self.assertIsNone(sampling([("R", W, H), ("G", W // 2, H), ("B", W // 2, H)]))
+        self.assertIsNone(sampling([("I", W, H), ("Ct", W // 2, H), ("Cp", W // 2, H)]))
+        self.assertIsNone(sampling([("Y", W, H), ("Cb", W // 2, H), ("Cr", 480, H)]))
+        self.assertIsNone(sampling([("Y", W, H), ("Cb", W // 2, H)]))
+
+        print("✓ Color Sampling Corner Cases Passed")
+
     def test_error_handling_missing_source(self):
         """Test error handling when source is missing"""
         print("\n=== Testing Error Handling - Missing Source ===")
@@ -458,7 +706,8 @@ class TestFlowToCapabilities(unittest.TestCase):
         }
         
         # The converter returns empty capabilities for None source (graceful handling)
-        caps = self.converter.convert(flow, None)
+        sender = {}
+        caps = self.converter.convert(flow, None, sender)
         self.assertEqual(len(caps.capsets), 0)
         print("✓ Error handling test passed - Missing source handled gracefully")
         
@@ -475,7 +724,8 @@ class TestFlowToCapabilities(unittest.TestCase):
             "format": "urn:x-nmos:format:audio"
         }
         
-        caps = self.converter.convert(flow, source)
+        sender = {}
+        caps = self.converter.convert(flow, source, sender)
         
         # Should return empty capabilities
         self.assertEqual(len(caps.capsets), 0)
@@ -513,7 +763,8 @@ class TestFlowToCapabilities(unittest.TestCase):
             "synchronous_media": True
         }
         
-        caps = self.converter.convert(flow, source)
+        sender = {}
+        caps = self.converter.convert(flow, source, sender)
         
         # Verify fractional rate handling
         self.assertEqual(len(caps.capsets), 1)
@@ -554,9 +805,7 @@ def run_comprehensive_display():
             {"name": "Cb", "width": 960, "height": 1080, "bit_depth": 10},
             {"name": "Cr", "width": 960, "height": 1080, "bit_depth": 10}
         ],
-        "urn:x-matrox:layer": 0,
-        "hkep": True,
-        "privacy": False
+        "urn:x-matrox:layer": 0
     }
     
     complex_source = {
@@ -565,7 +814,8 @@ def run_comprehensive_display():
         "synchronous_media": True
     }
     
-    caps = converter.convert(complex_flow, complex_source)
+    sender = {"hkep": True, "privacy": False}
+    caps = converter.convert(complex_flow, complex_source, sender)
     
     if caps.capsets:
         capset = caps.capsets[0]

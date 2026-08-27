@@ -22,8 +22,8 @@ from fractions import Fraction
 # Add the parent directory to the path so we can import from nmostesting
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
 
-from nmostesting.suites.SdpToCapabilities import convert_sdp_string_to_capabilities
-from nmostesting.suites.MatroxCCF import (
+from nmostesting.SdpToCapabilities import convert_sdp_string_to_capabilities
+from nmostesting.MatroxCCF import (
     FormatVideo, FormatAudio, FormatData, FormatMux,
     CapFormatMediaType, CapFormatGrainRate, CapFormatFrameWidth, CapFormatFrameHeight,
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatComponentDepth,
@@ -32,7 +32,14 @@ from nmostesting.suites.MatroxCCF import (
 )
 
 class TestSdpToCapabilities(unittest.TestCase):
-    """Test SDP to CCF Capabilities conversion with realistic examples"""
+    """Test SDP to CCF Capabilities conversion with realistic examples.
+
+    An SDP describes one stream, so the converter returns a single TRUNK CapSet
+    whose format and layer are both None -- the same shape nmos-reference's
+    get_sdp_to_caps produces. Only Flow conversion tags a CapSet with a format,
+    and then only for mux sub-flows carrying urn:x-matrox:layer. These tests
+    therefore read caps.capsets[0] directly rather than filtering by format.
+    """
 
     def test_st2110_20_video_basic(self):
         """Test basic ST 2110-20 video stream conversion"""
@@ -61,7 +68,7 @@ a=ts-refclk:ptp=IEEE1588-2008:08-00-11-FF-FE-21-E1-B0:0"""
         self.assertGreaterEqual(len(caps.capsets), 1)
         
         # Get video capabilities
-        video_caps = caps.get(format=FormatVideo)
+        video_caps = caps
         self.assertEqual(len(video_caps.capsets), 1)
         
         video_capset = video_caps.capsets[0]
@@ -118,7 +125,7 @@ a=ts-refclk:ptp=IEEE1588-2008:04-5c-6c-ff-fe-0a-53-70:127"""
         self.assertGreaterEqual(len(caps.capsets), 1)
         
         # Get audio capabilities
-        audio_caps = caps.get(format=FormatAudio)
+        audio_caps = caps
         self.assertEqual(len(audio_caps.capsets), 1)
         
         audio_capset = audio_caps.capsets[0]
@@ -161,10 +168,10 @@ a=ts-refclk:ptp=IEEE1588-2008:04-5c-6c-ff-fe-0a-53-70:127"""
         
         # Get data capabilities - ST 2110-40 uses video media type with smpte291 encoding
         # The converter should detect this and create FormatData
-        data_caps = caps.get(format=FormatData)
+        data_caps = caps
         if len(data_caps.capsets) == 0:
             # Fallback: check if it was classified as video (which is acceptable for smpte291)
-            video_caps = caps.get(format=FormatVideo)
+            video_caps = caps
             self.assertGreaterEqual(len(video_caps.capsets), 1)
             print("✓ ST 2110-40 detected as video format (acceptable)")
             # Use video capset for further checks
@@ -195,15 +202,17 @@ a=ts-refclk:localmac=1c-34-da-5a-be-34"""
 
         caps = convert_sdp_string_to_capabilities(sdp_content)
         
-        video_caps = caps.get(format=FormatVideo)
+        video_caps = caps
         self.assertEqual(len(video_caps.capsets), 1)
         
         video_capset = video_caps.capsets[0]
         
-        # Check transport bit rate
-        self.assertIn(CapTransportBitRate, video_capset.caps)
-        bitrate = list(video_capset.caps[CapTransportBitRate].value.enumerated)[0]
-        self.assertEqual(bitrate, 2568807 * 1000)  # Convert kbps to bps
+        # b=AS is present, but transport bit_rate is reported only for COMPRESSED
+        # video (jxsv / H.264 / H.265), where the bit rate is an independent
+        # parameter. For uncompressed raw video it is fully determined by
+        # width x height x depth x frame rate, so nmos-reference and this
+        # converter both leave it out.
+        self.assertNotIn(CapTransportBitRate, video_capset.caps)
         
         # Check 60fps frame rate
         self.assertIn(CapFormatGrainRate, video_capset.caps)
@@ -270,7 +279,7 @@ a=ts-refclk:ptp=IEEE1588-2008:08-00-11-FF-FE-21-E1-B0:0"""
 
         caps = convert_sdp_string_to_capabilities(sdp_content)
         
-        video_caps = caps.get(format=FormatVideo)
+        video_caps = caps
         self.assertEqual(len(video_caps.capsets), 1)
         
         video_capset = video_caps.capsets[0]
@@ -302,7 +311,7 @@ a=ts-refclk:ptp=IEEE1588-2008:00-90-56-FF-FE-08-0F-45"""
 
         caps = convert_sdp_string_to_capabilities(sdp_content)
         
-        video_caps = caps.get(format=FormatVideo)
+        video_caps = caps
         video_capset = video_caps.capsets[0]
         
         # Check fractional frame rate (29.97 fps)
@@ -328,7 +337,7 @@ a=mediaclk:direct=0"""
         caps = convert_sdp_string_to_capabilities(sdp_content)
         
         # Test capability filtering
-        video_caps = caps.get(format=FormatVideo)
+        video_caps = caps
         self.assertGreaterEqual(len(video_caps.capsets), 1)
         
         # Test individual capability access
@@ -381,7 +390,7 @@ a=mediaclk:direct=1876655126 rate=90000
 a=ts-refclk:ptp=IEEE1588-2008:08-00-11-FF-FE-21-E1-B0:0"""
 
         caps = convert_sdp_string_to_capabilities(complex_sdp)
-        video_caps = caps.get(format=FormatVideo)
+        video_caps = caps
         video_capset = video_caps.capsets[0]
         
         print(f"\nGenerated Capabilities for Complex SDP:")
@@ -429,6 +438,47 @@ def run_all_tests():
         print(f"\n❌ {len(result.failures)} test(s) failed, {len(result.errors)} error(s)")
         return False
 
+
+
+class TestSdpInterlaceMode(unittest.TestCase):
+    """interlace_mode derived from the SDP fmtp.
+
+    ST 2110-20 signals PsF as "interlace; segmented": segmented QUALIFIES
+    interlace rather than replacing it. Testing the two as siblings left the PsF
+    branch unreachable and a PsF stream reported interlaced_bff, which a receiver
+    constraining interlace_mode to interlaced_psf would then reject.
+    """
+
+    def _mode(self, fmtp_extra):
+        sdp_content = (
+            "v=0\r\n"
+            "o=- 1 1 IN IP4 192.168.1.1\r\n"
+            "s=PsF probe\r\n"
+            "t=0 0\r\n"
+            "m=video 5000 RTP/AVP 96\r\n"
+            "c=IN IP4 239.1.1.1/64\r\n"
+            "a=rtpmap:96 raw/90000\r\n"
+            "a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; depth=10; "
+            "exactframerate=25; colorimetry=BT709; TCS=SDR; RANGE=NARROW"
+            + fmtp_extra + "\r\n"
+            "a=ts-refclk:ptp=IEEE1588-2008:08-00-11-FF-FE-21-E1-B0:0\r\n"
+            "a=mediaclk:direct=0\r\n"
+        )
+        caps = convert_sdp_string_to_capabilities(sdp_content)
+        capset = caps.capsets[0]
+        return next(iter(capset.caps[CapFormatInterlaceMode].value.enumerated))
+
+    def test_progressive(self):
+        self.assertEqual(self._mode(""), "progressive")
+
+    def test_interlaced_tff(self):
+        self.assertEqual(self._mode("; interlace; top-field-first"), "interlaced_tff")
+
+    def test_interlaced_bff(self):
+        self.assertEqual(self._mode("; interlace"), "interlaced_bff")
+
+    def test_psf_is_not_reported_as_bff(self):
+        self.assertEqual(self._mode("; interlace; segmented"), "interlaced_psf")
 
 if __name__ == "__main__":
     success = run_all_tests()

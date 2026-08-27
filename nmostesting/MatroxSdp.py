@@ -112,7 +112,7 @@ AAC_OBJECT_TYPES = {
     "LTP": 4,
     "SBR": 5,
     "ER_LC": 17,
-    "ER_LTP": 18,
+    "ER_LTP": 19,  # ISO/IEC 14496-3:2005 Table 1.16; 18 is reserved
     "ER_LD": 23,
     "PS": 29,
     "ER_ESCAPE": 31,
@@ -147,8 +147,16 @@ class EnumId:
 
 class MatroxSdpEnums(Enum):
 
+    # Members wrap an EnumId, and __hash__/__str__ delegate to it so a member and
+    # the EnumId the parser stores are interchangeable: they compare equal (via
+    # EnumId.__eq__), hash alike, and render alike. Without __str__ a member would
+    # stringify as "MatroxSdpEnums.RangeFull" instead of "FULL".
+
     def __hash__(self):
         return hash(self.value.s)
+
+    def __str__(self) -> str:
+        return self.value.s
 
     Audio                                = EnumId("audio")                # media type
     Video                                = EnumId("video")                # media type
@@ -216,7 +224,7 @@ class MatroxSdpEnums(Enum):
     TransferBT2100LINPQ                  = EnumId("BT2100LINPQ")
     TransferBT2100LINHLG                 = EnumId("BT2100LINHLG")
     TransferST2065_1                     = EnumId("ST2065-1")
-    TransferST248_1                      = EnumId("ST248-1")
+    TransferST428_1                      = EnumId("ST428-1")
     TransferDensity                      = EnumId("DENSITY")
     TransferST2115LOGS3                  = EnumId("ST2115LOGS3")
     RangeNarrow                          = EnumId("NARROW")

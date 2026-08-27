@@ -30,8 +30,6 @@ Flow to CCF Capabilities Converter
 
 Note: some transport capabilities can only be obtained from the SDP transport file.
 
-TODO: add urn:x-nmos:cap:transport:usb_class
-
 """
 
 from typing import Optional, Dict, Any, Tuple, List, Union
@@ -44,13 +42,18 @@ from .MatroxCCF import (
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatTransferCharacteristic,
     CapFormatColorSampling, CapFormatComponentDepth, CapFormatChannelCount,
     CapFormatSampleRate, CapFormatSampleDepth, CapFormatBitRate, CapFormatProfile,
-    CapFormatLevel, CapFormatSublevel, CapFormatConstantBitRate, CapFormatVideoLayers,
+    CapFormatLevel, CapFormatSublevel, CapFormatFbblevel, CapFormatConstantBitRate, CapFormatVideoLayers,
     CapFormatAudioLayers, CapFormatDataLayers, CapTransportClockRefType,
     CapTransportSynchronousMedia, CapTransportHkep, CapTransportPrivacy,
     CapTransport_ST2110_21_SenderType, CapTransportPacketTransmissionMode,
     CapTransportParameterSetsFlowMode, CapTransportParameterSetsTransportMode,
-    CapTransportChannelOrder, CapTransportInfoBlock, CapTransportBitRate
+    CapTransportInfoBlock, CapTransportBitRate
 )
+
+
+# IS-07 event data. Unlike video/smpte291 it is not an RTP essence stream, so it
+# carries no transport (clock / synchronous media) capabilities.
+DATA_MEDIA_TYPE_JSON = "application/json"
 
 
 def ifelse(t, a, b):
@@ -163,11 +166,11 @@ class FlowToCapabilitiesConverter:
         components = flow.get("components")
         if not isinstance(components, list):
             raise ValueError("FlowToCapabilities: raw video flow missing components array")
-        if isinstance(fw, int) and isinstance(fh, int):
-            sampling = self._infer_sampling_from_components(components, fw, fh)
+        sampling = self._infer_sampling_from_components(components)
+        if sampling is not None:
             caps[CapFormatColorSampling] = Capability(CapFormatColorSampling,
-                                                      RangeValue(values=(sampling,) if sampling is not None
-                                                                 else None, type=RangeType.STRING))
+                                                      RangeValue(values=(sampling,),
+                                                                 type=RangeType.STRING))
         comp_depth = self._get_component_depth(components)
         caps[CapFormatComponentDepth] = Capability(CapFormatComponentDepth,
                                                    RangeValue(values=(comp_depth,) if comp_depth is not None
@@ -183,7 +186,7 @@ class FlowToCapabilitiesConverter:
                                                                        if synchronous_media is not None
                                                                        else None, type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -213,7 +216,7 @@ class FlowToCapabilitiesConverter:
 
     def _convert_coded_video_flow_to_capset(self, flow: Dict[str, Any], source: Dict[str, Any],
                                             sender: Dict[str, Any], node_clocks: Optional[list]) -> CapSet:
-        """Build CapSet for coded video flows (mirrors Go getFlowProperties coded video branch)."""
+        """Build CapSet for coded video flows."""
 
         caps: Dict[str, Capability] = {}
 
@@ -259,11 +262,11 @@ class FlowToCapabilitiesConverter:
         components = flow.get("components")
         if not isinstance(components, list):
             raise ValueError("FlowToCapabilities: raw video flow missing components array")
-        if isinstance(fw, int) and isinstance(fh, int):
-            sampling = self._infer_sampling_from_components(components, fw, fh)
+        sampling = self._infer_sampling_from_components(components)
+        if sampling is not None:
             caps[CapFormatColorSampling] = Capability(CapFormatColorSampling,
-                                                      RangeValue(values=(sampling,) if sampling is not None
-                                                                 else None, type=RangeType.STRING))
+                                                      RangeValue(values=(sampling,),
+                                                                 type=RangeType.STRING))
         comp_depth = self._get_component_depth(components)
         caps[CapFormatComponentDepth] = Capability(CapFormatComponentDepth,
                                                    RangeValue(values=(comp_depth,) if comp_depth is not None
@@ -276,7 +279,7 @@ class FlowToCapabilitiesConverter:
                                                 RangeValue(values=(bitrate,) if bitrate is not None
                                                            else None, type=RangeType.INT))
         cbr = flow.get("constant_bit_rate", None)
-        if cbr:
+        if cbr is not None:
             caps[CapFormatConstantBitRate] = Capability(CapFormatConstantBitRate,
                                                         RangeValue(values=(cbr,) if cbr is not None
                                                                    else None, type=RangeType.BOOL))
@@ -297,6 +300,12 @@ class FlowToCapabilitiesConverter:
                                                  RangeValue(values=(sublevel,) if sublevel is not None
                                                             else None, type=RangeType.STRING))
 
+        fbblevel = flow.get("fbblevel", None)
+        if fbblevel:
+            caps[CapFormatFbblevel] = Capability(CapFormatFbblevel,
+                                                 RangeValue(values=(fbblevel,) if fbblevel is not None
+                                                            else None, type=RangeType.STRING))
+
         layer = flow.get("urn:x-matrox:layer", None)
         format = FormatVideo
 
@@ -306,7 +315,7 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -335,7 +344,7 @@ class FlowToCapabilitiesConverter:
                                if parameter_sets_transport_mode is not None
                                else None, type=RangeType.STRING))
 
-            transport_bitrate = sender.get("transport_bitrate", None)
+            transport_bitrate = sender.get("bit_rate", None)
             if transport_bitrate:
                 caps[CapTransportBitRate] = Capability(CapTransportBitRate,
                                                        RangeValue(values=(transport_bitrate,)
@@ -390,7 +399,7 @@ class FlowToCapabilitiesConverter:
                                                 RangeValue(values=(bitrate,) if bitrate is not None
                                                            else None, type=RangeType.INT))
         cbr = flow.get("constant_bit_rate", None)
-        if cbr:
+        if cbr is not None:
             caps[CapFormatConstantBitRate] = Capability(CapFormatConstantBitRate,
                                                         RangeValue(values=(cbr,) if cbr is not None
                                                                    else None, type=RangeType.BOOL))
@@ -414,7 +423,7 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -443,14 +452,13 @@ class FlowToCapabilitiesConverter:
                                if parameter_sets_transport_mode is not None
                                else None, type=RangeType.STRING))
 
-            channel_order = sender.get("channel_order", None)
-            if channel_order:
-                caps[CapTransportChannelOrder] = Capability(CapTransportChannelOrder,
-                                                            RangeValue(values=(channel_order,)
-                                                                       if channel_order is not None
-                                                                       else None, type=RangeType.STRING))
+            # No channel_order here: it is not a Sender attribute. NMOS models it
+            # nowhere on the Sender, and nmos-reference derives it from the Source's
+            # channels only to write the SDP (a=fmtp channel-order=). The lookup that
+            # used to sit here read a key no Sender can carry, so it always produced
+            # nothing. SdpToCapabilities still reports it for AM824, read from the SDP.
 
-            transport_bitrate = sender.get("transport_bitrate", None)
+            transport_bitrate = sender.get("bit_rate", None)
             if transport_bitrate:
                 caps[CapTransportBitRate] = Capability(CapTransportBitRate,
                                                        RangeValue(values=(transport_bitrate,)
@@ -513,19 +521,18 @@ class FlowToCapabilitiesConverter:
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
                                                                                 if sender_type is not None
                                                                                 else None, type=RangeType.STRING))
 
-            channel_order = sender.get("channel_order", None)
-            if channel_order:
-                caps[CapTransportChannelOrder] = Capability(CapTransportChannelOrder,
-                                                            RangeValue(values=(channel_order,)
-                                                                       if channel_order is not None
-                                                                       else None, type=RangeType.STRING))
+            # No channel_order here: it is not a Sender attribute. NMOS models it
+            # nowhere on the Sender, and nmos-reference derives it from the Source's
+            # channels only to write the SDP (a=fmtp channel-order=). The lookup that
+            # used to sit here read a key no Sender can carry, so it always produced
+            # nothing. SdpToCapabilities still reports it for AM824, read from the SDP.
 
             clk_ref = self._clock_ref_type_from_node_clocks(clock_name, node_clocks)
             caps[CapTransportClockRefType] = Capability(CapTransportClockRefType,
@@ -562,13 +569,20 @@ class FlowToCapabilitiesConverter:
         layer = flow.get("urn:x-matrox:layer", None)
         format = FormatData
 
+        # application/json is IS-07 event data carried over MQTT or WebSocket, not an
+        # RTP media stream, so it has no PTP timing and no transport capabilities.
+        # video/smpte291 (ST 2110-40) is clocked essence like any other and does.
+        clocked = media_type.lower() != DATA_MEDIA_TYPE_JSON
+
         if layer is None:
             format = None
+
+        if layer is None and clocked:
             caps[CapTransportSynchronousMedia] = Capability(CapTransportSynchronousMedia,
                                                             RangeValue(values=(synchronous_media,),
                                                                        type=RangeType.BOOL))
 
-            sender_type = sender.get("sender_type", None)
+            sender_type = sender.get("st2110_21_sender_type", None)
             if sender_type:
                 caps[CapTransport_ST2110_21_SenderType] = Capability(CapTransport_ST2110_21_SenderType,
                                                                      RangeValue(values=(sender_type,)
@@ -609,15 +623,15 @@ class FlowToCapabilitiesConverter:
         v = self._get_int(flow, ["video_layers"])
         a = self._get_int(flow, ["audio_layers"])
         d = self._get_int(flow, ["data_layers"])
-        if v:
+        if v is not None:
             caps[CapFormatVideoLayers] = Capability(CapFormatVideoLayers,
                                                     RangeValue(values=(v,) if v is not None
                                                                else None, type=RangeType.INT))
-        if a:
+        if a is not None:
             caps[CapFormatAudioLayers] = Capability(CapFormatAudioLayers,
                                                     RangeValue(values=(a,) if a is not None
                                                                else None, type=RangeType.INT))
-        if d:
+        if d is not None:
             caps[CapFormatDataLayers] = Capability(CapFormatDataLayers,
                                                    RangeValue(values=(d,) if d is not None
                                                               else None, type=RangeType.INT))
@@ -836,32 +850,56 @@ class FlowToCapabilitiesConverter:
         bd = c0.get("bit_depth") if isinstance(c0, dict) else None
         return bd if isinstance(bd, int) else None
 
-    def _infer_sampling_from_components(self, components: list, fw: int, fh: int) -> Optional[str]:
-        # Infer sampling for common YCbCr layouts; handle RGB as well
-        names = [c.get("name") for c in components if isinstance(c, dict)]
-        if set(names) >= {"R", "G", "B"}:
-            return "RGB"
-        if not (set(names) >= {"Y", "Cb", "Cr"}):
-            return None
-        y = next((c for c in components if c.get("name") == "Y"), None)
-        cb = next((c for c in components if c.get("name") == "Cb"), None)
-        cr = next((c for c in components if c.get("name") == "Cr"), None)
+    def _infer_sampling_from_components(self, components: list) -> Optional[str]:
+        """Derive the color sampling from the component array alone.
 
-        if not y or not cb or not cr:
-            return None
-        yw, yh = y.get("width"), y.get("height")
-        cbw, cbh = cb.get("width"), cb.get("height")
-        crw, crh = cr.get("width"), cr.get("height")
-        if yw == fw and yh == fh:
-            if cbw == fw and cbh == fh and crw == fw and crh == fh:
+        Components are matched by NAME, not position: IS-04's flow_video_raw
+        declares ``components`` as a plain array (minItems 1, no maxItems, no
+        tuple form), so neither order nor count is constrained -- a flow listing
+        Cb, Y, Cr, or carrying an extra A / DepthMap plane, is conformant.
+
+        The ratio is taken between the planes themselves rather than against the
+        flow's frame_width / frame_height: IS-04 ties luma to neither, and the
+        per-component width / height are required members.
+
+        Returns None when the sampling cannot be determined, which the caller
+        reports by omitting the capability.
+        """
+        by_name = {}
+        for c in components:
+            if isinstance(c, dict) and c.get("name") is not None:
+                by_name.setdefault(c["name"], c)
+
+        def wh(c):
+            w, h = c.get("width"), c.get("height")
+            return (w, h) if isinstance(w, int) and isinstance(h, int) else None
+
+        # YCbCr first: a malformed array carrying both colour systems must not be
+        # reported as RGB on the strength of the names alone.
+        if all(n in by_name for n in ("Y", "Cb", "Cr")):
+            y, cb, cr = (wh(by_name[n]) for n in ("Y", "Cb", "Cr"))
+            if y is None or cb is None or cr is None or cb != cr:
+                return None
+            (yw, yh), (cw, ch) = y, cb
+            if (yw, yh) == (cw, ch):
                 return "YCbCr-4:4:4"
-            if cbw == fw // 2 and cbh == fh and crw == fw // 2 and crh == fh:
+            if yw == 2 * cw and yh == ch:
                 return "YCbCr-4:2:2"
-            if cbw == fw // 2 and cbh == fh // 2 and crw == fw // 2 and crh == fh // 2:
+            if yw == 2 * cw and yh == 2 * ch:
                 return "YCbCr-4:2:0"
+            return None
+
+        if all(n in by_name for n in ("R", "G", "B")):
+            r, g, b = (wh(by_name[n]) for n in ("R", "G", "B"))
+            if r is None or g is None or b is None:
+                return None
+            # The names alone do not establish RGB; the planes must match.
+            return "RGB" if r == g == b else None
+
         return None
 
 
 def convert_flow_to_capabilities(flow: Dict[str, Any], source: Dict[str, Any],
+                                 sender: Dict[str, Any],
                                  node_clocks: Optional[list] = None) -> Caps:
-    return FlowToCapabilitiesConverter().convert(flow, source, node_clocks)
+    return FlowToCapabilitiesConverter().convert(flow, source, sender, node_clocks)

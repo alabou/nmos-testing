@@ -100,6 +100,13 @@ class HKEPExchange:
         self.disconnection_reason = None
         self.is_complete = None  # True if exchange is complete enough to validate, False if incomplete/invalid
         self.incomplete_reason = None  # Why exchange is incomplete
+        # TCP teardown events (FIN/RST) observed on this exchange's connections.
+        # Each entry: {'stream_key', 'reason' ('FIN'|'RST'), 'initiator_ip',
+        # 'initiator_port', 'pkt_num', 'timestamp'}. Populated after exchange
+        # assembly so validation can tell whether a missing application-layer
+        # response is a real omission or the peer having closed the connection
+        # before the other side could reply.
+        self.connection_teardowns = []
     
     def add_tcp_connection(self, stream_key: str, src_ip: str, src_port: int, dst_ip: str, dst_port: int):
         """Add a TCP connection to this HKEP session"""
@@ -2014,7 +2021,38 @@ class HKEPDissector:
         # Add all exchanges to the analysis result
         for exchange in exchanges.values():
             analysis_result.add_exchange(exchange)
-        
+
+        # Attach TCP teardown (FIN/RST) events to the exchange that owns the
+        # connection they occurred on. Validation needs to distinguish "peer
+        # never sent the expected response" from "peer closed the connection
+        # before the response could be sent" - the latter is not a protocol
+        # violation by the responder. Match by the bidirectional stream_key so a
+        # teardown from either endpoint lands on the right exchange.
+        stream_key_to_exchange = {}
+        for exchange in exchanges.values():
+            for conn in exchange.tcp_connections:
+                stream_key_to_exchange[conn[0]] = exchange
+        for event in timeline_events:
+            if event['type'] not in ('tcp_fin', 'tcp_rst'):
+                continue
+            src_ip, src_port = event['src_ip'], event['src_port']
+            dst_ip, dst_port = event['dst_ip'], event['dst_port']
+            if (src_ip, src_port) < (dst_ip, dst_port):
+                stream_key = f"{src_ip}:{src_port}-{dst_ip}:{dst_port}"
+            else:
+                stream_key = f"{dst_ip}:{dst_port}-{src_ip}:{src_port}"
+            owner = stream_key_to_exchange.get(stream_key)
+            if owner is None:
+                continue
+            owner.connection_teardowns.append({
+                'stream_key': stream_key,
+                'reason': 'FIN' if event['type'] == 'tcp_fin' else 'RST',
+                'initiator_ip': src_ip,
+                'initiator_port': src_port,
+                'pkt_num': event['pkt_num'],
+                'timestamp': event['timestamp'],
+            })
+
         # Check completeness of all exchanges first
         incomplete_packet_set = set()  # Track packets from incomplete exchanges
         for exchange in exchanges.values():
@@ -2581,7 +2619,50 @@ class HKEPDissector:
                 return True
         
         return False
-    
+
+    def _receiver_closed_before_send_ack(self, exchange: HKEPExchange, receiverid_list_msg: Dict):
+        """
+        Return the teardown record if the Receiver closed the TCP connection
+        carrying `receiverid_list_msg` before the Sender had any opportunity to
+        reply with RepeaterAuth_Send_Ack; otherwise return None.
+
+        The Sender's "shall send RepeaterAuth_Send_Ack" obligation (section
+        13.2.1 note) cannot be held against it when the Receiver tears the
+        connection down first - the Send_Ack is then absent from the capture
+        because it could never be sent, not because the Sender omitted it. This
+        is common on a Null-Topology unsubscribe, where the Receiver sends its
+        ReceiverID_List and immediately FINs the connection.
+        """
+        if not receiverid_list_msg:
+            return None
+        stream_key = receiverid_list_msg.get('stream')
+        rx_ip = receiverid_list_msg.get('src_ip')
+        rx_port = receiverid_list_msg.get('src_port')
+        ts = receiverid_list_msg.get('timestamp', 0)
+
+        # If the Sender sent any application-layer message on this connection
+        # after the ReceiverID_List, it did get a turn - the teardown did not
+        # deprive it of the chance to respond, so this exemption does not apply.
+        for msg in exchange.messages:
+            if msg.get('stream') != stream_key:
+                continue
+            if (msg.get('direction') == 'Encoder->Decoder'
+                    and msg.get('timestamp', 0) > ts):
+                return None
+
+        # Find the earliest teardown on this connection at or after the
+        # ReceiverID_List, and check the Receiver (its sender) closed first.
+        candidates = [
+            t for t in exchange.connection_teardowns
+            if t['stream_key'] == stream_key and t['timestamp'] >= ts
+        ]
+        if not candidates:
+            return None
+        first = min(candidates, key=lambda t: (t['timestamp'], t['pkt_num']))
+        if first['initiator_ip'] == rx_ip and first['initiator_port'] == rx_port:
+            return first
+        return None
+
     def validate_section_13_2(self, exchange: HKEPExchange) -> List[Dict]:
         """
         Validate all requirements of HKEP section 13.2 (Exchange sequence - section 13.2.1)
@@ -2816,15 +2897,30 @@ class HKEPDissector:
 
                 if sender_ack_sent is None:
 
-                    errors.append({
-                        'type': 'invalid_sequence',
-                        'severity': 'error',
-                        'description': f"RepeaterAuth_Send_ReceiverID_List (packet #{sender_initial_received.get('packet_number')}) received without sending RepeaterAuth_Send_Ack.",
-                        'packet_number': sender_initial_received.get('packet_number'),
-                        'timestamp': sender_initial_received.get('timestamp', 0),
-                        'expected': 'RepeaterAuth_Send_Ack must be sent for a RepeaterAuth_Send_ReceiverID_List (per section 13.2.1 note)',
-                        'hkep_section': '13.2.1'
-                    })
+                    teardown = self._receiver_closed_before_send_ack(exchange, sender_initial_received)
+                    if teardown is not None:
+                        # The Receiver closed the connection before the Sender
+                        # could reply - the missing Send_Ack is an artifact of
+                        # that teardown, not a Sender violation. Report as INFO.
+                        errors.append({
+                            'type': 'invalid_sequence',
+                            'severity': 'info',
+                            'description': f"RepeaterAuth_Send_Ack not observed for RepeaterAuth_Send_ReceiverID_List (packet #{sender_initial_received.get('packet_number')}): the Receiver closed the connection ({teardown['reason']} at packet #{teardown['pkt_num']}) before the Sender could respond.",
+                            'packet_number': sender_initial_received.get('packet_number'),
+                            'timestamp': sender_initial_received.get('timestamp', 0),
+                            'expected': 'RepeaterAuth_Send_Ack is expected for a RepeaterAuth_Send_ReceiverID_List (per section 13.2.1 note), but the Sender had no opportunity to send it because the Receiver terminated the connection first; this is not a Sender violation.',
+                            'hkep_section': '13.2.1'
+                        })
+                    else:
+                        errors.append({
+                            'type': 'invalid_sequence',
+                            'severity': 'error',
+                            'description': f"RepeaterAuth_Send_ReceiverID_List (packet #{sender_initial_received.get('packet_number')}) received without sending RepeaterAuth_Send_Ack.",
+                            'packet_number': sender_initial_received.get('packet_number'),
+                            'timestamp': sender_initial_received.get('timestamp', 0),
+                            'expected': 'RepeaterAuth_Send_Ack must be sent for a RepeaterAuth_Send_ReceiverID_List (per section 13.2.1 note)',
+                            'hkep_section': '13.2.1'
+                        })
 
                 else:
 
@@ -2858,15 +2954,30 @@ class HKEPDissector:
 
                 if sender_ack_sent is None:
 
-                    errors.append({
-                        'type': 'invalid_sequence',
-                        'severity': 'error',
-                        'description': f"RepeaterAuth_Send_ReceiverID_List (packet #{sender_initial_received.get('packet_number')}) received without sending RepeaterAuth_Send_Ack.",
-                        'packet_number': sender_initial_received.get('packet_number'),
-                        'timestamp': sender_initial_received.get('timestamp', 0),
-                        'expected': 'RepeaterAuth_Send_Ack must be sent for a RepeaterAuth_Send_ReceiverID_List (per section 13.2.1 note)',
-                        'hkep_section': '13.2.1'
-                    })
+                    teardown = self._receiver_closed_before_send_ack(exchange, sender_initial_received)
+                    if teardown is not None:
+                        # The Receiver closed the connection before the Sender
+                        # could reply - the missing Send_Ack is an artifact of
+                        # that teardown, not a Sender violation. Report as INFO.
+                        errors.append({
+                            'type': 'invalid_sequence',
+                            'severity': 'info',
+                            'description': f"RepeaterAuth_Send_Ack not observed for RepeaterAuth_Send_ReceiverID_List (packet #{sender_initial_received.get('packet_number')}): the Receiver closed the connection ({teardown['reason']} at packet #{teardown['pkt_num']}) before the Sender could respond.",
+                            'packet_number': sender_initial_received.get('packet_number'),
+                            'timestamp': sender_initial_received.get('timestamp', 0),
+                            'expected': 'RepeaterAuth_Send_Ack is expected for a RepeaterAuth_Send_ReceiverID_List (per section 13.2.1 note), but the Sender had no opportunity to send it because the Receiver terminated the connection first; this is not a Sender violation.',
+                            'hkep_section': '13.2.1'
+                        })
+                    else:
+                        errors.append({
+                            'type': 'invalid_sequence',
+                            'severity': 'error',
+                            'description': f"RepeaterAuth_Send_ReceiverID_List (packet #{sender_initial_received.get('packet_number')}) received without sending RepeaterAuth_Send_Ack.",
+                            'packet_number': sender_initial_received.get('packet_number'),
+                            'timestamp': sender_initial_received.get('timestamp', 0),
+                            'expected': 'RepeaterAuth_Send_Ack must be sent for a RepeaterAuth_Send_ReceiverID_List (per section 13.2.1 note)',
+                            'hkep_section': '13.2.1'
+                        })
 
                 else:
 
@@ -3290,7 +3401,10 @@ class HKEPDissector:
                                 'hkep_section': '13.2.3',
                                 'note': f'Previous ReceiverID_List at packet #{pending_receiver_receiverid_list[0]} not yet responded'
                             })
-                        pending_receiver_receiverid_list = (msg_pkt, msg_ts)
+                        # Carry the full message so the end-of-exchange check can
+                        # tell whether a missing Send_Ack is the Sender's omission
+                        # or the Receiver having closed the connection first.
+                        pending_receiver_receiverid_list = (msg_pkt, msg_ts, msg)
                     
                     elif msg_type == 'RepeaterAuth_Stream_Ready':
                         # Receiver sends Stream_Ready - this is response to Sender's Stream_Manage
@@ -3345,16 +3459,32 @@ class HKEPDissector:
                 })
             
             if pending_receiver_receiverid_list:
-                errors.append({
-                    'type': 'missing_send_ack_response',
-                    'severity': 'warning',
-                    'description': f"Receiver sent ReceiverID_List (packet #{pending_receiver_receiverid_list[0]}) but did not receive Send_Ack response.",
-                    'packet_number': pending_receiver_receiverid_list[0],
-                    'timestamp': pending_receiver_receiverid_list[1],
-                    'expected': 'Sender shall respond to ReceiverID_List with Send_Ack (per section 13.2.3)',
-                    'hkep_section': '13.2.3',
-                    'note': 'Send_Ack response missing or not captured'
-                })
+                receiverid_list_msg = pending_receiver_receiverid_list[2] if len(pending_receiver_receiverid_list) > 2 else None
+                teardown = self._receiver_closed_before_send_ack(exchange, receiverid_list_msg)
+                if teardown is not None:
+                    # The Receiver tore the connection down before the Sender
+                    # could reply - not a Sender omission. Report as INFO.
+                    errors.append({
+                        'type': 'missing_send_ack_response',
+                        'severity': 'info',
+                        'description': f"Receiver sent ReceiverID_List (packet #{pending_receiver_receiverid_list[0]}) and closed the connection ({teardown['reason']} at packet #{teardown['pkt_num']}) before the Sender could send Send_Ack.",
+                        'packet_number': pending_receiver_receiverid_list[0],
+                        'timestamp': pending_receiver_receiverid_list[1],
+                        'expected': 'Sender shall respond to ReceiverID_List with Send_Ack (per section 13.2.3), but the Receiver terminated the connection first; the absent Send_Ack is a consequence of that teardown, not a Sender omission.',
+                        'hkep_section': '13.2.3',
+                        'note': 'Send_Ack could not be sent: Receiver closed the connection before the Sender responded'
+                    })
+                else:
+                    errors.append({
+                        'type': 'missing_send_ack_response',
+                        'severity': 'warning',
+                        'description': f"Receiver sent ReceiverID_List (packet #{pending_receiver_receiverid_list[0]}) but did not receive Send_Ack response.",
+                        'packet_number': pending_receiver_receiverid_list[0],
+                        'timestamp': pending_receiver_receiverid_list[1],
+                        'expected': 'Sender shall respond to ReceiverID_List with Send_Ack (per section 13.2.3)',
+                        'hkep_section': '13.2.3',
+                        'note': 'Send_Ack response missing or not captured'
+                    })
         
         return errors
     

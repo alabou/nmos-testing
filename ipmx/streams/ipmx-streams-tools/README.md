@@ -17,7 +17,7 @@ A capture taken from a real IPMX sender is the expected input.
 | JPEG XS | `ipmx_jxsv_validate_pcap.py` | VSF TR-10-15a, NMOS BCP-006-04, RFC 9134, ISO/IEC 21122 |
 | Uncompressed Video | `ipmx_raw_validate_pcap.py` | VSF TR-10-2, ST 2110-20, RFC 4175 |
 | AM824 (AES3 over IP) | `ipmx_am824_validate_pcap.py` | VSF TR-10-12, ST 2110-31, AES3, SMPTE 337M |
-| PCM | `ipmx_pcm_validate_pcap.py` | VSF TR-10-12, ST 2110-30, RFC 3551 |
+| PCM | `ipmx_pcm_validate_pcap.py` | VSF TR-10-3, ST 2110-30, AES67, RFC 3551 |
 
 ## Prerequisites
 
@@ -196,9 +196,12 @@ Every check is tagged with the normative requirement ID. The major
 families are:
 
 - `TR-10-15a-*` / `-15b-*` / `-15c-*` — IPMX codec profiles (JXSV / H.265 / H.264)
-- `TR-10-9-*` — IPMX compressed-video RTP transport
-- `TR-10-12-*` — IPMX audio transport
-- `TR-10-1-*` — IPMX system timing, RTCP Sender Reports, IPMX fmtp keyword
+- `TR-10-9-*` — IPMX system environment & device behaviour (QoS/DSCP, frame-to-frame timing, multicast)
+- `TR-10-2-*` / `TR-10-3-*` / `TR-10-7-*` / `TR-10-11-*` / `TR-10-12-*` — IPMX essence transport, incl.
+  the §7 UDP port rules (uncompressed video / PCM audio / compressed video / CBR compressed video / AES3)
+- `TR-10-1-*` — IPMX system timing, RTCP Sender Reports (port + 1, SSRC match), IPMX fmtp keyword
+- `ST2110-10-6.2-*` — RTP payload-type & SSRC constancy; `SDP-PT` / `SDP-PORT` / `SDP-DST-IP` — SDP↔wire
+  transport consistency; `*-CLI-*` — operator-supplied expected-value cross-checks
 - `ST2110-30-*` / `ST2110-31-*` — ST 2110 audio encapsulation
 - `HRD-*` / `HRD-TIME-*` — HRD self-consistency and PCAP timing
   cross-validation (compressed video only)
@@ -269,15 +272,19 @@ HRD eq (C-3) lower bound expressed in capture-time units relative to AU 0.
 ## Reference Documents
 
 - VSF TR-10-1 (IPMX System Timing and Definitions)
+- VSF TR-10-2 (IPMX Uncompressed Active Video)
+- VSF TR-10-3 (IPMX PCM Digital Audio)
 - VSF TR-10-5 (IPMX HDCP Key Exchange Protocol)
-- VSF TR-10-7 (IPMX Sender Reports)
-- VSF TR-10-9 (IPMX Compressed Video RTP Transport)
-- VSF TR-10-11 / TR-10-12 (IPMX Audio)
+- VSF TR-10-7 (IPMX Compressed Video)
+- VSF TR-10-9 (IPMX Requirements for System Environment and Device Behavior)
+- VSF TR-10-11 (IPMX Constant Bit-Rate Compressed Video)
+- VSF TR-10-12 (IPMX AES3 Transparent Transport)
 - VSF TR-10-13 (IPMX Privacy Encryption Protocol)
 - VSF TR-10-15a / -15b / -15c (IPMX JPEG XS / HEVC / H.264 Profiles)
 - SMPTE ST 2110-10 / -20 / -21 / -22 / -30 / -31
+- AES67 (Audio-over-IP interoperability)
 - ITU-T H.265, ITU-T H.264, ISO/IEC 21122 (JPEG XS)
-- RFC 4175, 6184, 7798, 8285, 9134
+- RFC 1112, 3550, 3551, 4175, 4566, 6184, 7798, 8285, 9134
 - NMOS BCP-006
 
 ## License

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shared helpers for IPMX H.264/H.265 PCAP validation."""
+"""Shared helpers for the IPMX PCAP validators (raw, JPEG XS, H.264, H.265, PCM, AM824)."""
 
 from __future__ import annotations
 
@@ -41,6 +41,11 @@ from ipmx_pcap_reader import UdpPacket, iter_udp_packets  # re-exported
 NTP_UNIX_OFFSET = 2_208_988_800
 CLOCK_RATE = 90_000
 NANOSECONDS_PER_SECOND = 1_000_000_000
+# RFC 3550 §6.4.1: the SR sender's packet count and sender's octet count are
+# 32-bit unsigned fields, so both wrap. The octet counter wraps far sooner than
+# the packet counter (e.g. ~4 h for a 288-byte 1 ms PCM stream), so any check
+# against cumulative capture counts must compare modulo this value.
+SR_COUNTER_MODULUS = 1 << 32
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +177,8 @@ class RtpReport:
     )
     has_rtp_extensions: bool = False
     ext_ids: set[int] = field(default_factory=set)
+    payload_type_set: set[int] = field(default_factory=set)
+    ssrc_set: set[int] = field(default_factory=set)
     encrypted: bool = False
     # Recovery-point capture window (populated by apply_recovery_point_window):
     # how many boundary AUs were excluded so that all AU-based checks see only
@@ -209,6 +216,11 @@ class ValidationContext:
     encrypted: bool = False
     allow_superset_profile: bool = False
     is_444: bool = False  # IPMX HEVC 4:4:4 Profile Mode under test (h265 --444)
+    cli_payload_type: int | None = None
+    cli_ssrc: int | None = None
+    cli_dst_ip: str | None = None
+    cli_port: int | None = None
+    cli_rtcp_port: int | None = None
 
 
 @dataclass
@@ -542,10 +554,14 @@ def build_rtp_report(
     observed_au_rtp_deltas: list[float] = []
     encrypted = False
     encryption_checked = False
+    payload_type_set: set[int] = set()
+    ssrc_set: set[int] = set()
 
     for pkt in ipmx_parse_rtp_pcap.iter_rtp_packets_stream(
         pcap_path, port, stream_info=stream_info,
     ):
+        payload_type_set.add(pkt.payload_type)
+        ssrc_set.add(pkt.ssrc)
         if not pkt.payload:
             continue
         if not encryption_checked and pkt.ext_elements:
@@ -674,6 +690,8 @@ def build_rtp_report(
         seq_analysis=seq_tracker.analysis,
         has_rtp_extensions=has_rtp_extensions,
         ext_ids=all_ext_ids,
+        payload_type_set=payload_type_set,
+        ssrc_set=ssrc_set,
         encrypted=encrypted,
     )
 
@@ -2266,6 +2284,201 @@ def check_sdp_dst_ip_vs_stream(
             f"dst_ip={stream_info.dst_ip}"
         )
     return True, f"SDP connection address={sdp_ip} matches detected dst_ip"
+
+
+# ---------------------------------------------------------------------------
+# Shared payload-type / SSRC / port / SDP-port / sequence / CLI cross-checks.
+# Contract: primitives only (never a codec-specific ctx); untestable() for
+# missing inputs; FAIL message quotes both values; one-line PASS message.
+# ---------------------------------------------------------------------------
+
+def check_payload_type_constant(pt_set: set[int]) -> tuple[bool, str]:
+    """RTP payload type SHALL be constant within the stream (ST 2110-10 §6.2)."""
+    if len(pt_set) != 1:
+        return False, f"Multiple payload types observed: {sorted(pt_set)}"
+    value = next(iter(pt_set))
+    return True, f"RTP payload type is constant at {value}"
+
+
+def check_ssrc_constant(ssrc_set: set[int]) -> tuple[bool, str]:
+    """RTP SSRC SHALL be constant within the stream (ST 2110-10 §6.2).
+
+    Filtered read: packets are pre-selected by ``stream_info.ssrc``, so this set
+    is singleton by construction — identical in behaviour to the audio validators.
+    """
+    if len(ssrc_set) != 1:
+        return False, (
+            "Multiple SSRC values observed: "
+            f"{[f'0x{v:08X}' for v in sorted(ssrc_set)]}"
+        )
+    value = next(iter(ssrc_set))
+    return True, f"RTP SSRC is constant at 0x{value:08X}"
+
+
+def check_sdp_payload_type_vs_stream(
+    sdp_media: "MediaDescriptor | None",
+    pt_set: set[int],
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """SDP payload type SHALL match the RTP stream (TR-10-1 §10 transport consistency).
+
+    Uses MatroxSdp's authoritative ``format_code`` (the ``m=`` line payload type);
+    ``payload_type`` is a rtpmap/fmtp-derived copy MatroxSdp enforces equal-or-0.
+    A non-constant observed PT is a FAIL (it violates PT constancy), not CANNOT_TEST.
+    """
+    if sdp_media is None:
+        return untestable("No SDP transport file provided (use --sdp)")
+    if len(pt_set) != 1:
+        return False, f"Observed RTP payload type is not constant: {sorted(pt_set)}"
+    observed = next(iter(pt_set))
+    sdp_pt = sdp_media.format_code
+    if sdp_pt != observed:
+        return False, f"SDP payload type {sdp_pt} != RTP payload type {observed}"
+    return True, f"SDP payload type {sdp_pt} matches RTP"
+
+
+def check_cli_payload_type(
+    cli_pt: "int | None",
+    pt_set: set[int],
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """Operator-supplied --payload-type SHALL match the observed RTP payload type."""
+    if cli_pt is None:
+        return untestable("No --payload-type provided")
+    if len(pt_set) != 1:
+        return False, f"Observed RTP payload types are not constant: {sorted(pt_set)}"
+    observed = next(iter(pt_set))
+    if observed != cli_pt:
+        return False, f"CLI payload_type={cli_pt} != RTP payload type {observed}"
+    return True, f"CLI payload_type={cli_pt} matches RTP"
+
+
+def check_sr_ssrc_matches_rtp(
+    sender_reports: list,
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """RTCP Sender Report SSRC SHALL match the RTP stream SSRC (TR-10-1 §8.7).
+
+    Filtered: ``sender_reports`` are pre-selected by SSRC, consistent with the
+    SSRC-stays-filtered decision. No SRs → untestable (SR presence is a separate check).
+    """
+    if stream_info is None:
+        return untestable("RTP stream not detected")
+    if not sender_reports:
+        return untestable("No RTCP Sender Reports found")
+    expected_ssrc = stream_info.ssrc
+    bad = [r for r in sender_reports if r.ssrc != expected_ssrc]
+    if bad:
+        return False, (
+            f"{len(bad)} RTCP SR(s) use SSRC values different from "
+            f"RTP SSRC 0x{expected_ssrc:08X}"
+        )
+    return True, f"All RTCP SRs use RTP SSRC 0x{expected_ssrc:08X}"
+
+
+def check_udp_port_even(
+    dst_port: "int | None", clause: str,
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """UDP destination port SHALL be even and > 1024 (``clause`` names the essence TR §7)."""
+    if dst_port is None:
+        return untestable("Destination port not available")
+    issues = []
+    if dst_port % 2 != 0:
+        issues.append(f"port {dst_port} is odd")
+    if dst_port <= 1024:
+        issues.append(f"port {dst_port} is not > 1024")
+    if issues:
+        return False, "; ".join(issues) + f" ({clause})"
+    return True, f"Destination port {dst_port} is even and > 1024 ({clause})"
+
+
+def check_udp_port_above_5000(
+    dst_port: "int | None", clause: str,
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """UDP destination port SHOULD be > 5000 (``clause`` names the essence TR §7)."""
+    if dst_port is None:
+        return untestable("Destination port not available")
+    if dst_port <= 5000:
+        return False, f"Destination port {dst_port} is not > 5000 ({clause})"
+    return True, f"Destination port {dst_port} is > 5000 ({clause})"
+
+
+def check_sdp_port_vs_stream(
+    sdp_media: "MediaDescriptor | None",
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """SDP media port SHALL match the detected RTP destination port (TR-10-1 §10)."""
+    if sdp_media is None:
+        return untestable("No SDP transport file provided (use --sdp)")
+    if stream_info is None:
+        return untestable("RTP stream not detected")
+    sdp_port = sdp_media.port
+    if sdp_port != stream_info.dst_port:
+        return False, (
+            f"SDP port={sdp_port} differs from detected "
+            f"RTP port={stream_info.dst_port}"
+        )
+    return True, f"SDP port={sdp_port} matches detected RTP port"
+
+
+def check_sequence_continuity(seq_analysis) -> tuple[bool, str]:
+    """RTP sequence numbers SHOULD be contiguous (RFC 3550 §5.1)."""
+    if seq_analysis.total_missing or seq_analysis.total_duplicates:
+        return False, seq_analysis.summary()
+    return True, seq_analysis.summary()
+
+
+def check_cli_ssrc(
+    cli_ssrc: "int | None",
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """Operator-supplied --ssrc SHALL match the selected RTP stream SSRC."""
+    if cli_ssrc is None:
+        return untestable("No --ssrc provided")
+    if stream_info is None:
+        return untestable("RTP stream not detected")
+    observed = stream_info.ssrc
+    if observed != cli_ssrc:
+        return False, f"CLI ssrc=0x{cli_ssrc:08X} != selected RTP SSRC 0x{observed:08X}"
+    return True, f"CLI ssrc=0x{cli_ssrc:08X} matches selected RTP stream"
+
+
+def check_cli_port(
+    cli_port: "int | None",
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """Operator-supplied --port SHALL match the selected RTP destination port."""
+    if cli_port is None:
+        return untestable("No --port provided")
+    if stream_info is None:
+        return untestable("RTP stream not detected")
+    if stream_info.dst_port != cli_port:
+        return False, f"CLI port={cli_port} != selected RTP dst_port={stream_info.dst_port}"
+    return True, f"CLI port={cli_port} matches selected RTP stream"
+
+
+def check_cli_dst_ip(
+    cli_dst_ip: "str | None",
+    stream_info: "ipmx_parse_rtp_pcap.RtpStreamInfo | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """Operator-supplied --dst-ip SHALL match the selected RTP destination IP."""
+    if cli_dst_ip is None:
+        return untestable("No --dst-ip provided")
+    if stream_info is None:
+        return untestable("RTP stream not detected")
+    if stream_info.dst_ip != cli_dst_ip:
+        return False, f"CLI dst-ip={cli_dst_ip} != selected RTP dst_ip={stream_info.dst_ip}"
+    return True, f"CLI dst-ip={cli_dst_ip} matches selected RTP stream"
+
+
+def check_cli_rtcp_port(
+    cli_rtcp_port: "int | None",
+    resolved_rtcp_port: "int | None",
+) -> tuple[bool, str] | tuple[bool, str, bool]:
+    """Operator-supplied --rtcp-port SHALL match the selected RTCP destination port."""
+    if cli_rtcp_port is None:
+        return untestable("No --rtcp-port provided")
+    if resolved_rtcp_port != cli_rtcp_port:
+        return False, f"CLI rtcp-port={cli_rtcp_port} != selected RTCP port {resolved_rtcp_port}"
+    return True, f"CLI rtcp-port={cli_rtcp_port} matches selected RTCP stream"
 
 
 def check_sdp_session_consistency(

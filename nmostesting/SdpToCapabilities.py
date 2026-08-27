@@ -45,7 +45,7 @@ from .MatroxCCF import (
     CapFormatInterlaceMode, CapFormatColorspace, CapFormatTransferCharacteristic,
     CapFormatColorSampling, CapFormatComponentDepth, CapFormatChannelCount,
     CapFormatSampleRate, CapFormatSampleDepth, CapFormatBitRate, CapFormatProfile,
-    CapFormatLevel, CapFormatSublevel, CapTransportBitRate,
+    CapFormatLevel, CapFormatSublevel, CapFormatFbblevel, CapTransportBitRate,
     CapTransportPacketTime, CapTransportMaxPacketTime, CapTransport_ST2110_21_SenderType,
     CapTransportPacketTransmissionMode, CapTransportParameterSetsFlowMode,
     CapTransportParameterSetsTransportMode, CapTransportChannelOrder,
@@ -107,18 +107,21 @@ class SdpToCapabilitiesConverter:
             primary_capset = self._convert_media_to_capset(
                 self.sdp.primary_media,
                 "SDP",
-                preference=100
+                preference=100,
+                mux=mux
             )
 
-            # Handle secondary media (redundancy) - verify it's identical to primary
-            if (self.sdp.secondary_media and
-                self.sdp.has_group_attribute and
-                    self.sdp.secondary_media != self.sdp.primary_media):
+            # Handle secondary media (redundancy) - verify it's identical to primary.
+            # The two descriptors are compared through their capabilities below;
+            # MediaDescriptor has no __eq__, so comparing the objects themselves
+            # would be an identity test that is always true and never skips anything.
+            if self.sdp.secondary_media and self.sdp.has_group_attribute:
 
                 secondary_capset = self._convert_media_to_capset(
                     self.sdp.secondary_media,
                     "SDP_Verification",
-                    preference=100
+                    preference=100,
+                    mux=mux
                 )
 
                 # Verify capabilities are identical
@@ -178,6 +181,8 @@ class SdpToCapabilitiesConverter:
             media: MediaDescriptor from SDP
             label: Label for the CapSet
             preference: Preference value for the CapSet
+            mux: True when the Receiver is of format mux, which re-prefixes
+                 AM824 and MP2T as application/* and makes AM824 a mux layer
 
         Returns:
             CapSet: Converted capability set
@@ -213,8 +218,14 @@ class SdpToCapabilitiesConverter:
             label=label,
             preference=preference)
 
-    def _determine_format_type(self, media: MediaDescriptor, mux: bool = False) -> Optional[str]:
-        """Determine the NMOS format type from media descriptor"""
+    def _determine_format_type(self, media: MediaDescriptor) -> Optional[str]:
+        """Determine which family of capabilities the media carries.
+
+        This selects the extraction path only; it is deliberately independent of
+        the mux flag, because a mux Receiver changes how the stream is *named*,
+        not which properties the SDP describes. AM824 still carries channel
+        count, sample rate and packet time when the Receiver is a mux.
+        """
         if media.type is None:
             raise ValueError("Media descriptor missing type")
 
@@ -229,10 +240,7 @@ class SdpToCapabilitiesConverter:
                 return FormatVideo
         elif media.type == MatroxSdpEnums.Audio:
             assert media.format_code != 0 and media.format_string is None
-            if media.encoding_name == MatroxSdpEnums.EncodingAM824 and mux:
-                return FormatMux
-            else:
-                return FormatAudio
+            return FormatAudio
         elif media.type == MatroxSdpEnums.Application:
             assert media.format_code == 0 and media.encoding_name is None
             if media.format_string == MatroxSdpEnums.FormatUsb:
@@ -244,10 +252,12 @@ class SdpToCapabilitiesConverter:
 
     def _get_media_type_from_format(self, format_type: str, media: MediaDescriptor, mux: bool = False) -> Optional[str]:
         """Get the media type string for capabilities"""
-        # If the Receiver is of format mux then always application/
-        if mux:
+        # A mux Receiver sees the stream as opaque, so the two encodings that can
+        # carry a multiplex are reported as application/*. Every other encoding
+        # keeps its own prefix regardless of the flag: video/raw stays video/raw.
+        if mux and media.encoding_name in (MatroxSdpEnums.EncodingAM824,
+                                           MatroxSdpEnums.EncodingMP2T):
             type = "application/"
-        # Otherwise, use the media type
         else:
             type = media.type.s + "/"
 
@@ -262,6 +272,41 @@ class SdpToCapabilitiesConverter:
             if media.format_string is None:
                 raise ValueError("Media descriptor missing format string")
             return type + media.format_string.s
+
+    # SDP colorimetry values that exist unchanged in the NMOS colorspace
+    # vocabulary. Anything else the SDP may carry — SMPTE240M, ALPHA,
+    # UNSPECIFIED — has no NMOS equivalent and collapses to UNSPECIFIED.
+    _COLORSPACE_FROM_SDP = {
+        "BT601": "BT601", "BT709": "BT709", "BT2020": "BT2020", "BT2100": "BT2100",
+        "BT601-5": "BT601-5", "BT709-2": "BT709-2",
+        "ST2065-1": "ST2065-1", "ST2065-3": "ST2065-3", "XYZ": "XYZ",
+    }
+    _COLORSPACE_UNSPECIFIED = "UNSPECIFIED"
+
+    # Keys are SDP spellings, values NMOS ones; the two vocabularies agree on every
+    # transfer characteristic. Anything else collapses to UNSPECIFIED.
+    _TRANSFER_FROM_SDP = {
+        "SDR": "SDR", "HLG": "HLG", "PQ": "PQ", "LINEAR": "LINEAR",
+        "BT2100LINPQ": "BT2100LINPQ", "BT2100LINHLG": "BT2100LINHLG",
+        "ST2065-1": "ST2065-1", "ST428-1": "ST428-1",
+        "DENSITY": "DENSITY", "ST2115LOGS3": "ST2115LOGS3",
+    }
+
+    def _get_transfer_characteristic_from_sdp(self, transfer) -> str:
+        """Map an SDP transfer characteristic to the NMOS one."""
+        key = str(transfer).upper() if transfer else ""
+        return self._TRANSFER_FROM_SDP.get(key, self._COLORSPACE_UNSPECIFIED)
+
+    def _get_colorspace_from_sdp(self, colorimetry, color_range) -> str:
+        """Map an SDP colorimetry to an NMOS colorspace.
+
+        A full-range signal carries no NMOS colorspace of its own, so it
+        reports UNSPECIFIED regardless of the colorimetry declared alongside it.
+        """
+        if color_range is not None and str(color_range).lower() == "full":
+            return self._COLORSPACE_UNSPECIFIED
+        key = str(colorimetry).upper() if colorimetry else ""
+        return self._COLORSPACE_FROM_SDP.get(key, self._COLORSPACE_UNSPECIFIED)
 
     def _add_video_capabilities(self, media: MediaDescriptor, capabilities: Dict[str, Capability]):
         """Add video-specific capabilities"""
@@ -288,28 +333,35 @@ class SdpToCapabilitiesConverter:
             )
 
         # Interlace mode
+        # ST 2110-20 signals PsF as "interlace; segmented" -- segmented qualifies
+        # interlace rather than replacing it. Testing it as a sibling of interlaced
+        # left the branch unreachable, so a PsF stream read back as interlaced_bff.
         interlace_mode = "progressive"
         if media.interlaced:
-            interlace_mode = "interlaced_tff" if media.top_field_first else "interlaced_bff"
-        elif media.segmented:
-            interlace_mode = "interlaced_psf"
+            if media.segmented:
+                interlace_mode = "interlaced_psf"
+            else:
+                interlace_mode = "interlaced_tff" if media.top_field_first else "interlaced_bff"
 
         capabilities[CapFormatInterlaceMode] = Capability(
             CapFormatInterlaceMode,
             RangeValue(values=(interlace_mode,), type=RangeType.STRING)
         )
 
-        # Colorimetry
+        # Colorimetry. The SDP colorimetry vocabulary is wider than the NMOS
+        # colorspace one, so it is mapped rather than passed through.
         if media.colorimetry:
-            colorspace = str(media.colorimetry)
+            colorspace = self._get_colorspace_from_sdp(media.colorimetry, media.color_range)
             capabilities[CapFormatColorspace] = Capability(
                 CapFormatColorspace,
                 RangeValue(values=(colorspace,), type=RangeType.STRING)
             )
 
-        # Transfer characteristic
+        # Transfer characteristic. Mapped rather than passed through, for the same
+        # reason as colorimetry: the SDP and NMOS vocabularies are not identical.
         if media.transfer_characteristic:
-            transfer_characteristic = str(media.transfer_characteristic)
+            transfer_characteristic = self._get_transfer_characteristic_from_sdp(
+                media.transfer_characteristic)
             capabilities[CapFormatTransferCharacteristic] = Capability(
                 CapFormatTransferCharacteristic,
                 RangeValue(values=(transfer_characteristic,), type=RangeType.STRING)
@@ -351,6 +403,13 @@ class SdpToCapabilitiesConverter:
                 capabilities[CapFormatSublevel] = Capability(
                     CapFormatSublevel,
                     RangeValue(values=(sublevel,), type=RangeType.STRING)
+                )
+
+            if media.fbb_level:
+                fbblevel = str(media.fbb_level)
+                capabilities[CapFormatFbblevel] = Capability(
+                    CapFormatFbblevel,
+                    RangeValue(values=(fbblevel,), type=RangeType.STRING)
                 )
 
             if media.jxsv_packet_mode == MatroxSdpEnums.CodeStream:
@@ -512,11 +571,12 @@ class SdpToCapabilitiesConverter:
                 RangeValue(values=(sample_rate,), type=RangeType.RATIONAL)
             )
 
-        if media.bitrate_kbits > 0:
-            capabilities[CapTransportBitRate] = Capability(
-                CapTransportBitRate,
-                RangeValue(values=(media.bitrate_kbits,), type=RangeType.INT)
-            )
+        # transport:bit_rate is NOT emitted for every audio encoding. For
+        # uncompressed essence the bit rate is fully determined by
+        # sample_rate x channels x sample_depth, so stating it constrains nothing
+        # a receiver cannot already derive -- the same reason video/raw does not
+        # report it while jxsv/H.264/H.265 do. Only the AAC family, whose bit rate
+        # is an independent parameter, reports it; see the AAC branches below.
 
         if (media.encoding_name == MatroxSdpEnums.EncodingL8 or media.encoding_name == MatroxSdpEnums.EncodingL16 or
                 media.encoding_name == MatroxSdpEnums.EncodingL20 or media.encoding_name == MatroxSdpEnums.EncodingL24):
@@ -568,6 +628,14 @@ class SdpToCapabilitiesConverter:
 
             profile, level = get_aac_profile_level_from_sdp(media.codec_profile_level_id)
 
+            # AAC bit rate is an independent parameter, so the transport rate
+            # from b=AS is worth reporting (unlike L-PCM / AM824).
+            if media.bitrate_kbits > 0:
+                capabilities[CapTransportBitRate] = Capability(
+                    CapTransportBitRate,
+                    RangeValue(values=(media.bitrate_kbits,), type=RangeType.INT)
+                )
+
             if profile:
                 capabilities[CapFormatProfile] = Capability(
                     CapFormatProfile,
@@ -583,7 +651,7 @@ class SdpToCapabilitiesConverter:
             if media.aac_bitrate != 0:
                 capabilities[CapFormatBitRate] = Capability(
                     CapFormatBitRate,
-                    RangeValue(values=(media.aac_bitrate / 1000,), type=RangeType.INT)  # in Kbps
+                    RangeValue(values=(media.aac_bitrate // 1000,), type=RangeType.INT)  # in Kbps
                 )
 
             if media.aac_max_displacement > 0:
@@ -621,21 +689,33 @@ class SdpToCapabilitiesConverter:
                     RangeValue(values=(float(media.max_p_time_us)/1000.0,), type=RangeType.FLOAT)
                 )
 
-            # RFC 3640 Packet time
-            if media.aac_constant_duration > 0:
+            # RFC 3640 Packet time. constantDuration is the access unit duration
+            # measured in RTP timestamp units, i.e. samples at the rtpmap clock
+            # rate; packet_time is milliseconds. Floored to microseconds first so
+            # the value matches the a=ptime: the same stream would carry.
+            if media.aac_constant_duration > 0 and media.sample_rate > 0:
+                ptime_us = (media.aac_constant_duration * 1000000) // media.sample_rate
                 capabilities[CapTransportPacketTime] = Capability(
                     CapTransportPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
                 capabilities[CapTransportMaxPacketTime] = Capability(
                     CapTransportMaxPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
 
         elif (media.encoding_name == MatroxSdpEnums.EncodingAAC_LATM or
               media.encoding_name == MatroxSdpEnums.EncodingAAC_ADTS):
 
             profile, level = get_aac_profile_level_from_sdp(media.codec_profile_level_id)
+
+            # AAC bit rate is an independent parameter, so the transport rate
+            # from b=AS is worth reporting (unlike L-PCM / AM824).
+            if media.bitrate_kbits > 0:
+                capabilities[CapTransportBitRate] = Capability(
+                    CapTransportBitRate,
+                    RangeValue(values=(media.bitrate_kbits,), type=RangeType.INT)
+                )
 
             if profile:
                 capabilities[CapFormatProfile] = Capability(
@@ -652,7 +732,7 @@ class SdpToCapabilitiesConverter:
             if media.aac_bitrate != 0:
                 capabilities[CapFormatBitRate] = Capability(
                     CapFormatBitRate,
-                    RangeValue(values=(media.aac_bitrate / 1000,), type=RangeType.INT)  # in Kbps
+                    RangeValue(values=(media.aac_bitrate // 1000,), type=RangeType.INT)  # in Kbps
                     )
 
             if media.aac_max_displacement > 0:
@@ -666,7 +746,11 @@ class SdpToCapabilitiesConverter:
                     RangeValue(values=("non_interleaved_access_units",), type=RangeType.STRING)
                 )
 
-            if media.aac_config_present is False:
+            # A config present in the SDP means the parameter sets are carried
+            # out of band; whether they are ALSO in band depends on the config
+            # being empty. With no config present at all they can only be in band,
+            # and an empty one leaves nothing to describe the stream.
+            if media.aac_config_present:
                 if media.aac_config == "":
                     capabilities[CapTransportParameterSetsTransportMode] = Capability(
                         CapTransportParameterSetsTransportMode,
@@ -678,6 +762,9 @@ class SdpToCapabilitiesConverter:
                         RangeValue(values=("in_and_out_of_band",), type=RangeType.STRING)
                     )
             else:
+                if media.aac_config == "":
+                    raise ValueError("AAC LATM/ADTS media declares no configuration, "
+                                     "neither in band nor out of band")
                 capabilities[CapTransportParameterSetsTransportMode] = Capability(
                     CapTransportParameterSetsTransportMode,
                     RangeValue(values=("out_of_band",), type=RangeType.STRING)
@@ -696,15 +783,19 @@ class SdpToCapabilitiesConverter:
                     RangeValue(values=(float(media.max_p_time_us)/1000.0,), type=RangeType.FLOAT)
                 )
 
-            # RFC 3640 Packet time
-            if media.aac_constant_duration > 0:
+            # RFC 3640 Packet time. constantDuration is the access unit duration
+            # measured in RTP timestamp units, i.e. samples at the rtpmap clock
+            # rate; packet_time is milliseconds. Floored to microseconds first so
+            # the value matches the a=ptime: the same stream would carry.
+            if media.aac_constant_duration > 0 and media.sample_rate > 0:
+                ptime_us = (media.aac_constant_duration * 1000000) // media.sample_rate
                 capabilities[CapTransportPacketTime] = Capability(
                     CapTransportPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
                 capabilities[CapTransportMaxPacketTime] = Capability(
                     CapTransportMaxPacketTime,
-                    RangeValue(values=(media.aac_constant_duration,), type=RangeType.FLOAT)
+                    RangeValue(values=(ptime_us / 1000.0,), type=RangeType.FLOAT)
                 )
 
     def _add_data_capabilities(self, media: MediaDescriptor, capabilities: Dict[str, Capability]):
@@ -764,32 +855,34 @@ class SdpToCapabilitiesConverter:
             )
 
 
-def convert_sdp_file_to_capabilities(sdp_file_path: str) -> Caps:
+def convert_sdp_file_to_capabilities(sdp_file_path: str, mux: bool = False) -> Caps:
     """
     Convenience function to convert an SDP file to CCF Capabilities
 
     Args:
         sdp_file_path: Path to the SDP file
+        mux: True when the Receiver is of format mux
 
     Returns:
         Caps: CCF Capabilities structure
     """
     converter = SdpToCapabilitiesConverter()
-    return converter.convert_file(sdp_file_path)
+    return converter.convert_file(sdp_file_path, mux)
 
 
-def convert_sdp_string_to_capabilities(sdp_content: str) -> Caps:
+def convert_sdp_string_to_capabilities(sdp_content: str, mux: bool = False) -> Caps:
     """
     Convenience function to convert SDP content to CCF Capabilities
 
     Args:
         sdp_content: SDP content as string
+        mux: True when the Receiver is of format mux
 
     Returns:
         Caps: CCF Capabilities structure
     """
     converter = SdpToCapabilitiesConverter()
-    return converter.convert_string(sdp_content)
+    return converter.convert_string(sdp_content, mux)
 
 
 if __name__ == "__main__":

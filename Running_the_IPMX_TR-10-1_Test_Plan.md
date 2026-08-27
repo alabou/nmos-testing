@@ -472,8 +472,8 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
         - Test the Receivers of the DuT:
 
-            - Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the IPMX JPEG XS Profile.
-            - Additionally, when testing compliance for the IPMX JPEG XS TDC Profile Mode Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the IPMX JPEG XS TDC Profile Mode.
+            - Redo Phase one "Follow the manual tests described in TP-1 sections 14", more specifically section 14.3.1, with a reference Sender configured for the IPMX JPEG XS Profile.
+            - Additionally, when testing compliance for the IPMX JPEG XS TDC Profile Mode Redo Phase one "Follow the manual tests described in TP-1 sections 14", more specifically section 14.3.1, with a reference Sender configured for the IPMX JPEG XS TDC Profile Mode.
 
     - H.264
         - Activate the Senders of the DuT, each one using a configuration from the `cfg` directory for an H.264 video stream.
@@ -550,7 +550,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
     - Test the Receivers of the DuT:
 
-        - Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the vendor selected IPMX Profile with HKEP enabled.
+        - Redo Phase one "Follow the manual tests described in TP-1 sections 14", more specifically section 14.3.1, with a reference Sender configured for the vendor selected IPMX Profile with HKEP enabled.
 
     #### HKEP protocol
 
@@ -560,6 +560,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
     - The PCAP shall be analysed with the ipmx/hkep/hkepDissector.py script with the --validate-all command line option, and all the HKEP validations must PASS.
 
+        - It is possible that the disconnect from the Receiver at the end of the above sequence causes an invalid final sequence of messages, as the Sender may not be able to complete the message exchange before the TCP connection is closed. Such an error in the last sequence of the PCAP must be ignored.
 
 10. **PEP Capability Tests**
 
@@ -596,7 +597,7 @@ These tests verify that your Device Under Test (DuT) correctly implements the NM
 
     - Test the Receivers of the DuT:
 
-        - Redo Phase one "Follow the manual tests described in TP-1 sections 14" with a reference Sender configured for the vendor selected IPMX Profile with PEP enabled.
+        - Redo Phase one "Follow the manual tests described in TP-1 sections 14", more specifically section 14.3.1, with a reference Sender configured for the vendor selected IPMX Profile with PEP enabled.
 
     #### PEP privacy requirements
 

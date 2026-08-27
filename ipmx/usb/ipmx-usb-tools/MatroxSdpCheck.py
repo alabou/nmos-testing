@@ -412,7 +412,7 @@ def check_sdp_st2110_20(md: MediaDescriptor) -> None:
     valid_transfers = {
         MatroxSdpEnums.TransferSDR, MatroxSdpEnums.TransferPQ, MatroxSdpEnums.TransferHLG, MatroxSdpEnums.TransferLinear,
         MatroxSdpEnums.TransferBT2100LINPQ, MatroxSdpEnums.TransferBT2100LINHLG, MatroxSdpEnums.TransferST2065_1,
-        MatroxSdpEnums.TransferST248_1, MatroxSdpEnums.TransferDensity, MatroxSdpEnums.TransferUnspecified,
+        MatroxSdpEnums.TransferST428_1, MatroxSdpEnums.TransferDensity, MatroxSdpEnums.TransferUnspecified,
         MatroxSdpEnums.TransferST2115LOGS3
     }
     if md.transfer_characteristic is None:
@@ -497,7 +497,7 @@ def check_sdp_st2110_30(md: MediaDescriptor) -> None:
     if md.p_time_us == 0:
         raise SdpCheckError("ST2110-30 invalid ptime")
     
-    valid_ptimes = {125, 120, 250, 333, 330, 1000, 4000, 272, 270, 363, 360, 1088, 1090, 4354, 4350}
+    valid_ptimes = {125, 120, 250, 333, 330, 1000, 4000, 136, 130, 272, 270, 363, 360, 1088, 1090, 4354, 4350}
     if md.p_time_us not in valid_ptimes:
         raise SdpCheckError("ST2110-30 unexpected ptime")
     

@@ -17,6 +17,7 @@
 import asyncio
 import ipaddress
 import threading
+import time
 import requests
 import websocket
 import websockets
@@ -239,6 +240,26 @@ def do_request(method, url, headers=None, **kwargs):
             client_cert = (CONFIG.CERT_CLIENT, CONFIG.KEY_CLIENT)
         settings = s.merge_environment_settings(prepped.url, {}, None, CONFIG.CERT_TRUST_ROOT_CA, client_cert)
         response = s.send(prepped, timeout=CONFIG.HTTP_TIMEOUT, **settings)
+
+        # --- proxy adaptation: retry gateway errors on SAFE methods ----
+        # Inert unless PROXY_RETRY_ATTEMPTS is set in UserConfig.py, so the shipped
+        # behaviour of this tool is unchanged for anyone else.
+        #
+        # SAFE METHODS ONLY. A retried POST/PATCH/PUT/DELETE could apply an
+        # activation twice; a lost answer is not the same as an unperformed action.
+        # Each retry is printed, so this can never silently mask a real fault.
+        retries = int(getattr(CONFIG, "PROXY_RETRY_ATTEMPTS", 0) or 0)
+        if retries and method.upper() in ("GET", "HEAD", "OPTIONS"):
+            backoff = float(getattr(CONFIG, "PROXY_RETRY_BACKOFF_S", 1.0) or 1.0)
+            for attempt in range(1, retries + 1):
+                if response.status_code not in (502, 503, 504):
+                    break
+                print(f"    [proxy-retry {attempt}/{retries}] {method} {url} "
+                      f"-> {response.status_code}, retrying in {backoff:.1f}s")
+                time.sleep(backoff)
+                response = s.send(s.prepare_request(req),
+                                  timeout=CONFIG.HTTP_TIMEOUT, **settings)
+        # ----------------------------------------------------------------------
         if prepped.url.startswith("https://"):
             if not response.url.startswith("https://"):
                 return False, "Redirect changed protocol"
