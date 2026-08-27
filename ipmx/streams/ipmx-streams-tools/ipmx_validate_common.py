@@ -147,6 +147,9 @@ class SenderReportInfo:
     # Ethernet (L2) destination MAC (lowercase colon-hex) of the frame carrying
     # this RTCP SR; used to validate the RFC 1112 §6.4 multicast MAC mapping.
     dst_mac: str | None = None
+    # Structural findings for this SR: those raised by the SR and its IPMX Info
+    # Block, plus any raised while splitting the datagram that carried it.
+    issues: list[ipmx_sender_report.RtcpIssue] = field(default_factory=list)
 
     @property
     def ntp_unix(self) -> float:
@@ -306,7 +309,8 @@ def parse_sender_reports(
     for udp in iter_udp_packets(pcap_path, effective_port):
         if effective_dst_ip is not None and udp.dst_ip != effective_dst_ip:
             continue
-        for packet in ipmx_sender_report.iter_rtcp_packets(udp.payload):
+        packets, datagram_issues = ipmx_sender_report.scan_rtcp_datagram(udp.payload)
+        for packet in packets:
             parsed = ipmx_sender_report.parse_rtcp_sender_report(packet)
             if parsed is None:
                 continue
@@ -329,6 +333,7 @@ def parse_sender_reports(
                     reception_report_count=parsed.reception_report_count,
                     dscp=udp.dscp,
                     dst_mac=udp.dst_mac,
+                    issues=parsed.issues + datagram_issues,
                 )
             )
     reports.sort(key=lambda sr: sr.capture_time)

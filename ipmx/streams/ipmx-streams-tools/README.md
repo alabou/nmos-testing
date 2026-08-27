@@ -90,7 +90,21 @@ python3 ipmx_pcm_validate_pcap.py capture.pcap \
 
 ```bash
 python3 ipmx_parse_sender_report_pcap.py capture.pcap
+python3 ipmx_parse_sender_report_pcap.py capture.pcap --verbose
 ```
+
+The parser checks the framing of every Sender Report against TR-10-1 §8.7 and
+RFC 3550 §6.4.1 — declared lengths against the bytes actually on the wire, the
+Media Info Block chain against the IPMX Info Block that contains it, and the
+RTCP packet chain against the UDP datagram that carries it. A summary line
+always reports how many Sender Reports carry findings; `--verbose` prints each
+distinct finding with the number of Sender Reports affected. Findings also go
+into the JSON report (`issues` per Sender Report) and the CSV (`issue_codes`).
+
+This matters because a bad length field is silently destructive: a Media Info
+Block that overruns its declared IPMX Info Block is discarded, and the block
+chain simply appears to end early. Without `--verbose` that looks identical to
+a Sender Report that legitimately carries no Media Info Block.
 
 Each tool prints a per-requirement PASS / FAIL / CANNOT_TEST table and
 exits non-zero if any SHALL fails. Use `--full-report` for verbose output

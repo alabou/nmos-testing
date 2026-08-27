@@ -20,8 +20,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass, fields as dc_fields
-from enum import IntEnum
+from dataclasses import dataclass, field, fields as dc_fields
+from enum import Enum, IntEnum
 from pathlib import Path
 from collections.abc import Sequence
 from typing import BinaryIO, Iterator
@@ -42,6 +42,61 @@ class SdesItemType(IntEnum):
 
     END = 0         # Null item that terminates a chunk's item list
     CNAME = 1       # Canonical end-point identifier
+
+
+class RtcpIssueLevel(str, Enum):
+    """How badly a structural finding breaks the wire format."""
+
+    ERROR = "error"      # violates a "shall"/"MUST": TR-10-1 §8.7, RFC 3550 §6.4.1
+    WARNING = "warning"  # violates a "should", or is well-formed but not decodable
+
+
+class RtcpIssueCode(str, Enum):
+    """Structural problems detectable while parsing an RTCP Sender Report.
+
+    Every code names one specific way the bytes on the wire disagree with
+    TR-10-1 §8.7 (RTCP Sender Report General Provision) or RFC 3550 §6.4.1.
+    """
+
+    # --- UDP datagram level -------------------------------------------------
+    DATAGRAM_NOT_COVERED = "datagram-not-covered"    # bytes outside any RTCP packet
+    SUBPACKET_OVERRUN = "subpacket-overrun"          # declared length runs past the end
+    # --- Sender Report level ------------------------------------------------
+    SR_TRUNCATED = "sr-truncated"                    # too short for its own RC blocks
+    SR_RC_NON_ZERO = "sr-rc-non-zero"                # TR-10-1 §8.7: RC should be 0
+    SR_NO_IPMX_INFO_BLOCK = "sr-no-ipmx-info-block"  # no extension after sender info
+    # --- IPMX Info Block level ----------------------------------------------
+    INFO_BAD_TAG = "info-bad-tag"                    # extension tag is not 0x5831
+    INFO_OVERRUN = "info-overrun"                    # declared length exceeds the SR
+    INFO_UNDERRUN = "info-underrun"                  # declared length leaves a tail
+    INFO_TRUNCATED = "info-truncated"                # body cannot hold the fixed fields
+    INFO_RESERVED_NON_ZERO = "info-reserved-non-zero"  # TR-10-1 §8.7: should be 0
+    # --- Media Info Block level ---------------------------------------------
+    MIB_OVERRUN = "mib-overrun"                      # declared length exceeds the block
+    MIB_UNKNOWN_TYPE = "mib-unknown-type"            # no decoder registered
+    MIB_UNDECODABLE = "mib-undecodable"              # known type, payload too short
+
+
+@dataclass
+class RtcpIssue:
+    """One structural finding, anchored to the byte offset that revealed it."""
+
+    code: RtcpIssueCode
+    level: RtcpIssueLevel
+    detail: str
+    offset: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "code": self.code.value,
+            "level": self.level.value,
+            "detail": self.detail,
+            "offset": self.offset,
+        }
+
+    def __str__(self) -> str:
+        where = f" @{self.offset}" if self.offset is not None else ""
+        return f"[{self.level.value}] {self.code.value}{where}: {self.detail}"
 
 
 def pad_string(value: str, length: int) -> bytes:
@@ -837,6 +892,7 @@ class ParsedIPMXInfoBlock:
     mediaclk: str
     media_blocks: list[ParsedMediaInfoBlock]
     raw_bytes: bytes = b""
+    issues: list[RtcpIssue] = field(default_factory=list)
 
 
 @dataclass
@@ -850,6 +906,8 @@ class ParsedSenderReport:
     info_block: ParsedIPMXInfoBlock | None
     raw_blocks: list[ParsedMediaInfoBlock]
     reception_report_count: int = 0
+    # Structural findings from this SR and from the IPMX Info Block inside it.
+    issues: list[RtcpIssue] = field(default_factory=list)
 
 
 @dataclass
@@ -937,19 +995,69 @@ def build_sdes_cname(ssrc: int, cname: str) -> bytes:
     return bytes(header + payload)
 
 
-def iter_rtcp_packets(payload: bytes) -> Iterator[bytes]:
+def scan_rtcp_datagram(payload: bytes) -> tuple[list[bytes], list[RtcpIssue]]:
+    """Split a UDP payload into RTCP packets and report what it cannot account for.
+
+    RFC 3550 §6.4.1 makes each RTCP packet self-delimiting through its *length*
+    field, so a well-formed datagram is tiled exactly by its packets.  Any byte
+    left over means some packet under-declared its length; that is reported
+    rather than silently dropped, because the leftover bytes usually hold real
+    content (a Media Info Block, an SDES packet) that a plain walk discards.
+    """
+    packets: list[bytes] = []
+    issues: list[RtcpIssue] = []
+    last_desc = "none"
     offset = 0
     while offset + 4 <= len(payload):
         v_p_count = payload[offset]
         version = v_p_count >> 6
-        if version != 2:
-            break
         length_words = int.from_bytes(payload[offset + 2 : offset + 4], "big")
         packet_len = (length_words + 1) * 4
-        if packet_len <= 0 or offset + packet_len > len(payload):
+        if version != 2:
+            issues.append(RtcpIssue(
+                RtcpIssueCode.DATAGRAM_NOT_COVERED,
+                RtcpIssueLevel.ERROR,
+                f"stopped at datagram offset {offset} of {len(payload)}: RTCP "
+                f"version is {version}, expected 2 — {len(payload) - offset} "
+                f"byte(s) are not covered by any RTCP packet; the preceding "
+                f"packet ({last_desc}) under-declared its length",
+                offset,
+            ))
             break
-        yield payload[offset : offset + packet_len]
+        if offset + packet_len > len(payload):
+            issues.append(RtcpIssue(
+                RtcpIssueCode.SUBPACKET_OVERRUN,
+                RtcpIssueLevel.ERROR,
+                f"RTCP packet PT={payload[offset + 1]} at datagram offset "
+                f"{offset} declares {length_words} word(s) = {packet_len} bytes "
+                f"but only {len(payload) - offset} byte(s) remain in the datagram",
+                offset,
+            ))
+            break
+        packets.append(payload[offset : offset + packet_len])
+        last_desc = (
+            f"PT={payload[offset + 1]} at offset {offset}, declared "
+            f"{length_words} word(s) = {packet_len} bytes"
+        )
         offset += packet_len
+    if offset < len(payload) and not issues:
+        issues.append(RtcpIssue(
+            RtcpIssueCode.DATAGRAM_NOT_COVERED,
+            RtcpIssueLevel.ERROR,
+            f"{len(payload) - offset} trailing byte(s) at datagram offset "
+            f"{offset} are too short to form an RTCP packet header",
+            offset,
+        ))
+    return packets, issues
+
+
+def iter_rtcp_packets(payload: bytes) -> Iterator[bytes]:
+    """Yield the RTCP packets of a compound datagram, ignoring structural issues.
+
+    Use :func:`scan_rtcp_datagram` when the issues matter.
+    """
+    packets, _ = scan_rtcp_datagram(payload)
+    return iter(packets)
 
 
 # ---------------------------------------------------------------------------
@@ -1095,21 +1203,81 @@ def decode_media_info_block(
     return decoder(payload)  # type: ignore[operator]
 
 
-def parse_ipmx_info_block(data: bytes) -> ParsedIPMXInfoBlock | None:
+def parse_ipmx_info_block(
+    data: bytes, issues: list[RtcpIssue] | None = None
+) -> ParsedIPMXInfoBlock | None:
+    """Parse the IPMX Info Block extension (TR-10-1 §8.7) at the start of *data*.
+
+    *data* is everything that follows the SR sender info.  When *issues* is
+    given, every structural finding is appended to it — including the ones on
+    the paths that return ``None``, which would otherwise be indistinguishable
+    from "this SR simply carries no IPMX extension".
+    """
+    found: list[RtcpIssue] = []
+
+    def report(
+        code: RtcpIssueCode,
+        level: RtcpIssueLevel,
+        detail: str,
+        offset: int | None = None,
+    ) -> None:
+        found.append(RtcpIssue(code, level, detail, offset))
+
+    def finish(block: ParsedIPMXInfoBlock | None) -> ParsedIPMXInfoBlock | None:
+        if issues is not None:
+            issues.extend(found)
+        if block is not None:
+            block.issues = found
+        return block
+
     if len(data) < 4:
-        return None
+        if data:
+            report(
+                RtcpIssueCode.INFO_TRUNCATED, RtcpIssueLevel.ERROR,
+                f"{len(data)} byte(s) follow the sender info — too few for an "
+                f"IPMX Info Block header", 0,
+            )
+        return finish(None)
     tag = int.from_bytes(data[0:2], "big")
     if tag != 0x5831:
-        return None
+        report(
+            RtcpIssueCode.INFO_BAD_TAG, RtcpIssueLevel.WARNING,
+            f"extension tag is 0x{tag:04x}, not the IPMX tag 0x5831 "
+            f"(TR-10-1 §8.7)", 0,
+        )
+        return finish(None)
     length_words = int.from_bytes(data[2:4], "big")
     total_bytes = (length_words + 1) * 4
     if total_bytes > len(data):
-        return None
+        report(
+            RtcpIssueCode.INFO_OVERRUN, RtcpIssueLevel.ERROR,
+            f"IPMX Info Block declares {length_words} word(s) = {total_bytes} "
+            f"bytes but only {len(data)} byte(s) follow the sender info", 2,
+        )
+        return finish(None)
+    if total_bytes < len(data):
+        report(
+            RtcpIssueCode.INFO_UNDERRUN, RtcpIssueLevel.WARNING,
+            f"IPMX Info Block declares {length_words} word(s) = {total_bytes} "
+            f"bytes, leaving {len(data) - total_bytes} byte(s) of the Sender "
+            f"Report after it", total_bytes,
+        )
     body = data[4:total_bytes]
     if len(body) < 80:
-        return None
+        report(
+            RtcpIssueCode.INFO_TRUNCATED, RtcpIssueLevel.ERROR,
+            f"IPMX Info Block body is {len(body)} byte(s); the fixed fields "
+            f"(version, reserved, 64-byte ts-refclk, 12-byte mediaclk) need 80", 4,
+        )
+        return finish(None)
     version = body[0]
     reserved = int.from_bytes(body[1:4], "big")
+    if reserved != 0:
+        report(
+            RtcpIssueCode.INFO_RESERVED_NON_ZERO, RtcpIssueLevel.WARNING,
+            f"reserved field is 0x{reserved:06x}; TR-10-1 §8.7 says it should "
+            f"be 0", 5,
+        )
     ts_refclk = body[4:68].split(b"\x00", 1)[0].decode("ascii", "ignore")
     mediaclk = body[68:80].split(b"\x00", 1)[0].decode("ascii", "ignore")
     offset = 80
@@ -1119,9 +1287,37 @@ def parse_ipmx_info_block(data: bytes) -> ParsedIPMXInfoBlock | None:
         block_len_words = int.from_bytes(body[offset + 2 : offset + 4], "big")
         block_total = (block_len_words + 1) * 4
         if block_total <= 0 or offset + block_total > len(body):
+            report(
+                RtcpIssueCode.MIB_OVERRUN, RtcpIssueLevel.ERROR,
+                f"Media Info Block type 0x{block_type:04x} declares "
+                f"{block_len_words} word(s) = {block_total} bytes but only "
+                f"{len(body) - offset} byte(s) remain in the IPMX Info Block, "
+                f"which declares {length_words} word(s) = {total_bytes} bytes "
+                f"— {len(body) - offset} byte(s) discarded, and any further "
+                f"Media Info Block is unreachable",
+                4 + offset,
+            )
             break
         payload = body[offset + 4 : offset + block_total]
         decoded = decode_media_info_block(block_type, payload)
+        if block_type not in MEDIA_INFO_TYPES:
+            report(
+                RtcpIssueCode.MIB_UNKNOWN_TYPE, RtcpIssueLevel.WARNING,
+                f"Media Info Block type 0x{block_type:04x} ({block_total} "
+                f"bytes) has no registered decoder",
+                4 + offset,
+            )
+        elif decoded is None and block_type in MEDIA_INFO_DECODERS:
+            # A registered type whose decoder refused: the only way that
+            # happens is a payload too short for the type's fixed layout.
+            # Types with no decoder at all are a gap in this tool, not a
+            # defect on the wire, so they are not reported.
+            report(
+                RtcpIssueCode.MIB_UNDECODABLE, RtcpIssueLevel.ERROR,
+                f"Media Info Block type 0x{block_type:04x} carries "
+                f"{len(payload)} payload byte(s) — too few for its layout",
+                4 + offset,
+            )
         blocks.append(
             ParsedMediaInfoBlock(
                 media_info_type=block_type,
@@ -1131,7 +1327,7 @@ def parse_ipmx_info_block(data: bytes) -> ParsedIPMXInfoBlock | None:
             )
         )
         offset += block_total
-    return ParsedIPMXInfoBlock(
+    return finish(ParsedIPMXInfoBlock(
         tag=tag,
         length_words=length_words,
         version=version,
@@ -1140,7 +1336,7 @@ def parse_ipmx_info_block(data: bytes) -> ParsedIPMXInfoBlock | None:
         mediaclk=mediaclk,
         media_blocks=blocks,
         raw_bytes=data[:total_bytes],
-    )
+    ))
 
 
 def parse_rtcp_sender_report(packet: bytes) -> ParsedSenderReport | None:
@@ -1151,6 +1347,13 @@ def parse_rtcp_sender_report(packet: bytes) -> ParsedSenderReport | None:
     if packet_type != 200:
         return None
     rc = v_p_count & 0x1F
+    issues: list[RtcpIssue] = []
+    if rc != 0:
+        issues.append(RtcpIssue(
+            RtcpIssueCode.SR_RC_NON_ZERO, RtcpIssueLevel.WARNING,
+            f"reception report count is {rc}; TR-10-1 §8.7 says it should be 0 "
+            f"for an IPMX Sender", 0,
+        ))
     offset = 4
     if len(packet) < offset + 20:
         return None
@@ -1163,8 +1366,26 @@ def parse_rtcp_sender_report(packet: bytes) -> ParsedSenderReport | None:
     offset = 4 + 24 + (rc * 24)
     ipmx_info = None
     raw_blocks: list[ParsedMediaInfoBlock] = []
-    if offset + 4 <= len(packet):
-        ipmx_info = parse_ipmx_info_block(packet[offset:])
+    if offset > len(packet):
+        issues.append(RtcpIssue(
+            RtcpIssueCode.SR_TRUNCATED, RtcpIssueLevel.ERROR,
+            f"Sender Report is {len(packet)} byte(s) but its reception report "
+            f"count of {rc} requires at least {offset}", 0,
+        ))
+    elif offset + 4 > len(packet):
+        issues.append(RtcpIssue(
+            RtcpIssueCode.SR_NO_IPMX_INFO_BLOCK, RtcpIssueLevel.WARNING,
+            "no IPMX Info Block extension follows the sender info; TR-10-1 "
+            "§8.7 requires one on an IPMX Sender Report", offset,
+        ))
+    else:
+        info_issues: list[RtcpIssue] = []
+        ipmx_info = parse_ipmx_info_block(packet[offset:], info_issues)
+        for issue in info_issues:
+            # Rebase info-block-relative offsets onto the Sender Report.
+            if issue.offset is not None:
+                issue.offset += offset
+        issues.extend(info_issues)
         if ipmx_info:
             raw_blocks = ipmx_info.media_blocks
     return ParsedSenderReport(
@@ -1177,6 +1398,7 @@ def parse_rtcp_sender_report(packet: bytes) -> ParsedSenderReport | None:
         info_block=ipmx_info,
         raw_blocks=raw_blocks,
         reception_report_count=rc,
+        issues=issues,
     )
 
 

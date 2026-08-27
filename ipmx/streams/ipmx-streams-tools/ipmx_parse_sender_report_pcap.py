@@ -29,11 +29,13 @@ import argparse
 import csv
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import ipmx_validate_common as common
 import ipmx_sender_report
+from ipmx_sender_report import RtcpIssue, RtcpIssueLevel
 
 
 NTP_UNIX_OFFSET = 2_208_988_800
@@ -80,7 +82,70 @@ def sr_to_dict(csr: common.SenderReportInfo) -> dict[str, Any]:
         "packet_count": csr.packet_count,
         "octet_count": csr.octet_count,
         "ipmx_info_block": info_dict,
+        "issues": [issue.to_dict() for issue in csr.issues],
     }
+
+
+def _issue_signature(issue: RtcpIssue) -> tuple[str, str, str, int | None]:
+    """Group key for identical findings repeated across many sender reports."""
+    return (issue.level.value, issue.code.value, issue.detail, issue.offset)
+
+
+def report_issues(
+    reports: list[common.SenderReportInfo], verbose: bool
+) -> tuple[int, int]:
+    """Print the structural findings; return (error count, warning count).
+
+    Sender Reports repeat every few hundred milliseconds, so a single defect
+    shows up in every report of the capture.  Findings are therefore grouped by
+    (level, code, detail, offset) and printed once with the number of Sender
+    Reports that carry them.
+    """
+    grouped: Counter[tuple[str, str, str, int | None]] = Counter()
+    examples: dict[tuple[str, str, str, int | None], RtcpIssue] = {}
+    affected = 0
+    for csr in reports:
+        if csr.issues:
+            affected += 1
+        for issue in csr.issues:
+            key = _issue_signature(issue)
+            grouped[key] += 1
+            examples.setdefault(key, issue)
+
+    errors = sum(
+        count for key, count in grouped.items()
+        if key[0] == RtcpIssueLevel.ERROR.value
+    )
+    warnings = sum(
+        count for key, count in grouped.items()
+        if key[0] == RtcpIssueLevel.WARNING.value
+    )
+
+    if not grouped:
+        if verbose:
+            print("  No structural issues found.")
+        return errors, warnings
+
+    print(
+        f"  {affected} of {len(reports)} sender report(s) carry structural "
+        f"issues: {errors} error(s), {warnings} warning(s) "
+        f"across {len(grouped)} distinct finding(s)"
+    )
+    if not verbose:
+        print("  Re-run with --verbose for the details.")
+        return errors, warnings
+
+    # Errors first, then by descending frequency, so the dominant defect leads.
+    def sort_key(item: tuple[tuple[str, str, str, int | None], int]):
+        key, count = item
+        return (key[0] != RtcpIssueLevel.ERROR.value, -count, key[1])
+
+    for key, count in sorted(grouped.items(), key=sort_key):
+        issue = examples[key]
+        where = f" @{issue.offset}" if issue.offset is not None else ""
+        print(f"  [{issue.level.value}] {issue.code.value}{where} ({count} SR):")
+        print(f"      {issue.detail}")
+    return errors, warnings
 
 
 def write_csv(
@@ -122,6 +187,7 @@ def write_csv(
         "audio_channel_count",
         "audio_packet_time",
         "audio_channel_order",
+        "issue_codes",
     ]
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
@@ -178,6 +244,7 @@ def write_csv(
                 "audio_channel_count": audio_fields.get("channel_count", ""),
                 "audio_packet_time": audio_fields.get("packet_time", ""),
                 "audio_channel_order": audio_fields.get("channel_order", ""),
+                "issue_codes": " ".join(i.code.value for i in csr.issues),
             }
             writer.writerow(row)
 
@@ -203,6 +270,12 @@ def main() -> int:
         "--ssrc", type=lambda x: int(x, 0),
         help="Filter by SSRC (decimal or 0x hex)",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Print every structural issue found in the Sender Reports "
+             "(truncated Media Info Blocks, bad lengths, unknown block types) "
+             "instead of just a count.",
+    )
     args = parser.parse_args()
 
     if not args.pcap.exists():
@@ -222,9 +295,15 @@ def main() -> int:
             sr0 = subset[0]
             print(f"  SSRC 0x{ssrc:08x}: {len(subset)} report(s)")
             if sr0.ipmx_info:
-                print(f"    IPMX Info Block v{sr0.ipmx_info.version}")
+                # TR-10-1 §8.7: "block version" is a change counter that the
+                # Sender increments when the Info Block content changes — not a
+                # protocol version, so any value 0..255 is legal.
+                print(f"    IPMX Info Block, block version counter "
+                      f"{sr0.ipmx_info.version}")
                 print(f"    ts-refclk: {sr0.ipmx_info.ts_refclk}")
                 print(f"    mediaclk:  {sr0.ipmx_info.mediaclk}")
+                if not sr0.raw_blocks:
+                    print("    (no Media Info Block decoded)")
                 for blk in sr0.raw_blocks:
                     name = _media_info_type_name(blk.media_info_type)
                     print(f"    Media Info Block 0x{blk.media_info_type:04x}: {name}")
@@ -232,10 +311,14 @@ def main() -> int:
                         for k, v in blk.decoded.items():
                             print(f"      {k}: {v}")
 
+    errors, warnings = report_issues(all_reports, args.verbose)
+
     report_path = args.report or Path("tmp") / "rtcp_sender_reports.json"
     report_payload: dict[str, Any] = {
         "pcap": str(args.pcap),
         "sender_report_count": len(all_reports),
+        "issue_error_count": errors,
+        "issue_warning_count": warnings,
         "sender_reports": [sr_to_dict(r) for r in all_reports],
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
