@@ -18,8 +18,6 @@ from . import Config as CONFIG
 
 # Copy this file to "UserConfig.py" to change configuration values.
 
-# Example of setting ENABLE_HTTPS, any value from Config.py can be overridden using the same pattern.
-
 # --- bench proxy: reach the bench over the SOCKS5 relay, not the HTTP proxy ---
 #
 # This sandbox has NO direct route to the bench (a direct connect returns
@@ -60,6 +58,7 @@ if _socks_relay.startswith('socks'):
 CONFIG.PROXY_RETRY_ATTEMPTS = 2
 CONFIG.PROXY_RETRY_BACKOFF_S = 1.0
 
+# Example of setting ENABLE_HTTPS, any value from Config.py can be overridden using the same pattern.
 CONFIG.ENABLE_HTTPS = False
 
 CONFIG.ENABLE_DNS_SD = False
