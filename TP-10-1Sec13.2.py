@@ -32,6 +32,15 @@ except ImportError as e:
     print("Make sure you're running this script from the project root directory.")
     sys.exit(1)
 
+# TR-10-7 compressed-video media types (H.265 per TR-10-15 Part 2, H.264 per
+# TR-10-15 Part 3), in the lowercase "type/encoding" form of get_media_type().
+TR_10_7_MEDIA_TYPES = frozenset({"video/h265", "video/h264"})
+
+# cfg keys that TR-10-7 does not require in the SDP: TR-10-7 section 11 builds the SDP
+# object per ST 2110-22 section 7, which defines neither, and TP-1 section 13.2 verifies
+# them only for TR-10-2 and TR-10-11 essence types. An SDP may still carry them (see the
+# TR-10-15 Part 2 section 16.1 example); when it does, they are checked like any other.
+TR_10_7_CONFIG_KEYS_NOT_REQUIRED_IN_SDP = frozenset({"sampling", "depth"})
 
 class SDPValidationScript:
     """Main class for SDP validation script functionality."""
@@ -293,6 +302,15 @@ class SDPValidationScript:
         for config_key, (sdp_attr, type_converter) in config_checks.items():
             if config_key in self.config_data:
                 expected_value = self.config_data[config_key]
+
+                # Special handling for sampling/depth: not required in the SDP for TR-10-7 media
+                # types, so an ABSENT value cannot be enforced against the cfg. A value the SDP does
+                # carry declares the stream's format and falls through to the normal comparison.
+                if config_key in TR_10_7_CONFIG_KEYS_NOT_REQUIRED_IN_SDP:
+                    media_type = self.get_media_type(media)
+                    if media_type in TR_10_7_MEDIA_TYPES and not getattr(media, config_key, None):
+                        print(f"[N/A] {config_key}: not present in the {media_type} SDP (not required by TR-10-7)")
+                        continue
 
                 # Special handling for rtpclock: use different SDP attributes based on media type
                 if config_key == 'rtpclock':

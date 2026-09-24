@@ -29,6 +29,7 @@ from ..IS04Utils import IS04Utils
 from ..IS05Utils import IS05Utils
 import datetime
 from ..IS11Utils import IS11Utils
+from ..IPMXUtils import filter_resources
 from ..MatroxEdid import parse_edid
 
 COMPAT_API_KEY = "streamcompatibility"
@@ -3789,8 +3790,10 @@ class IS1101Test(GenericTest):
             raise NMOSInitException("The request {} has failed: {}".format(url, response))
 
         try:
-            for myPort in response.json():
-                staged_url = url + myPort + "staged/"
+            # Only the Senders/Receivers selected by --senders/--receivers, as in IS11Utils.get_senders().
+            # filter_resources() strips the trailing '/' of the Connection API ids.
+            for myPort in filter_resources(response.json(), port + "s"):
+                staged_url = url + myPort + "/staged/"
                 deactivate_json = {
                     "master_enable": False,
                     "activation": {"mode": "activate_immediate"},
@@ -3808,6 +3811,9 @@ class IS1101Test(GenericTest):
                                             .format(staged_url, patch_response))
         except json.JSONDecodeError:
             raise NMOSInitException("Non-JSON response returned from the Connection API")
+        except ValueError as e:
+            # filter_resources() refuses a response that is not a list of ids
+            raise NMOSInitException("Unexpected response from the Connection API {}: {}".format(url, e))
 
     def has_i_o(self, id, type):
         connector = "senders/" if type == "sender" else "receivers/"

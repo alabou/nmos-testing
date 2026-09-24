@@ -101,6 +101,14 @@ VideoJxsv = "video/jxsv"
 VideoH265 = "video/H265"
 VideoH264 = "video/H264"
 
+# TR-10-7 compressed-video media types (H.265 per TR-10-15 Part 2, H.264 per TR-10-15 Part 3).
+# TR-10-7 section 11 builds their SDP per ST 2110-22 section 7, which defines neither sampling
+# nor depth, so such an SDP may omit them. When it does, test_02 does not verify them against the
+# Flow components; when it carries them, it does. Same rule as ipmx/sdp_validation_script.py.
+# (The CCF precision checks need no such rule: an absent SDP value converts to an INFINITE
+# constraint, which conset_included_in_capset skips by design.)
+TR_10_7_MEDIA_TYPES = frozenset({VideoH265, VideoH264})
+
 AudioL16 = "audio/L16"
 AudioL24 = "audio/L24"
 AudioAM824 = "audio/AM824"
@@ -439,25 +447,33 @@ class IpmxSdpTest(GenericTest):
                     return test.FAIL("Sender {} Flow {} components attribute has less than 3 components"
                                      .format(sender["id"], sender["flow_id"]))
 
-                # Check the color sampling and component depth
-                try:
-                    sdp_components = GetSdpSamplingAsComponents(sdp)
+                # Check the color sampling and component depth. A TR-10-7 (H.265, H.264) SDP is not
+                # required to carry sampling and depth, so when it does not they are not verified
+                # against the Flow at this level; when it does, they are (see TR_10_7_MEDIA_TYPES).
+                if (flow["media_type"] in TR_10_7_MEDIA_TYPES and
+                        not (sdp.primary_media.sampling and sdp.primary_media.depth)):
+                    print("Sender {} {} SDP carries no sampling/depth (not required by TR-10-7): color sampling "
+                          "and component depth not verified against Flow {}"
+                          .format(sender["id"], flow["media_type"], sender["flow_id"]))
+                else:
+                    try:
+                        sdp_components = GetSdpSamplingAsComponents(sdp)
 
-                    for component in flow["components"]:
+                        for component in flow["components"]:
 
-                        name = component["name"]
+                            name = component["name"]
 
-                        if (component["width"] != sdp_components[name]["width"] or
-                            component["height"] != sdp_components[name]["height"] or
-                                component["bit_depth"] != sdp_components[name]["bit_depth"]):
+                            if (component["width"] != sdp_components[name]["width"] or
+                                component["height"] != sdp_components[name]["height"] or
+                                    component["bit_depth"] != sdp_components[name]["bit_depth"]):
 
-                            return test.FAIL("Sender {} Flow {} component {} is not matching with SDP color sampling {}"
-                                             " and derived components {}"
-                                             .format(sender["id"], sender["flow_id"], component,
-                                                     sdp.primary_media.sampling, sdp_components[name]))
-                except Exception:
-                    return test.FAIL("Sender {} SDP color sampling {} is not supported or not matching with the Flow {}"
-                                     .format(sender["id"], sdp.primary_media.sampling, sender["flow_id"]))
+                                return test.FAIL("Sender {} Flow {} component {} is not matching with SDP color sampling {}"
+                                                 " and derived components {}"
+                                                 .format(sender["id"], sender["flow_id"], component,
+                                                         sdp.primary_media.sampling, sdp_components[name]))
+                    except Exception:
+                        return test.FAIL("Sender {} SDP color sampling {} is not supported or not matching with the Flow {}"
+                                         .format(sender["id"], sdp.primary_media.sampling, sender["flow_id"]))
 
                 # Check that IPMX "measured" parameters are defined
                 if (sdp.primary_media.measured_pix_clk == 0 or sdp.primary_media.h_total == 0 or
