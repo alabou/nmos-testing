@@ -77,8 +77,8 @@ FAKE_AS_HOST = "XYZ-SNX00000"
 FAKE_AS_PORT = 9444
 
 # Untrusted-AS cert: signed by Certificates/build.1/ExampleRootCA.pem
-# which has a DIFFERENT sha256 fingerprint than build/ExampleRootCA.pem.
-# The DUT's CTCA is build/, so a fake AS using this cert is NOT
+# which has a DIFFERENT sha256 fingerprint than build.0/ExampleRootCA.pem.
+# The DUT's CTCA is build.0/, so a fake AS using this cert is NOT
 # trusted. Used by the SEC-14.3.2-12 negative probe — the DUT must
 # refuse to fetch JWKS from an AS that doesn't chain to its CTCA.
 UNTRUSTED_AS_CERT = WORKSPACE / "Certificates" / "build.1" / "pem" / \
@@ -157,8 +157,9 @@ class MatrixEntry:
     server_ca: Path | None = None
     """Override of the trusted-root the validator pins for the DUT's
     server cert. ``None`` means use the validator's default
-    (ExampleRootCA.pem, RSA). TCT=1 entries set this to the EC root
-    so the validator can verify an ECDSA server cert."""
+    (ExampleRootCA.pem, RSA). TCT=1 entries set this to
+    ExampleRootCA-bundle.pem (RSA + EC roots) so the validator can
+    verify an ECDSA server cert."""
     skip_reason: str | None = None
     """When non-None, the entry is logged + skipped (e.g. a known
     semantic mismatch we don't want to fail the matrix on)."""
@@ -174,7 +175,7 @@ class MatrixEntry:
     split-controls entry whose only purpose is the isolation test."""
     client_cert: Path | None = None
     """Override of the TLS client cert + key the validator presents.
-    None means use ``DEFAULT_CLIENT_CERT`` (SNX00000 under build/).
+    None means use ``DEFAULT_CLIENT_CERT`` (SNX00000 under build.0/).
     Set this on split-controls entries so the validator's primary
     client cert chains to NESTCA (matching the Node API listener)."""
     client_key: Path | None = None
@@ -226,10 +227,10 @@ MATRIX: list[MatrixEntry] = [
         # Use the bundle so the validator can verify the DUT's
         # ECDSA-flavoured server cert against the EC root while still
         # trusting the RSA root for everything else.
-        server_ca=Path("/tmp/ExampleRootCA-bundle.pem"),
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
     ),
-    # Split-controls: NESTCA (build.2) on the Node IS-04 API listener,
-    # CESTCA (build.3) on the control listener (:7052). The validator
+    # Split-controls: NESTCA (build.1) on the Node IS-04 API listener,
+    # CESTCA (build.2) on the control listener (:7052). The validator
     # drives the 2x2 cross-presentation TLS handshake matrix; the
     # symmetric refusals are the wire-observable proof that the two
     # trust stores are physically distinct (§12.10 / §12.12).
@@ -242,11 +243,11 @@ MATRIX: list[MatrixEntry] = [
         uses_oauth=False,
         needs_client_cert=True,
         # The standard wire tests would fail under split-controls
-        # because the validator presents ONE TLS client cert (build/-
+        # because the validator presents ONE TLS client cert (build.0-
         # rooted by default) to both listeners, but split-controls
-        # configures the Node API to trust NESTCA (build.2) and the
-        # control listener to trust CESTCA (build.3) — neither honours
-        # the build/-rooted cert. Per-endpoint client cert routing is
+        # configures the Node API to trust NESTCA (build.1) and the
+        # control listener to trust CESTCA (build.2) — neither honours
+        # the build.0-rooted cert. Per-endpoint client cert routing is
         # a larger refactor; for now scope this entry to its only
         # value-add: the isolation cross-presentation test.
         extra_validator_args=[
@@ -439,7 +440,7 @@ MATRIX: list[MatrixEntry] = [
         # Use the bundle so the validator can verify the DUT's
         # ECDSA-flavoured server cert against the EC root while still
         # trusting the RSA root for everything else.
-        server_ca=Path("/tmp/ExampleRootCA-bundle.pem"),
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
     ),
     MatrixEntry(
         label="B-oaim1-cert",
@@ -731,7 +732,7 @@ def run_one(
     # ``--no-fake-as`` and points the DUT at this subprocess.
     # Pick cert/key for the fake AS subprocess. Default is a server
     # cert chained to ExampleRootCA (DUT trusts it). The untrusted-AS
-    # entries use a cert from a DIFFERENT CA hierarchy (build.2) so
+    # entries use a cert from a DIFFERENT CA hierarchy (build.1) so
     # the DUT refuses to talk to it — the wire test for §14.3.2-12.
     if entry.untrusted_as:
         fake_as_cert = UNTRUSTED_AS_CERT

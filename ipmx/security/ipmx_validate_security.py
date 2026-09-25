@@ -4166,7 +4166,7 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             return untestable(
                 f"NESTCA / CESTCA client certs not present at "
                 f"{_NESTCA_CLIENT_CERT.parent} / {_CESTCA_CLIENT_CERT.parent} "
-                "— provision build.2/ + build.3/ first"
+                "— provision build.1/ + build.2/ first"
             )
 
         async def hs(
@@ -4195,7 +4195,7 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             except Exception as exc:  # pylint: disable=broad-except
                 return (False, f"TLS REFUSED: {type(exc).__name__}: {str(exc)[:120]}")
 
-        # The DUT's SERVER cert chains to build/ExampleRootCA — that's
+        # The DUT's SERVER cert chains to build.0/ExampleRootCA — that's
         # CTCA. Our client side uses the same root to validate it.
         ca = ctx.cli.server_ca or (PKI_PRIMARY / "ExampleRootCA.pem")
 
