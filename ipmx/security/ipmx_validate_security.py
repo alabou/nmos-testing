@@ -71,8 +71,8 @@ from ipmx_security_common import (
 )
 from ipmx_security_probes import (
     HandshakeReport, HttpResponse, SecurityHttpClient,
-    fetch_self, request_with_token, tls13_suite_handshake, tls_handshake,
-    ws_upgrade,
+    auth_challenge_problem, fetch_self, request_with_token,
+    tls13_suite_handshake, tls_handshake, ws_upgrade,
 )
 from ipmx_security_tokens import (
     ALL_PERMITTED_ALGORITHMS, SigningKey, TokenTemplate, mint_token,
@@ -1613,6 +1613,12 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
         url = f"{ctx.dut_base_url}/x-nmos/node/v1.3/self?access_token={token}"
         resp = await request_with_token(ctx.http_client, url, token=None)
         if resp.status == 401:
+            problem = auth_challenge_problem(
+                resp.status, resp.header("WWW-Authenticate"),
+                bearer_required=True,
+            )
+            if problem is not None:
+                return (False, f"query-param token refused, but {problem}")
             return (True, "query-param token correctly refused (401)")
         return (False,
                 f"DUT accepted query-param token (status {resp.status}); "
@@ -1643,10 +1649,13 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             if resp.status != 401:
                 return (False,
                         f"{url}: tampered token accepted (status {resp.status})")
-            www_auth = resp.headers.get("WWW-Authenticate", "")
-            if not www_auth:
-                return (False, f"{url}: 401 without WWW-Authenticate header")
-            return (True, f"{url} → 401 + WWW-Authenticate")
+            problem = auth_challenge_problem(
+                resp.status, resp.header("WWW-Authenticate"),
+                bearer_required=True,
+            )
+            if problem is not None:
+                return (False, f"{url}: {problem}")
+            return (True, f"{url} → 401 + WWW-Authenticate Bearer challenge")
 
         return await _probe_each_endpoint(
             ctx, probe, label="bad-signature", read_side=True,
@@ -2434,6 +2443,12 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             return (False,
                     f"unable to query DUT after untrusted-AS wait: {exc}")
         if resp.status == 401:
+            problem = auth_challenge_problem(
+                resp.status, resp.header("WWW-Authenticate"),
+                bearer_required=True,
+            )
+            if problem is not None:
+                return (False, f"{url}: {problem}")
             return (
                 True,
                 f"DUT in 401 state after 10s with untrusted AS — "
@@ -2572,10 +2587,13 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
                     f"HTTP response is not possible: {type(exc).__name__}")
         if resp.status != 401:
             return (False, f"expected 401 without token, got {resp.status}")
-        www_auth = resp.headers.get("WWW-Authenticate", "")
-        if not www_auth:
-            return (False, "401 returned without WWW-Authenticate header")
-        return (True, f"401 + WWW-Authenticate: {www_auth[:80]}")
+        www_auth = resp.header("WWW-Authenticate")
+        problem = auth_challenge_problem(
+            resp.status, www_auth, bearer_required=True,
+        )
+        if problem is not None:
+            return (False, problem)
+        return (True, f"401 + WWW-Authenticate: {(www_auth or '')[:80]}")
 
     async def check_403_for_insufficient_permission() -> tuple[bool, str]:
         """§14.3.3.4-43/§14.3.4: 403 when token is valid but permissions
@@ -3390,17 +3408,26 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
                 resp = await anon.patch(url, json_body=body)
             anon_status = resp.status
             anon_refused = resp.status in (401, 403)
+            anon_challenge_problem = auth_challenge_problem(
+                resp.status, resp.header("WWW-Authenticate"),
+                bearer_required=ctx.cli.config in ("B", "C"),
+            )
         except Exception as exc:  # pylint: disable=broad-except
             # Config A/C: TLS handshake fails (no client cert) — that's
             # also a valid refusal.
             anon_status = None
             anon_refused = True
+            anon_challenge_problem = None
             _ = exc
         if not anon_refused:
             return (False,
                     f"anonymous PATCH master_enable=false reached the DUT "
                     f"and returned {anon_status} — write enforcement "
                     f"broken (sender {sender_id})")
+        if anon_challenge_problem is not None:
+            return (False,
+                    f"anonymous PATCH master_enable=false refused, but "
+                    f"{anon_challenge_problem}")
 
         # 2. Authorized PATCH — must pass the auth layer. The token
         # MUST carry an explicit x-nmos-connection.write permission
@@ -3466,6 +3493,13 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             else resp.status in expected_status
         )
         if accepted:
+            # An expected 401/403 still has to carry the Bearer challenge.
+            problem = auth_challenge_problem(
+                resp.status, resp.header("WWW-Authenticate"),
+                bearer_required=True,
+            )
+            if problem is not None:
+                return (False, f"{url}: {problem}")
             return (True, f"{url} → HTTP {resp.status}")
         return (False,
                 f"{url} → HTTP {resp.status}, expected {expected_status} "
@@ -3516,6 +3550,13 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             return (False,
                     f"anonymous WS UPGRADE to {ws_url} succeeded "
                     "(101) — auth layer not enforced for R/W endpoint")
+        anon_problem = auth_challenge_problem(
+            anon_rep.status, anon_rep.www_authenticate, bearer_required=True,
+        )
+        if anon_problem is not None:
+            return (False,
+                    f"anonymous WS UPGRADE to {ws_url} refused, but "
+                    f"{anon_problem}")
 
         # 2. R/W token — must succeed.
         rw_template = ctx.fake_as.token_template(
@@ -3550,6 +3591,13 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
             return (False,
                     f"R/O token WS UPGRADE accepted (101) — UPGRADE "
                     "is a R/W operation and must require write claim")
+        ro_problem = auth_challenge_problem(
+            ro_rep.status, ro_rep.www_authenticate, bearer_required=True,
+        )
+        if ro_problem is not None:
+            return (False,
+                    f"R/O token WS UPGRADE to {ws_url} refused, but "
+                    f"{ro_problem}")
 
         return (True,
                 f"anonymous refused ({anon_rep.status}); R/W token → "
@@ -3766,9 +3814,18 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
                         )
                 anon_status: int | None = anon_resp.status
                 anon_refused = anon_resp.status in (401, 403)
+                anon_challenge_problem: str | None = auth_challenge_problem(
+                    anon_resp.status, anon_resp.header("WWW-Authenticate"),
+                    bearer_required=ctx.cli.config in ("B", "C"),
+                )
             except Exception:  # pylint: disable=broad-except
                 anon_status = None
                 anon_refused = True  # TLS handshake refused (Config A/C)
+                anon_challenge_problem = None
+            if anon_challenge_problem is not None:
+                return (False,
+                        f"anon {recipe.method} {url} refused, but "
+                        f"{anon_challenge_problem}")
             if not anon_refused:
                 return (False,
                         f"anon {recipe.method} {url} returned {anon_status} — "
@@ -3856,9 +3913,18 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
                 anon_resp = await anon.post(url, json_body=body)
             anon_status: int | None = anon_resp.status
             anon_refused = anon_resp.status in (401, 403)
+            anon_challenge_problem: str | None = auth_challenge_problem(
+                anon_resp.status, anon_resp.header("WWW-Authenticate"),
+                bearer_required=ctx.cli.config in ("B", "C"),
+            )
         except Exception:  # pylint: disable=broad-except
             anon_status = None
             anon_refused = True  # TLS handshake refused (Config A/C)
+            anon_challenge_problem = None
+        if anon_challenge_problem is not None:
+            return (False,
+                    f"anonymous POST {url} refused, but "
+                    f"{anon_challenge_problem}")
         if not anon_refused:
             return (False,
                     f"anonymous POST {url} returned {anon_status} — "
@@ -5009,7 +5075,8 @@ async def _probe_at(
     """Mint a token whose scope matches ``endpoint.scope`` (unless
     ``override_scope`` is given), send the request to
     ``endpoint.base_url + path_suffix``, and assert
-    ``resp.status == expected_status``.
+    ``resp.status == expected_status``. An expected 401/403 must also
+    carry the WWW-Authenticate "Bearer" challenge (RFC 6750 §3).
 
     ``grant_type`` shapes the token to mimic either an OAuth 2.0
     ``client_credentials`` grant (``sub == client_id``) or an
@@ -5060,6 +5127,13 @@ async def _probe_at(
         else resp.status in expected_status
     )
     if accepted:
+        # An expected 401/403 still has to carry the Bearer challenge. The
+        # reason goes first: per-endpoint summaries keep only 80 characters.
+        problem = auth_challenge_problem(
+            resp.status, resp.header("WWW-Authenticate"), bearer_required=True,
+        )
+        if problem is not None:
+            return (False, f"{problem}: {method} {url}")
         return (True, f"{method} {url} → {resp.status}")
     return (
         False,

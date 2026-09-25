@@ -65,9 +65,9 @@ CONFIG.ENABLE_HTTPS = True
 
 # Which certificate authority to trust when performing requests in HTTPS mode.
 # Defaults to the CA contained within this testing tool
-CONFIG.CERT_TRUST_ROOT_CA = "test_data/IPMX-Certificates/MatroxRootCA.pem"
-CONFIG.CERT_CLIENT = "test_data/IPMX-Certificates/MatroxDeviceClient.MTX.MTX00000.chain.pem"
-CONFIG.KEY_CLIENT = "test_data/IPMX-Certificates/MatroxDeviceClient.MTX.MTX00000.key"
+CONFIG.CERT_TRUST_ROOT_CA = "ipmx/Certificates/build.0/ExampleRootCA-bundle.pem"
+CONFIG.CERT_CLIENT = "ipmx/Certificates/build.0/pem/ExampleDeviceClient.ABC.SNX00000.chain.pem"
+CONFIG.KEY_CLIENT = "ipmx/Certificates/build.0/key/ExampleDeviceClient.ABC.SNX00000.key"
 
 # Test using authorization as per AMWA IS-10 and BCP-003-02
 CONFIG.ENABLE_AUTH = True
@@ -79,7 +79,7 @@ CONFIG.ENABLE_AUTH = True
 # self.primary_auth.generate_token() in GenericTest.run_tests — that mock
 # token is signed by the test-runner's CA and the DUT must trust it.
 #
-# IPMX runs use True: real Keycloak tokens (TR-10-SEC realm, 'Matrox.Graphics.Device.Client.MTX.MTX00000.matrox.com'
+# IPMX runs use True: real Keycloak tokens (TR-10-SEC realm, 'Example.Company.Device.Client.ABC.SNX00000.example.com'
 # client) against an OAuth2-enabled IPMX Node.
 CONFIG.USE_EXTERNAL_AUTH = True
 

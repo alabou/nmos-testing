@@ -28,7 +28,7 @@ unset NMOS_TESTING_AUTH_TOKEN
 
 # Step 2 — fetch. stdout carries the bare token on success; stderr
 # carries diagnostics on failure.
-_GET_TOKEN_OUT="$("$_GET_TOKEN_DIR/../keycloak/get_test_token.py")"
+_GET_TOKEN_OUT="$("$_GET_TOKEN_DIR/ipmx/keycloak/get_test_token.py")"
 _GET_TOKEN_RC=$?
 
 if [ "$_GET_TOKEN_RC" -ne 0 ] || [ -z "$_GET_TOKEN_OUT" ]; then

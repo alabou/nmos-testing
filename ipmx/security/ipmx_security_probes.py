@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import ssl
 import sys
 import tempfile
@@ -245,6 +246,112 @@ class HttpResponse:
     def json(self) -> dict[str, Any]:
         return cast(dict[str, Any], json.loads(self.body))
 
+    def header(self, name: str) -> str | None:
+        """The ``name`` field's value, matched case-insensitively (RFC 9110
+        §5.1), or ``None`` when the response has no such field."""
+        values = [v for k, v in self.headers.items() if k.lower() == name.lower()]
+        return ", ".join(values) if values else None
+
+
+# ---------------------------------------------------------------------------
+# WWW-Authenticate challenges — RFC 9110 §11, RFC 6750 §3
+# ---------------------------------------------------------------------------
+
+_HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+_HTTP_QUOTED_STRING = r'"(?:[^"\\]|\\.)*"'
+_AUTH_PARAM_RE = re.compile(
+    rf"({_HTTP_TOKEN})[ \t]*=[ \t]*({_HTTP_TOKEN}|{_HTTP_QUOTED_STRING})"
+)
+_CHALLENGE_START_RE = re.compile(rf"({_HTTP_TOKEN})(?: +(.*))?")
+
+
+def _list_elements(value: str) -> list[str]:
+    """The elements of a list-based field value (RFC 9110 §5.6.1): split at
+    the commas outside quoted-strings, OWS stripped, empty elements dropped."""
+    elements: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    escaped = False
+    for char in value:
+        if escaped:
+            escaped = False
+        elif in_quotes and char == "\\":
+            escaped = True
+        elif char == '"':
+            in_quotes = not in_quotes
+        elif char == "," and not in_quotes:
+            elements.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    elements.append("".join(current))
+    return [e.strip(" \t") for e in elements if e.strip(" \t")]
+
+
+def _add_auth_param(params: dict[str, str], match: re.Match[str]) -> None:
+    """Record an auth-param: the name lower-cased (names are case-insensitive)
+    and a quoted-string value unquoted with its quoted-pairs resolved (RFC 9110
+    §5.6.4). A name occurs only once per challenge (§11.2), so a repeat is
+    ignored."""
+    name, value = match.group(1).lower(), match.group(2)
+    if value.startswith('"'):
+        value = re.sub(r"\\(.)", r"\1", value[1:-1])
+    params.setdefault(name, value)
+
+
+def parse_www_authenticate(value: str) -> list[tuple[str, dict[str, str]]]:
+    """Parse a WWW-Authenticate field value into ``(auth-scheme,
+    auth-params)`` challenges, in order (RFC 9110 §11.2, §11.3, §11.6.1).
+
+    The auth-scheme comes back lower-cased, as it is case-insensitive
+    (§11.1). A token68 challenge has no auth-params."""
+    challenges: list[tuple[str, dict[str, str]]] = []
+    for element in _list_elements(value):
+        match = _AUTH_PARAM_RE.fullmatch(element)
+        if match and challenges:
+            _add_auth_param(challenges[-1][1], match)
+            continue
+        match = _CHALLENGE_START_RE.fullmatch(element)
+        if not match:
+            continue  # neither an auth-param nor the start of a challenge
+        params: dict[str, str] = {}
+        challenges.append((match.group(1).lower(), params))
+        if match.group(2):
+            first = _AUTH_PARAM_RE.fullmatch(match.group(2))
+            if first:
+                _add_auth_param(params, first)
+    return challenges
+
+
+def auth_challenge_problem(
+    status: int | None,
+    www_authenticate: str | None,
+    *,
+    bearer_required: bool,
+) -> str | None:
+    """Why a 401/403 refusal lacks the challenge the RFCs require, or
+    ``None`` when it carries one (or ``status`` is not a 401/403).
+
+    * RFC 9110 §15.5.2: a 401 MUST carry a WWW-Authenticate field
+      containing at least one challenge.
+    * RFC 6750 §3: where OAuth 2.0 Bearer tokens protect the resource
+      (``bearer_required``), a request that has no credentials, or whose
+      access token does not enable access, MUST get a WWW-Authenticate
+      field with a "Bearer" challenge: on a 403 as well as on a 401.
+    """
+    if status not in (401, 403):
+        return None
+    challenges = parse_www_authenticate(www_authenticate or "")
+    if bearer_required and not any(s == "bearer" for s, _ in challenges):
+        received = (f"received {www_authenticate!r}"
+                    if www_authenticate else "no WWW-Authenticate field")
+        return (f"HTTP {status} without a WWW-Authenticate \"Bearer\" "
+                f"challenge (RFC 6750 §3); {received}")
+    if status == 401 and not challenges:
+        return ("HTTP 401 without a WWW-Authenticate challenge "
+                "(RFC 9110 §15.5.2)")
+    return None
+
 
 class SecurityHttpClient:
     """Single-DUT aiohttp client with optional client cert + server CA pin.
@@ -334,11 +441,15 @@ class SecurityHttpClient:
             method, url, headers=headers, data=data, json=json_body,
         ) as resp:
             body = await resp.read()
-            return HttpResponse(
-                status=resp.status,
-                headers={k: v for k, v in resp.headers.items()},
-                body=body,
-            )
+            # A repeated field is kept as its comma-joined values (RFC 9110
+            # §5.3) instead of the last one only: WWW-Authenticate may repeat.
+            response_headers: dict[str, str] = {}
+            for name, value in resp.headers.items():
+                response_headers[name] = (
+                    f"{response_headers[name]}, {value}"
+                    if name in response_headers else value
+                )
+            return HttpResponse(status=resp.status, headers=response_headers, body=body)
 
 
 # ---------------------------------------------------------------------------
@@ -443,10 +554,12 @@ async def ws_upgrade(
             await ws.close()
             return WsUpgradeReport(status=101, succeeded=True)
     except aiohttp.WSServerHandshakeError as exc:
+        # Every WWW-Authenticate field, not just the first (RFC 9110 §5.3).
+        challenges = exc.headers.getall("WWW-Authenticate", []) if exc.headers else []
         return WsUpgradeReport(
             status=exc.status,
             succeeded=False,
-            www_authenticate=exc.headers.get("WWW-Authenticate") if exc.headers else None,
+            www_authenticate=", ".join(challenges) or None,
         )
     except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as exc:
         return WsUpgradeReport(

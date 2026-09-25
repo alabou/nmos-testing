@@ -149,6 +149,9 @@ ENABLE_AUTH = False
 # the test runner generates its own mock token on every run via
 # self.primary_auth.generate_token() in GenericTest.run_tests — that mock
 # token is signed by the test-runner's CA and the DUT must trust it.
+# When True, the test runner mints no tokens of its own: the Authorization
+# auto-tests that need one are reported as disabled (see
+# GenericTest.EXTERNAL_AUTH_COVERED_TESTS).
 #
 # IPMX runs use True: real Keycloak tokens (TR-10-SEC realm, 'Matrox.Graphics.Device.Client.MTX.MTX00000.matrox.com'
 # client) against an OAuth2-enabled IPMX Node.

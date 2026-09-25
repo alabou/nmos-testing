@@ -23,6 +23,7 @@ import websocket
 import websockets
 import ssl
 import os
+import re
 import jsonref
 import psutil
 import socket
@@ -278,6 +279,83 @@ def do_request(method, url, headers=None, **kwargs):
         return False, str(e)
     finally:
         print("{} {} {}".format(method.upper(), url, response.status_code if response is not None else "<no response>"))
+
+
+# IPMX patch: WWW-Authenticate parsing per RFC 9110. Splitting the field value on ',' and '=' only recognises
+# unquoted values with no whitespace, so it rejected RFC 6750's own example
+# 'Bearer realm="example", error="invalid_token", error_description="The access token expired"'.
+_HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+_HTTP_QUOTED_STRING = r'"(?:[^"\\]|\\.)*"'
+_AUTH_PARAM_RE = re.compile(r"({token})[ \t]*=[ \t]*({token}|{quoted})".format(token=_HTTP_TOKEN,
+                                                                               quoted=_HTTP_QUOTED_STRING))
+_CHALLENGE_START_RE = re.compile(r"({token})(?: +(.*))?".format(token=_HTTP_TOKEN))
+
+
+def _split_http_list(value):
+    """Split a field value into its list elements at the commas outside quoted-strings, dropping the OWS around
+    them and any empty elements (RFC 9110 section 5.6.1)"""
+    elements = []
+    current = []
+    in_quotes = False
+    escaped = False
+    for char in value:
+        if escaped:
+            escaped = False
+        elif in_quotes and char == "\\":
+            escaped = True
+        elif char == '"':
+            in_quotes = not in_quotes
+        elif char == "," and not in_quotes:
+            elements.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    elements.append("".join(current))
+    return [element.strip(" \t") for element in elements if element.strip(" \t")]
+
+
+def _add_auth_param(auth_params, match):
+    """Record an auth-param matched by _AUTH_PARAM_RE. A name only occurs once per challenge (RFC 9110 section
+    11.2), so a repeat is ignored. A quoted-string value is stored as its content with the quoted-pairs resolved
+    (RFC 9110 section 5.6.4)."""
+    name, value = match.group(1).lower(), match.group(2)
+    if value.startswith('"'):
+        value = re.sub(r"\\(.)", r"\1", value[1:-1])
+    auth_params.setdefault(name, value)
+
+
+def parse_www_authenticate(value):
+    """Parse a WWW-Authenticate field value into its challenges (RFC 9110 sections 11.2, 11.3 and 11.6.1)
+
+    Returns a list of (auth_scheme, auth_params) tuples in the order the challenges appear. The auth-scheme and
+    the auth-param names are lower-cased, as both are case-insensitive, and each auth-param value is a token or the
+    content of a quoted-string. A challenge in the token68 form has no auth-params.
+    """
+    challenges = []
+    for element in _split_http_list(value):
+        match = _AUTH_PARAM_RE.fullmatch(element)
+        if match and challenges:
+            _add_auth_param(challenges[-1][1], match)
+            continue
+        match = _CHALLENGE_START_RE.fullmatch(element)
+        if not match:
+            continue  # neither an auth-param nor the start of a challenge
+        auth_params = {}
+        challenges.append((match.group(1).lower(), auth_params))
+        if match.group(2):
+            first_param = _AUTH_PARAM_RE.fullmatch(match.group(2))
+            if first_param:
+                _add_auth_param(auth_params, first_param)
+    return challenges
+
+
+def get_auth_params(value, auth_scheme):
+    """Return the auth-params of the first challenge for auth_scheme (matched case-insensitively) in a
+    WWW-Authenticate field value, or None when the value has no such challenge"""
+    for scheme, auth_params in parse_www_authenticate(value):
+        if scheme == auth_scheme.lower():
+            return auth_params
+    return None
 
 
 def load_resolved_schema(spec_path, file_name=None, schema_obj=None, path_prefix=True, search_paths=[]):

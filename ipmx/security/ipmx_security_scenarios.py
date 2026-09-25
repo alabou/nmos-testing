@@ -62,7 +62,9 @@ from keycloak.test_tokens import (  # noqa: E402
     get_authcode_token, get_client_token, get_user_token,
 )
 
-from ipmx_security_probes import SecurityHttpClient, request_with_token
+from ipmx_security_probes import (
+    SecurityHttpClient, auth_challenge_problem, request_with_token,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +278,15 @@ async def run_scenarios(
 
         passed = resp.status == sc.expected_status
         details = f"expected HTTP {sc.expected_status}, got {resp.status}"
+        if passed:
+            # An expected 401/403 still has to carry the Bearer challenge.
+            problem = auth_challenge_problem(
+                resp.status, resp.header("WWW-Authenticate"),
+                bearer_required=True,
+            )
+            if problem is not None:
+                passed = False
+                details += f", but {problem}"
         if not passed and resp.text():
             details += f"; body={resp.text()[:200]}"
         results.append(ScenarioResult(

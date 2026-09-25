@@ -34,6 +34,17 @@ from .IPMXUtils import filter_resources
 
 NMOS_WIKI_URL = "https://github.com/AMWA-TV/nmos/wiki"
 
+# IPMX patch: the Authorization auto-tests that need an Access Token minted by this testing tool, in the order
+# basics() runs them, with the IPMX security test suite (TR-10-SEC) requirements that cover them. With
+# CONFIG.USE_EXTERNAL_AUTH the tool mints no tokens of its own, so these tests are reported as disabled.
+EXTERNAL_AUTH_COVERED_TESTS = [
+    ("Expired Authorization Token", "SEC-14.3.3.1-2"),
+    ("Incorrect Authorization Audience", "SEC-14.3.3.4-6"),
+    ("Incorrect Authorization Scope", "SEC-14.3.3.4-15, SEC-14.3.3.4-17"),
+    ("Valid Authorization Scope", "SEC-14.3.3.4-18"),
+    ("No Matching Public Keys", "SEC-14.3.3.5-1, SEC-14.3.3.5-2, SEC-14.3.3.5-4, SEC-14.3.2-9"),
+]
+
 
 def test_depends(func):
     """Decorator to prevent a test being executed in individual mode"""
@@ -204,8 +215,11 @@ class GenericTest(object):
         # IPMX patch: when CONFIG.USE_EXTERNAL_AUTH is True the operator has
         # injected a real token (typically from Keycloak via UserConfig.py
         # reading NMOS_TESTING_AUTH_TOKEN); preserve it and skip AMWA's
-        # mock-token generation. Defaults to AMWA behaviour when the flag
-        # is absent or False — back-compat preserved for upstream users.
+        # mock-token generation. basics() likewise mints no tokens and
+        # reports the Authorization auto-tests that need one as disabled
+        # (see EXTERNAL_AUTH_COVERED_TESTS). Defaults to AMWA behaviour when
+        # the flag is absent or False — back-compat preserved for upstream
+        # users.
         if not getattr(CONFIG, "USE_EXTERNAL_AUTH", False):
             CONFIG.AUTH_TOKEN = None
             if self.authorization:
@@ -423,30 +437,39 @@ class GenericTest(object):
             # Test that the API responds with a 4xx when a missing or invalid token is used
             results.append(self.do_test_authorization(api, "Missing Authorization Header", error_type=None))
             results.append(self.do_test_authorization(api, "Invalid Authorization Token", token=str(uuid.uuid4())))
-            token = self.primary_auth.generate_token(
-                [api],
-                True,
-                overrides={"iat": int(time.time() - 7200),
-                           "exp": int(time.time() - 3600)}) if self.primary_auth else None
-            results.append(self.do_test_authorization(api, "Expired Authorization Token", token=token))
-            token = self.primary_auth.generate_token(
-                [api],
-                True,
-                overrides={"aud": ["https://*.nmos.example.com"]}) if self.primary_auth else None
-            results.append(self.do_test_authorization(api, "Incorrect Authorization Audience", error_code=403,
-                                                      error_type="insufficient_scope", token=token))
-            token = self.primary_auth.generate_token(
-                ["nonsense"],
-                overrides={"x-nmos-nonsense": {"read": [str(uuid.uuid4())]}}) if self.primary_auth else None
-            results.append(self.do_test_authorization(api, "Incorrect Authorization Scope", error_code=403,
-                                                      error_type="insufficient_scope", token=token))
+            if getattr(CONFIG, "USE_EXTERNAL_AUTH", False):
+                # IPMX patch: the remaining tests need tokens minted by this tool, which mints none when an
+                # external Authorization Server is in use
+                for test_name, requirements in EXTERNAL_AUTH_COVERED_TESTS:
+                    results.append(self.do_test_authorization_covered_externally(api, test_name, requirements))
+            else:
+                token = self.primary_auth.generate_token(
+                    [api],
+                    True,
+                    overrides={"iat": int(time.time() - 7200),
+                               "exp": int(time.time() - 3600)}) if self.primary_auth else None
+                results.append(self.do_test_authorization(api, "Expired Authorization Token", token=token))
+                token = self.primary_auth.generate_token(
+                    [api],
+                    True,
+                    overrides={"aud": ["https://*.nmos.example.com"]}) if self.primary_auth else None
+                results.append(self.do_test_authorization(api, "Incorrect Authorization Audience", error_code=403,
+                                                          error_type="insufficient_scope", token=token))
+                token = self.primary_auth.generate_token(
+                    ["nonsense"],
+                    overrides={"x-nmos-nonsense": {"read": [str(uuid.uuid4())]}}) if self.primary_auth else None
+                results.append(self.do_test_authorization(api, "Incorrect Authorization Scope", error_code=403,
+                                                          error_type="insufficient_scope", token=token))
 
-            # Test that the API responds with a 200 when only the scope is present
-            token = self.primary_auth.generate_token([api], False, add_claims=False) if self.primary_auth else None
-            results.append(self.do_test_authorization(api, "Valid Authorization Scope", error_code=200, token=token))
+                # Test that the API responds with a 200 when only the scope is present
+                token = self.primary_auth.generate_token([api], False, add_claims=False) \
+                    if self.primary_auth else None
+                results.append(self.do_test_authorization(api, "Valid Authorization Scope", error_code=200,
+                                                          token=token))
 
-            # Test that the API responds with a 401 or 503 followed by 200 when no matching public keys for the token
-            results.append(self.do_test_no_matching_public_key_authorization(api))
+                # Test that the API responds with a 401 or 503 followed by 200 when no matching public keys for
+                # the token
+                results.append(self.do_test_no_matching_public_key_authorization(api))
 
             # Clear saved entities before switching the API
             self.saved_entities.clear()
@@ -502,20 +525,30 @@ class GenericTest(object):
                 if not valid:
                     return test.FAIL(message)
 
-                # Remove 'Bearer ' and tokenise
+                # IPMX patch: tokenise the Bearer challenge per RFC 9110 section 11.2 (token or quoted-string
+                # values, optional whitespace, case-insensitive names)
                 # https://tools.ietf.org/html/rfc6750#section-3
-                error_header_ok = False
-                auth_params = response.headers["WWW-Authenticate"][7:].split(",")
-                for param in auth_params:
-                    param_parts = param.split("=")
-                    if param_parts[0] == "error":
-                        if param_parts[1] == error_type:
-                            error_header_ok = True
+                auth_params = TestHelper.get_auth_params(response.headers["WWW-Authenticate"], "Bearer") or {}
+                error_header_ok = auth_params.get("error") == error_type
                 if not error_header_ok:
                     return test.WARNING("'WWW-Authenticate' response header should contain 'error={}'"
                                         .format(error_type))
 
             return test.PASS()
+        else:
+            return test.DISABLED("This test is only performed when an API supports Authorization and 'ENABLE_AUTH' "
+                                 "is True")
+
+    def do_test_authorization_covered_externally(self, api_name, test_name, requirements):
+        """IPMX patch: report an Authorization auto-test that needs an Access Token minted by this tool, when
+        CONFIG.USE_EXTERNAL_AUTH means the tool mints none"""
+        api = self.apis[api_name]
+        test = Test("GET /x-nmos/{}/{} ({})".format(api_name, api["version"], test_name), self.auto_test_name(api_name))
+
+        if self.authorization:
+            return test.DISABLED("This test is not performed when 'USE_EXTERNAL_AUTH' is True, as it needs an "
+                                 "Access Token minted by the testing tool itself. The IPMX security test suite "
+                                 "covers it ({})".format(requirements))
         else:
             return test.DISABLED("This test is only performed when an API supports Authorization and 'ENABLE_AUTH' "
                                  "is True")
@@ -560,15 +593,11 @@ class GenericTest(object):
                 warning = "should attempt to obtain the missing public key via the the token iss claim"
 
                 error_type = "invalid_token"
-                # Remove 'Bearer ' and tokenise
+                # IPMX patch: tokenise the Bearer challenge per RFC 9110 section 11.2 (token or quoted-string
+                # values, optional whitespace, case-insensitive names)
                 # https://tools.ietf.org/html/rfc6750#section-3
-                error_header_ok = False
-                auth_params = response.headers["WWW-Authenticate"][7:].split(",")
-                for param in auth_params:
-                    param_parts = param.split("=")
-                    if param_parts[0] == "error":
-                        if param_parts[1] == error_type:
-                            error_header_ok = True
+                auth_params = TestHelper.get_auth_params(response.headers["WWW-Authenticate"], "Bearer") or {}
+                error_header_ok = auth_params.get("error") == error_type
                 if not error_header_ok:
                     warning = "'WWW-Authenticate' response header should contain 'error={}'".format(error_type)
 

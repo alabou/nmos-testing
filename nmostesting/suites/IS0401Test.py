@@ -1429,7 +1429,10 @@ class IS0401Test(GenericTest):
                     access_error = True
                     continue
 
-                if self.authorization and urlparse(href).path.startswith("/x-nmos/connection"):
+                # IPMX patch: with CONFIG.USE_EXTERNAL_AUTH, mint no token here; do_request() then sends the
+                # operator's external token (CONFIG.AUTH_TOKEN)
+                if self.authorization and urlparse(href).path.startswith("/x-nmos/connection") \
+                        and not getattr(CONFIG, "USE_EXTERNAL_AUTH", False):
                     token = self.auth.generate_token(["connection"], True)
                     headers = {"Authorization": "Bearer {}".format(token)}
                 else:
