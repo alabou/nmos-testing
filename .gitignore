@@ -126,4 +126,5 @@ utilities/gsheets-import/credentials.json
 
 # IPMX
 ipmx/ffmpeg
+ipmx/nmos-reference/*
 IPMX_VENDOR_*/
