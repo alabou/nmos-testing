@@ -71,7 +71,8 @@ from ipmx_security_common import (
 )
 from ipmx_security_probes import (
     HandshakeReport, HttpResponse, SecurityHttpClient,
-    fetch_self, request_with_token, tls_handshake, ws_upgrade,
+    fetch_self, request_with_token, tls13_suite_handshake, tls_handshake,
+    ws_upgrade,
 )
 from ipmx_security_tokens import (
     ALL_PERMITTED_ALGORITHMS, SigningKey, TokenTemplate, mint_token,
@@ -283,8 +284,8 @@ def build_cli() -> argparse.ArgumentParser:
     rep.add_argument("--cannot-test-report", action="store_true",
                      help="Show only CANNOT-TEST entries.")
     rep.add_argument("--attestation-manifest", type=Path, default=None,
-                     help="Markdown attestation manifest path "
-                          "(written even when not specified, in the cwd).")
+                     help="Markdown attestation manifest path. The manifest "
+                          "is written only when this option is given.")
     rep.add_argument("--json-out", type=Path, default=None,
                      help="Machine-readable JSON dump path.")
     rep.add_argument("--list-requirements", action="store_true",
@@ -349,7 +350,7 @@ def build_cli() -> argparse.ArgumentParser:
             "registry-side behaviour against the spec. Each record is "
             "{method, path, tls_version, cipher, has_authorization, "
             "authorization_scheme, peer_cert_subject, peer_cert_present, "
-            "upstream_status}."
+            "upstream_status, peer_cert_key_type}."
         ),
     )
     proxy.add_argument(
@@ -510,6 +511,9 @@ class ProxyRequestRecord:
     peer_cert_subject: str
     peer_cert_present: bool
     upstream_status: int | None = None
+    peer_cert_key_type: str = ""
+    """``RSA-<bits>`` / ``ECDSA-<curve>`` of the Node's client cert, or
+    empty when none was presented (older logs lack the field)."""
 
 
 @dataclass
@@ -647,10 +651,11 @@ _SHOULD_FEATURE_GATES: dict[str, str] = {
     # contingent on the device claiming 1.3 support.
     "SEC-8-2": "tls13",
     "SEC-8-3": "tls13",
-    # §3 TLS 1.2 extended cipher SHOULD-list (every cipher beyond the
-    # mandatory ``ECDHE-RSA-AES128-GCM-SHA256``). Declaring this opts
-    # the device into wire tests for every member.
-    "SEC-8-8": "tls12-ciphers-extended",
+    # §8 TLS 1.3 cipher suites (SEC-8-8): its SHALL applies to a device
+    # that supports TLS 1.3, itself a SHOULD, so it follows the same
+    # declaration. The TLS 1.2 suites (SEC-8-6) are NOT gated: that check
+    # fails only on the TCT's mandatory suite and just reports the SHOULDs.
+    "SEC-8-8": "tls13",
     # §3 ECDH curves: SEC-8-4 (PFS) and SEC-8-5 (per-curve support)
     # are NOT feature-gated — they're SHALL requirements; the per-
     # curve probe resolves to NOT-APPLICABLE on entries without a
@@ -659,8 +664,11 @@ _SHOULD_FEATURE_GATES: dict[str, str] = {
     # §14.3.3.7 separate read-only ``Guest``-suffixed WS endpoint.
     "SEC-14.3.3.7-1": "guest-ws",
     "SEC-14.3.3.7-2": "guest-ws",
-    # §12.5 TCT=2 dual-stack (RSA + ECDSA simultaneously).
-    "SEC-12.5-3": "tct-both",
+    # §12.5 SEC-12.5-3 ("Shall be common to all certificates and Root
+    # CAs of the device") is NOT feature-gated: it is a top-level §12.5
+    # rule for every TCT mode, not part of the optional "Both" (TCT=2).
+    # A device without TCT=2 is checked in the modes it runs; the matrix
+    # reports the missing TCT=2 itself by skipping its tct-both entries.
     # §12.8 / §12.11 / §12.13 CRL handling (CTCRL / NESTCRL / CESTCRL).
     # SEC-12.8-1 / -12.11-1 / -12.13-1: GCRL support is now wired
     # end-to-end via the A-crl-* matrix entries. Removed from the
@@ -677,10 +685,10 @@ attestation manifest. The manifest receives a predicted per-counter
 delta (see :func:`_emit_predicted_counter_deltas`) the operator
 compares against the device's actual values during sign-off.
 
-TLS 1.3 cipher SHOULD-list (``tls13-ciphers-extended``) is reserved
-for future use — there is no SEC-8-x req_id wired to it yet; once
-the cipher matrix splits 1.2 vs 1.3, that tag will gate the 1.3
-side.
+The cipher checks are split by version — SEC-8-6 for TLS 1.2, SEC-8-8
+for TLS 1.3 — and both report their SHOULD/MAY suites without failing,
+so neither needs an opt-in tag (``tls12-ciphers-extended`` /
+``tls13-ciphers-extended`` gate nothing).
 """
 
 
@@ -791,8 +799,8 @@ def _apply_optional_feature_gates(
         if feat not in supports:
             r.optional_absent = True
             r.details = (
-                f"feature '{feat}' not declared in --supports; "
-                f"SHOULD resolves to OPTIONAL-ABSENT"
+                f"optional feature '{feat}' not declared in --supports; "
+                f"resolves to OPTIONAL-ABSENT"
             )
 
 
@@ -2645,7 +2653,8 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
     ]
 
     async def check_tls12_cipher_matrix() -> tuple[bool, str]:
-        """§8 SHOULD ciphers: each named cipher's handshake should succeed.
+        """§8 SEC-8-6 TLS 1.2 cipher suites: the TCT's SHALL cipher must
+        succeed; each SHOULD cipher's result is reported, never failed.
         Aggregates per-cipher results.
 
         The cipher list is filtered by the DUT's declared TCT mode:
@@ -2702,6 +2711,46 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
         if failed:
             return (False, "; ".join(failed))
         return (True, "; ".join(results[:4]) + ("; ..." if len(results) > 4 else ""))
+
+    # §8 TLS 1.3: "shall support the cipher suite TLS_AES_128_GCM_SHA256
+    # and should support TLS_AES_256_GCM_SHA384 ... may support the
+    # TLS_CHACHA20_POLY1305_SHA256 cipher suite". The other SHOULD suite,
+    # TLS_AES_128_CCM_SHA256, is deliberately neither probed nor reported:
+    # the common TLS stacks do not enable it, so it is not enforced.
+    _TLS13_CIPHER_SUITES: list[tuple[str, str]] = [
+        ("TLS_AES_128_GCM_SHA256", "SHALL"),
+        ("TLS_AES_256_GCM_SHA384", "SHOULD"),
+        ("TLS_CHACHA20_POLY1305_SHA256", "MAY"),
+    ]
+
+    async def check_tls13_cipher_suites() -> tuple[bool, str]:
+        """§8 SEC-8-8 TLS 1.3 cipher suites: one TLS 1.3 handshake per
+        suite, each offering only that suite. PASS iff the SHALL suite
+        is negotiated; the SHOULD and MAY suites are reported, never
+        failed. TLS 1.3 suite names carry no key type, so unlike the
+        TLS 1.2 matrix there is no TCT filtering."""
+        host, port = _split_host_port(ctx.cli.dut)
+        results: list[str] = []
+        failed: list[str] = []
+        for suite, level in _TLS13_CIPHER_SUITES:
+            report = await tls13_suite_handshake(
+                host, port, suite,
+                server_ca=ctx.cli.server_ca,
+                client_cert=ctx.cli.client_cert,
+                client_key=ctx.cli.client_key,
+                server_hostname=host,
+            )
+            if report.succeeded and report.negotiated_cipher == suite:
+                results.append(f"{suite}: OK")
+            elif level == "SHALL":
+                failed.append(
+                    f"{suite} (SHALL) refused: "
+                    f"{report.error or f'negotiated {report.negotiated_cipher}'}")
+            else:
+                results.append(f"{suite}: not negotiated ({level})")
+        if failed:
+            return (False, "; ".join(failed))
+        return (True, "; ".join(results))
 
     # ----- Key exchange groups -----
 
@@ -2964,6 +3013,13 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
         Node.services[] (plus the Node API itself), opens a TLS
         handshake to each, inspects the negotiated server cert's key
         type, and asserts all match the operator-declared --expect-tct.
+
+        TR-10-SEC §11 applies the certificate type "to server and client
+        certificates" too, so in a RAP=2 run the Node's client
+        certificate toward the registry — as the registry proxy observed
+        it — is graded the same way. Under TCT=2 either type is accepted
+        and the one observed is reported (the proxy trusts both roots,
+        so it records the Node's first choice).
         """
         from cryptography import x509
         from cryptography.hazmat.primitives.asymmetric import rsa, ec
@@ -3060,12 +3116,27 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
                     f"declared TCT={expected_tct}")
             else:
                 observed.append(label)
+        # The Node's client certificate toward the registry (RAP=2).
+        registry_seen: list[str] = []
+        obs = ctx.registry_proxy
+        if obs is not None and obs.rap == 2:
+            for kind in sorted({r.peer_cert_key_type for r in obs.records
+                                if r.peer_cert_present and r.peer_cert_key_type}):
+                flavor_tct = 1 if kind.startswith("ECDSA") else 0
+                if expected_tct != 2 and flavor_tct != expected_tct:
+                    offenders.append(
+                        f"registry client certificate is {kind} but "
+                        f"operator declared TCT={expected_tct}")
+                else:
+                    registry_seen.append(kind)
         if offenders:
             return (False, "; ".join(offenders))
+        registry_note = (f"; registry client certificate: "
+                         f"{', '.join(registry_seen)}" if registry_seen else "")
         return (True,
                 f"TCT consistent across {len(targets)} probed endpoint(s): "
                 f"{', '.join(observed[:5])}"
-                f"{'; ...' if len(observed) > 5 else ''}")
+                f"{'; ...' if len(observed) > 5 else ''}{registry_note}")
 
     async def check_server_cert_meets_tct() -> tuple[bool, str]:
         """§12.5-1: RSA cert ≥2048-bit; §12.5-2: ECDSA cert ≥secp256r1.
@@ -4289,7 +4360,7 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
     dispatch: dict[str, CheckFn] = {
         # §8 TLS Communications and Cipher Suites
         "SEC-8-2": check_tls_13_negotiation,
-        "SEC-8-6": check_tls_12_mandatory_cipher,
+        "SEC-8-6": check_tls12_cipher_matrix,
         "SEC-8-9": check_tls_12_prohibited_cipher_refused,
         # §11 RAAM
         "SEC-11.1-1": check_no_client_cert_refused if ctx.cli.config in ("A", "C")
@@ -4407,7 +4478,7 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
         # and PASSes when the DUT completes outbound handshake(s).
         "SEC-8-5": check_tls_group_supported_client_side,
         "SEC-8-7": check_cbc_ciphers_refused,
-        "SEC-8-8": check_tls12_cipher_matrix,
+        "SEC-8-8": check_tls13_cipher_suites,
         # §14.3.2.1 Metadata endpoint URL forms
         "SEC-14.3.2.1-1": check_metadata_forms_supported,
         "SEC-14.3.2.1-2": check_metadata_forms_supported,
@@ -4461,24 +4532,29 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
         "SEC-9-1": _make_per_run_mode_check(
             TAG_NAP, "NAP", ctx.cli.expect_nap,
             {"1", "2"}, "NAP modes 1 and 2"),
+        # TCT: RSA (0) and ECDSA (1) are the mandated modes — §11.1–§11.3
+        # and §12.5: "RSA and ECDSA shall independently be supported by
+        # all compliant IPMX devices. Supporting both simultaneously is
+        # optional." A TCT=2 run still passes the per-run confirmation,
+        # reported as a mode outside the mandated set.
         "SEC-11.1-2": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         "SEC-11.1-3": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         "SEC-11.2-2": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         "SEC-11.2-3": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         "SEC-11.3-1": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         "SEC-11.3-2": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         "SEC-10.2-3": _make_per_run_mode_check(
             TAG_RAP, "RAP", ctx.cli.expect_rap,
             {"1", "2"}, "Unrestricted + Restricted Registration"),
@@ -4496,7 +4572,7 @@ def build_requirements(ctx: SecurityValidationContext) -> RequirementRegistry:
         "SEC-12.5-3": check_tct_common_across_endpoints,
         "SEC-12.5-4": _make_per_run_mode_check(
             TAG_TCT, "TCT", ctx.cli.expect_tct,
-            {"0", "1", "2"}, "all three TCT modes"),
+            {"0", "1"}, "TCT modes 0 and 1"),
         # SEC-12.14-4: "retrieve current effective values of NAP/RAP/...
         # ... through non-sensitive metadata" — the IPMX security tags
         # ARE this retrieval mechanism, already wire-tested by SEC-12.15-1.

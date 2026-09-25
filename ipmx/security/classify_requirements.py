@@ -73,9 +73,9 @@ _WIRED_REQ_IDS: frozenset[str] = frozenset({
     "SEC-8-3",          # TLS 1.3 preferred when both offered
     "SEC-8-4",          # group matrix
     "SEC-8-5",          # group matrix
-    "SEC-8-6",          # TLS 1.2 mandatory cipher
+    "SEC-8-6",          # TLS 1.2 cipher matrix (per-TCT SHALL + SHOULDs)
     "SEC-8-7",          # CBC ciphers refused (Node omits CBC from whitelist)
-    "SEC-8-8",          # TLS 1.2 cipher matrix
+    "SEC-8-8",          # TLS 1.3 cipher suites (SHALL + SHOULD/MAY)
     "SEC-8-9",          # prohibited cipher refused
     # §11 RAAM
     "SEC-11.1-1",       # mTLS-only RAAM (Config A)

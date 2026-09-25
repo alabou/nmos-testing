@@ -18,7 +18,8 @@ The validator uses this proxy to observe a Node's outbound traffic
 toward an IS-04 Registry. It sits between the Node and an upstream
 registry (real or in-process stub), recording every request's:
 
-  * transport: TLS version, cipher, client-cert presence + identity
+  * transport: TLS version, cipher, client-cert presence + identity +
+    key type (RSA / ECDSA)
   * HTTP: method, path, presence of ``Authorization`` header
   * RAP signal: HTTP vs HTTPS vs HTTPS+mTLS
 
@@ -56,6 +57,8 @@ from typing import Any
 
 import aiohttp
 from aiohttp import web
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 
 LOG = logging.getLogger("ipmx-registry-proxy")
@@ -96,6 +99,22 @@ class ProxyRequestRecord:
     peer_cert_subject: str
     peer_cert_present: bool
     upstream_status: int | None = None
+    peer_cert_key_type: str = ""
+    """Key type of the Node's client certificate — ``RSA-<bits>`` or
+    ``ECDSA-<curve>`` — or empty when none was presented. TR-10-SEC §11
+    applies the TLS Certificate Type to client certificates too, and the
+    RSA and ECDSA identities of one device share a subject, so the
+    subject alone cannot tell them apart."""
+
+
+def _key_type(der: bytes) -> str:
+    """``RSA-<bits>`` / ``ECDSA-<curve>`` for a DER certificate."""
+    key = x509.load_der_x509_certificate(der).public_key()
+    if isinstance(key, rsa.RSAPublicKey):
+        return f"RSA-{key.key_size}"
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        return f"ECDSA-{key.curve.name}"
+    return type(key).__name__
 
 
 class RegistryProxy:
@@ -206,6 +225,7 @@ class RegistryProxy:
         cipher = "none"
         peer_subject = ""
         peer_present = False
+        peer_key_type = ""
         if transport is not None:
             ssl_obj = transport.get_extra_info("ssl_object")
             if ssl_obj is not None:
@@ -220,6 +240,9 @@ class RegistryProxy:
                     peer_subject = ", ".join(
                         f"{k}={v}" for rdn in subj for k, v in rdn
                     )
+                    der = ssl_obj.getpeercert(binary_form=True)
+                    if der:
+                        peer_key_type = _key_type(der)
         auth = request.headers.get("Authorization", "")
         scheme = auth.split(" ", 1)[0] if auth else ""
         record = ProxyRequestRecord(
@@ -231,6 +254,7 @@ class RegistryProxy:
             authorization_scheme=scheme,
             peer_cert_subject=peer_subject,
             peer_cert_present=peer_present,
+            peer_cert_key_type=peer_key_type,
         )
         self._request_log.append(record)
         try:

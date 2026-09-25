@@ -24,6 +24,8 @@ Probe inventory:
 * :func:`tls_handshake` — open one TLS handshake with a specific cipher
   suite + optional client cert + optional ALPN, return what was
   negotiated (or the OpenSSL error if the handshake was refused).
+* :func:`tls13_suite_handshake` — the same, TLS 1.3 only and offering
+  exactly one TLS 1.3 cipher suite.
 * :func:`fetch_self` — ``GET /x-nmos/node/v1.3/self`` and parse the
   Node resource; the security-tag verifier consumes this.
 * :func:`request_with_token` — issue an HTTPS request carrying a
@@ -42,7 +44,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import ssl
+import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -127,6 +132,100 @@ async def tls_handshake(
             await writer.wait_closed()
         except (ssl.SSLError, ConnectionError):
             pass
+
+
+# OpenSSL configuration that restricts every SSL_CTX a process creates to
+# one TLS 1.3 cipher suite -- the same shape the matrix runner writes to pin
+# an ECDH group.
+_TLS13_SUITE_CONF = (
+    "openssl_conf = ipmx_openssl_init\n"
+    "\n"
+    "[ipmx_openssl_init]\n"
+    "ssl_conf = ipmx_ssl_sect\n"
+    "\n"
+    "[ipmx_ssl_sect]\n"
+    "system_default = ipmx_ssl_default\n"
+    "\n"
+    "[ipmx_ssl_default]\n"
+    "Ciphersuites = {suite}\n"
+)
+
+
+async def tls13_suite_handshake(
+    host: str,
+    port: int,
+    suite: str,
+    *,
+    server_ca: Path | None = None,
+    client_cert: Path | None = None,
+    client_key: Path | None = None,
+    server_hostname: str | None = None,
+    timeout: float = 5.0,
+) -> HandshakeReport:
+    """Open one TLS 1.3 handshake offering only the cipher suite ``suite``.
+
+    Python's ``ssl`` module cannot restrict TLS 1.3 cipher suites --
+    ``set_ciphers`` covers TLS 1.2 and below -- so the handshake runs in a
+    child interpreter whose OpenSSL reads a one-line ``Ciphersuites``
+    setting through ``OPENSSL_CONF``. The child runs :func:`tls_handshake`
+    unchanged, so everything but the offered suite matches the other
+    probes. The peer certificate is not carried back.
+    """
+    request = {
+        "host": host,
+        "port": port,
+        "server_ca": str(server_ca) if server_ca is not None else None,
+        "client_cert": str(client_cert) if client_cert else None,
+        "client_key": str(client_key) if client_key else None,
+        "server_hostname": server_hostname,
+        "timeout": timeout,
+    }
+    with tempfile.TemporaryDirectory(prefix="ipmx-tls13-") as tmp:
+        conf = Path(tmp) / "openssl.cnf"
+        conf.write_text(_TLS13_SUITE_CONF.format(suite=suite))
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(Path(__file__).resolve()),
+            "tls13-handshake", json.dumps(request),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=dict(os.environ, OPENSSL_CONF=str(conf)),
+        )
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(),
+                                              timeout=timeout + 15.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return HandshakeReport(succeeded=False,
+                                   error="TLS 1.3 suite probe timed out")
+    if proc.returncode != 0:
+        detail = err.decode(errors="replace").strip()[-300:]
+        return HandshakeReport(succeeded=False,
+                               error=f"TLS 1.3 suite probe failed: {detail}")
+    return HandshakeReport(**json.loads(out))
+
+
+def _tls13_handshake_child(request_json: str) -> int:
+    """Child side of :func:`tls13_suite_handshake`: one handshake under the
+    caller's ``OPENSSL_CONF``, reported as JSON on stdout."""
+    req = json.loads(request_json)
+    report = asyncio.run(tls_handshake(
+        req["host"], req["port"],
+        min_version=ssl.TLSVersion.TLSv1_3,
+        max_version=ssl.TLSVersion.TLSv1_3,
+        server_ca=Path(req["server_ca"]) if req["server_ca"] else None,
+        client_cert=Path(req["client_cert"]) if req["client_cert"] else None,
+        client_key=Path(req["client_key"]) if req["client_key"] else None,
+        server_hostname=req["server_hostname"],
+        timeout=req["timeout"],
+    ))
+    print(json.dumps({
+        "succeeded": report.succeeded,
+        "negotiated_cipher": report.negotiated_cipher,
+        "negotiated_version": report.negotiated_version,
+        "error": report.error,
+    }))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -354,3 +453,11 @@ async def ws_upgrade(
             status=None, succeeded=False,
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+if __name__ == "__main__":
+    # Internal entry point: tls13_suite_handshake() re-runs this module under
+    # a restricted OPENSSL_CONF.
+    if len(sys.argv) == 3 and sys.argv[1] == "tls13-handshake":
+        sys.exit(_tls13_handshake_child(sys.argv[2]))
+    sys.exit(f"usage: {Path(sys.argv[0]).name} tls13-handshake <request-json>")

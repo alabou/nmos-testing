@@ -118,6 +118,9 @@ twice, reported as `[cc]` (client_credentials) and `[ac]`
 # Pre-start and provision Keycloak first:
 (cd ../keycloak && ./start-keycloak.sh)
 (cd ../keycloak && ./start-init-keycloak.sh)
+# A TCT=1 (ECDSA) Node trusts only the ECDSA root, so the matrix's TCT=1
+# entries use a second instance presenting the ECDSA certificate, on 9445:
+(cd ../keycloak && ./start-keycloak.sh --tct=1)
 
 python3 ipmx_validate_security.py \
   --launch-dut ../nmos-reference/start-node1.sh \

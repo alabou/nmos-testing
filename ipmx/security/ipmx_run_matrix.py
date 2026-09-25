@@ -60,15 +60,17 @@ REF_NODE_DIR = WORKSPACE / "nmos-reference"
 CERTS = WORKSPACE / "Certificates" / "build.0"
 ROOT_CA = CERTS / "ExampleRootCA.pem"
 
-# Validator-side client cert used for Config A / C (mTLS). We use the
+# Identity of every test-side peer: the validator's client cert for
+# Config A / C (mTLS), the fake AS and the registry proxy. We use the
 # SNX00000 client identity because the grants CSV already provisions
 # ``Example.Company.Device.Client.ABC.SNX00000.example.com`` as a
 # client_credentials OAuth client in Keycloak — this lets Stage 2
 # under Config C succeed the §14.3.3.6 client_id/cert-SAN binding
-# (token client_id == cert SAN). Any other cert would require a
-# matching OAuth-client provisioning step.
-DEFAULT_CLIENT_CERT = CERTS / "pem" / "ExampleDeviceClient.ABC.SNX00000.chain.pem"
-DEFAULT_CLIENT_KEY = CERTS / "key" / "ExampleDeviceClient.ABC.SNX00000.key"
+# (token client_id == cert SAN; the RSA and ECDSA flavours carry the
+# same SAN). Any other cert would require a matching OAuth-client
+# provisioning step. Which flavour is presented follows the DUT's TCT
+# (see ``_peer_identity``).
+PEER_SERIAL = "SNX00000"
 
 # Default fake-AS host/port — the validator brings up its own AS at
 # this endpoint in Stage 1 mode, and the DUT trusts it because the
@@ -98,11 +100,21 @@ PROXY_REG_PORT = 8454
 PROXY_QUERY_PORT = 8453
 PROXY_SERVER_CERT = CERTS / "pem" / "ExampleDeviceServer.ABC.SNX00000.chain.pem"
 PROXY_SERVER_KEY = CERTS / "key" / "ExampleDeviceServer.ABC.SNX00000.key"
+# Roots the proxy verifies the DUT's registry client certificate against:
+# both, whatever the DUT's TCT. The proxy is an observer -- it records the
+# key type the DUT presents (``peer_cert_key_type``) for the validator to
+# grade, rather than refusing a wrong-type certificate at the handshake and
+# leaving only a connection failure to read.
+PROXY_CLIENT_CA = CERTS / "ExampleRootCA-bundle.pem"
 
 # Default live-AS (Keycloak) endpoint. Operators with a different
 # AS override via ``--keycloak-url``.
 KEYCLOAK_HOST = "XYZ-SNX00000"
 KEYCLOAK_PORT = 9443
+# The ECDSA instance (``keycloak/start-keycloak.sh --tct=1``). A TCT=1 DUT
+# trusts only the ECDSA root, so its live-stage runs use this one; TCT=0 and
+# TCT=2 DUTs use the RSA instance above.
+KEYCLOAK_EC_PORT = 9445
 KEYCLOAK_REALM = "TR-10-SEC"
 KEYCLOAK_ADMIN_USER = "admin"
 KEYCLOAK_ADMIN_PASS = "admin"
@@ -116,7 +128,7 @@ CONTROL_PORT = 5050
 # Optional features the reference node implements. The operator
 # overrides this via ``--supports`` for their own DUT.
 DEFAULT_SUPPORTS = (
-    "tls13,tls12-ciphers-extended,ecdh-secp521r1,ecdh-x448"
+    "tls13,tls12-ciphers-extended,ecdh-secp521r1,ecdh-x448,tct-both"
 )
 
 
@@ -175,7 +187,8 @@ class MatrixEntry:
     split-controls entry whose only purpose is the isolation test."""
     client_cert: Path | None = None
     """Override of the TLS client cert + key the validator presents.
-    None means use ``DEFAULT_CLIENT_CERT`` (SNX00000 under build.0/).
+    None means the SNX00000 client identity under build.0/ in the
+    flavour the DUT's TCT trusts (see ``_peer_identity``).
     Set this on split-controls entries so the validator's primary
     client cert chains to NESTCA (matching the Node API listener)."""
     client_key: Path | None = None
@@ -199,6 +212,11 @@ class MatrixEntry:
     CLIENT side supports the pinned group — that's the §8-5
     positive proof. When ``None`` the env is not set; the proxy +
     fake AS run with normal defaults."""
+    requires_feature: str | None = None
+    """Optional-feature tag (a ``--supports`` value, e.g. ``tct-both``)
+    this entry exercises. When ``--supports`` does not declare it, the
+    entry is not run and is reported as OPTIONAL-ABSENT: a device that
+    does not implement an optional feature must not fail the matrix."""
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +245,23 @@ MATRIX: list[MatrixEntry] = [
         # Use the bundle so the validator can verify the DUT's
         # ECDSA-flavoured server cert against the EC root while still
         # trusting the RSA root for everything else.
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
+    ),
+    # TCT=2 (Both) is optional — gated on the ``tct-both`` supports tag —
+    # but every reference-node launcher implements ``--tct=2``, so each
+    # configuration runs with it once. Every listener then holds an RSA
+    # and an ECDSA identity and serves each client whichever its
+    # ClientHello can verify; the bundle lets the validator verify
+    # either one.
+    MatrixEntry(
+        label="A-tct2-both",
+        requires_feature="tct-both",
+        launch_script="start-node1-noauth2.sh",
+        launch_args=["", "", "", "", "--tct=2"],
+        expect={"nap": "2", "rap": "0", "tct": "2"},
+        config="A",
+        uses_oauth=False,
+        needs_client_cert=True,
         server_ca=CERTS / "ExampleRootCA-bundle.pem",
     ),
     # Split-controls: NESTCA (build.1) on the Node IS-04 API listener,
@@ -275,11 +310,36 @@ MATRIX: list[MatrixEntry] = [
         uses_oauth=False,
         needs_client_cert=True,
     ),
+    # The same registry-TLS observation for the other certificate types:
+    # the proxy presents the registry server cert in the DUT's own TCT
+    # type, which is the only root a TCT=1 DUT trusts.
+    MatrixEntry(
+        label="A-tct1-rap1-registry-tls",
+        launch_script="start-node1-noauth2.sh",
+        launch_args=["", "", "", "", "--tct=1", "--rap=1"],
+        expect={"nap": "2", "rap": "1", "tct": "1"},
+        config="A",
+        uses_oauth=False,
+        needs_client_cert=True,
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
+    ),
+    MatrixEntry(
+        label="A-tct2-rap1-registry-tls",
+        requires_feature="tct-both",
+        launch_script="start-node1-noauth2.sh",
+        launch_args=["", "", "", "", "--tct=2", "--rap=1"],
+        expect={"nap": "2", "rap": "1", "tct": "2"},
+        config="A",
+        uses_oauth=False,
+        needs_client_cert=True,
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
+    ),
     # Registry-mTLS observation: route the DUT through the proxy in
     # HTTPS-mTLS mode (RAP=2). The DUT presents its
     # ExampleDeviceClient cert to the proxy; the proxy verifies it
-    # against ExampleRootCA. Observing peer_cert_present=true across
-    # the registration handshake converts SEC-10.2-1 to PASS.
+    # against the Example roots and records its key type. Observing
+    # peer_cert_present=true across the registration handshake converts
+    # SEC-10.2-1 to PASS.
     MatrixEntry(
         label="A-rap2-registry-mtls",
         launch_script="start-node1-noauth2.sh",
@@ -288,6 +348,35 @@ MATRIX: list[MatrixEntry] = [
         config="A",
         uses_oauth=False,
         needs_client_cert=True,
+    ),
+    # The same observation for the other certificate types: the DUT must
+    # present its registry client certificate in its own TCT's type
+    # (TR-10-SEC §11: the type applies "to server and client
+    # certificates"), which SEC-12.5-3 grades from the proxy's record.
+    # TCT=1 also proves the DUT accepts an ECDSA registry certificate.
+    MatrixEntry(
+        label="A-tct1-rap2-registry-mtls",
+        launch_script="start-node1-noauth2.sh",
+        launch_args=["", "", "", "", "--tct=1", "--rap=2"],
+        expect={"nap": "2", "rap": "2", "tct": "1"},
+        config="A",
+        uses_oauth=False,
+        needs_client_cert=True,
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
+    ),
+    # TCT=2 holds both client identities; the proxy accepts either, so
+    # the type it records is the DUT's first choice -- ECDSA per §11
+    # ("ECDSA attempted first by client").
+    MatrixEntry(
+        label="A-tct2-rap2-registry-mtls",
+        requires_feature="tct-both",
+        launch_script="start-node1-noauth2.sh",
+        launch_args=["", "", "", "", "--tct=2", "--rap=2"],
+        expect={"nap": "2", "rap": "2", "tct": "2"},
+        config="A",
+        uses_oauth=False,
+        needs_client_cert=True,
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
     ),
     # ----- §8-5 per-curve positive coverage --------------------------------
     # Each entry pins the registry proxy's TLS group list to ONE
@@ -443,6 +532,18 @@ MATRIX: list[MatrixEntry] = [
         server_ca=CERTS / "ExampleRootCA-bundle.pem",
     ),
     MatrixEntry(
+        label="B-tct2-both",
+        requires_feature="tct-both",
+        launch_script="start-node1-nomtls.sh",
+        launch_args=["__AS_HOST__", "__AS_PORT__", "", "", "--tct=2"],
+        expect={"rap": "0", "oaim": "0", "tct": "2"},
+        config="B",
+        uses_oauth=True,
+        needs_client_cert=False,
+        # TCT=2: see A-tct2-both.
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
+    ),
+    MatrixEntry(
         label="B-oaim1-cert",
         launch_script="start-node1-nomtls.sh",
         launch_args=["__AS_HOST__", "__AS_PORT__", "", "", "--oaim=1"],
@@ -461,6 +562,31 @@ MATRIX: list[MatrixEntry] = [
         config="C",
         uses_oauth=True,
         needs_client_cert=True,
+    ),
+    MatrixEntry(
+        label="C-tct1-ecdsa",
+        launch_script="start-node1.sh",
+        launch_args=["__AS_HOST__", "__AS_PORT__", "", "", "--tct=1"],
+        expect={"rap": "0", "oaim": "0", "tct": "1"},
+        config="C",
+        uses_oauth=True,
+        needs_client_cert=True,
+        # Use the bundle so the validator can verify the DUT's
+        # ECDSA-flavoured server cert against the EC root while still
+        # trusting the RSA root for everything else.
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
+    ),
+    MatrixEntry(
+        label="C-tct2-both",
+        requires_feature="tct-both",
+        launch_script="start-node1.sh",
+        launch_args=["__AS_HOST__", "__AS_PORT__", "", "", "--tct=2"],
+        expect={"rap": "0", "oaim": "0", "tct": "2"},
+        config="C",
+        uses_oauth=True,
+        needs_client_cert=True,
+        # TCT=2: see A-tct2-both.
+        server_ca=CERTS / "ExampleRootCA-bundle.pem",
     ),
 ]
 
@@ -521,11 +647,32 @@ def _write_group_pin_config(out_dir: Path, label: str, group: str) -> Path:
     return path
 
 
+def _peer_identity(role: str, tct: str) -> tuple[Path, Path]:
+    """``(chain, key)`` of the SNX00000 ``role`` identity (``"Client"``
+    or ``"Server"``) that a test-side peer presents to a DUT with this
+    TCT. The DUT trusts only the root of its own certificate type
+    (TR-10-SEC §12.5: the TCT is "common to all certificates and Root
+    CAs of the device"), so a TCT=1 DUT gets the ECDSA flavour; TCT=0
+    gets RSA, and so does TCT=2, which trusts both."""
+    infix = ".ec" if tct == "1" else ""
+    return (CERTS / "pem" / f"ExampleDevice{role}.ABC.{PEER_SERIAL}.chain{infix}.pem",
+            CERTS / "key" / f"ExampleDevice{role}.ABC.{PEER_SERIAL}{infix}.key")
+
+
+def _keycloak_port(tct: str) -> int:
+    """Port of the live AS for a DUT with this TCT: the ECDSA instance
+    for TCT=1, the RSA instance otherwise (see ``KEYCLOAK_EC_PORT``)."""
+    return KEYCLOAK_EC_PORT if tct == "1" else KEYCLOAK_PORT
+
+
 def _spawn_registry_proxy(
     out_dir: Path, label_with_stage: str, *, tls: bool,
     require_client_cert: bool,
     upstream: str | None = None,
     openssl_conf: Path | None = None,
+    server_cert: Path = PROXY_SERVER_CERT,
+    server_key: Path = PROXY_SERVER_KEY,
+    client_ca: Path = PROXY_CLIENT_CA,
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """Start the registry-proxy fixture as a subprocess so it can
     observe every Node→Registry request the DUT makes during this run.
@@ -563,13 +710,13 @@ def _spawn_registry_proxy(
     if tls:
         cmd += [
             "--tls",
-            "--cert", str(PROXY_SERVER_CERT),
-            "--key", str(PROXY_SERVER_KEY),
+            "--cert", str(server_cert),
+            "--key", str(server_key),
         ]
         if require_client_cert:
             cmd += [
                 "--require-client-cert",
-                "--client-ca", str(ROOT_CA),
+                "--client-ca", str(client_ca),
             ]
     import os as _os
     proxy_env = _os.environ.copy()
@@ -708,6 +855,9 @@ def run_one(
     rap_mode = entry.expect.get("rap", "0")
     proxy_tls = rap_mode != "0"
     proxy_mtls = rap_mode == "2"
+    # Every test-side peer presents the certificate flavour the DUT's TCT
+    # trusts — see ``_peer_identity``.
+    tct = entry.expect.get("tct", "0")
     # Per-curve entries: generate the OpenSSL config that restricts
     # both the proxy and the (Config B/C) fake AS to a single ECDH
     # group via OPENSSL_CONF in their subprocess envs.
@@ -721,6 +871,8 @@ def run_one(
         tls=proxy_tls, require_client_cert=proxy_mtls,
         upstream=registry_upstream,
         openssl_conf=group_pin_cfg,
+        server_cert=_peer_identity("Server", tct)[0],
+        server_key=_peer_identity("Server", tct)[1],
     )
     proxy_proc: subprocess.Popen[bytes] | None = spawned_proxy
     fakeas_proc: subprocess.Popen[bytes] | None = None
@@ -738,8 +890,7 @@ def run_one(
         fake_as_cert = UNTRUSTED_AS_CERT
         fake_as_key = UNTRUSTED_AS_KEY
     else:
-        fake_as_cert = CERTS / "pem" / "ExampleDeviceServer.ABC.SNX00000.chain.pem"
-        fake_as_key = CERTS / "key" / "ExampleDeviceServer.ABC.SNX00000.key"
+        fake_as_cert, fake_as_key = _peer_identity("Server", tct)
     if (entry.tls_group_pin or entry.untrusted_as) and entry.uses_oauth:
         try:
             fakeas_proc = _spawn_fake_as(
@@ -763,7 +914,7 @@ def run_one(
     # For uses_oauth=False entries the placeholders don't appear
     # and the loop is a no-op.
     if stage == "live":
-        as_host, as_port = KEYCLOAK_HOST, str(KEYCLOAK_PORT)
+        as_host, as_port = KEYCLOAK_HOST, str(_keycloak_port(tct))
     else:
         as_host, as_port = FAKE_AS_HOST, str(FAKE_AS_PORT)
     resolved_args = [
@@ -827,7 +978,7 @@ def run_one(
         if entry.uses_oauth and stage == "live":
             v_cmd += [
                 "--no-fake-as",
-                "--keycloak-url", f"https://{KEYCLOAK_HOST}:{KEYCLOAK_PORT}",
+                "--keycloak-url", f"https://{KEYCLOAK_HOST}:{_keycloak_port(tct)}",
                 "--keycloak-realm", KEYCLOAK_REALM,
                 "--keycloak-admin-user", KEYCLOAK_ADMIN_USER,
                 "--keycloak-admin-pass", KEYCLOAK_ADMIN_PASS,
@@ -845,14 +996,16 @@ def run_one(
                 "--fake-as",
                 "--fake-as-host", FAKE_AS_HOST,
                 "--fake-as-port", str(FAKE_AS_PORT),
+                "--fake-as-cert", str(fake_as_cert),
+                "--fake-as-key", str(fake_as_key),
             ]
         else:
             v_cmd += ["--no-fake-as"]
         if entry.tls_group_pin:
             v_cmd += ["--expect-tls-group", entry.tls_group_pin]
         if entry.needs_client_cert:
-            cert = entry.client_cert or DEFAULT_CLIENT_CERT
-            key = entry.client_key or DEFAULT_CLIENT_KEY
+            cert = entry.client_cert or _peer_identity("Client", tct)[0]
+            key = entry.client_key or _peer_identity("Client", tct)[1]
             v_cmd += [
                 "--client-cert", str(cert),
                 "--client-key", str(key),
@@ -875,11 +1028,12 @@ def run_one(
         # 4. Run validator with a hard timeout. For live-AS runs we
         # set REQUESTS_CA_BUNDLE so the keycloak/ token-fetch helpers
         # (plain ``requests`` calls under the hood) trust Keycloak's
-        # TLS server cert via the Example root.
+        # TLS server cert via the Example roots -- both of them, since
+        # the RSA and the ECDSA instance are in play.
         import os
         env = os.environ.copy()
         if stage == "live":
-            env["REQUESTS_CA_BUNDLE"] = str(ROOT_CA)
+            env["REQUESTS_CA_BUNDLE"] = str(CERTS / "ExampleRootCA-bundle.pem")
         with open(validator_log, "w") as v_out:
             v_proc = subprocess.run(
                 v_cmd, stdout=v_out, stderr=subprocess.STDOUT,
@@ -919,9 +1073,12 @@ def _extract_summary(log: Path) -> str:
 def aggregate(
     json_paths: list[Path], *,
     out_dir: Path,
+    optional_absent: list[tuple[str, str]],
 ) -> tuple[int, str]:
     """Run ``ipmx_aggregate.py`` over ``json_paths`` and return
-    ``(exit_code, summary)``."""
+    ``(exit_code, summary)``. ``optional_absent`` lists the
+    ``(entry, feature)`` pairs skipped for an undeclared optional
+    feature, so the report states their absence."""
     if not json_paths:
         return (0, "(no runs to aggregate)")
     md = out_dir / "aggregate.md"
@@ -931,6 +1088,8 @@ def aggregate(
         *[str(p) for p in json_paths],
         "--out", str(md), "--json-out", str(aj),
     ]
+    for label, feature in optional_absent:
+        cmd += ["--optional-absent", f"{label}={feature}"]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     # Read the aggregate JSON to build the headline.
     try:
@@ -995,7 +1154,8 @@ def _cli() -> argparse.Namespace:
             "AS to drive for OAuth-using configurations (B/C). "
             "'fake' (default) uses the validator's in-process Stage "
             "1 fake AS for adversarial probes. 'live' uses the real "
-            "Keycloak at XYZ-SNX00000:9443 and runs the Stage 2 "
+            "Keycloak at XYZ-SNX00000:9443 (RSA; the ECDSA instance on "
+            "9445 for TCT=1 entries) and runs the Stage 2 "
             "scenarios CSV (provisioning the realm from "
             "keycloak/TR-10-SEC_grants.csv). 'both' runs each OAuth "
             "configuration TWICE (once each), giving full Stage 1 + "
@@ -1039,8 +1199,16 @@ def main() -> int:
         stages_for_oauth = ["live"]
     else:  # both
         stages_for_oauth = ["fake", "live"]
+    supported = {tag.strip() for tag in cli.supports.split(",") if tag.strip()}
+    optional_absent: list[tuple[str, str]] = []
     schedule: list[tuple[MatrixEntry, str]] = []
     for entry in entries:
+        if entry.requires_feature and entry.requires_feature not in supported:
+            print(f"  ⏭  Skipping {entry.label} — optional feature "
+                  f"'{entry.requires_feature}' not declared in --supports "
+                  f"(OPTIONAL-ABSENT)")
+            optional_absent.append((entry.label, entry.requires_feature))
+            continue
         if entry.uses_oauth:
             for stage in stages_for_oauth:
                 if stage == "live" and entry.skip_live_reason:
@@ -1084,9 +1252,16 @@ def main() -> int:
         print(flush=True)
 
     print("─── Aggregation ───")
-    code, agg_summary = aggregate(json_paths, out_dir=cli.out_dir)
+    code, agg_summary = aggregate(json_paths, out_dir=cli.out_dir,
+                                  optional_absent=optional_absent)
     print(agg_summary)
     print()
+    if optional_absent:
+        entries = ", ".join(f"{label} ({feature})"
+                            for label, feature in optional_absent)
+        print(f"Optional features absent (entries not run, not failures): "
+              f"{entries}")
+        print()
 
     if failures:
         print(f"Per-run failures: {failures}")

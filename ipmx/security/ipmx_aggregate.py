@@ -235,8 +235,19 @@ def _aggregate(runs: list[RunSummary]) -> list[AggregatedRequirement]:
     return out
 
 
+def _absent_by_feature(
+    optional_absent: list[tuple[str, str]],
+) -> dict[str, list[str]]:
+    """Group ``(entry, feature)`` pairs by feature, entries in given order."""
+    grouped: dict[str, list[str]] = {}
+    for entry, feature in optional_absent:
+        grouped.setdefault(feature, []).append(entry)
+    return grouped
+
+
 def _render_markdown(
     runs: list[RunSummary], merged: list[AggregatedRequirement],
+    optional_absent: list[tuple[str, str]],
 ) -> str:
     """Emit the Markdown matrix report."""
     lines: list[str] = []
@@ -282,6 +293,20 @@ def _render_markdown(
         a = by_level_verdict.get((level, "OPTIONAL-ABSENT"), 0)
         lines.append(f"| {level.upper()} | {p} | {f} | {c} | {n} | {na} | {a} |")
     lines.append("")
+
+    # Optional features the device does not declare: their matrix entries
+    # were not run. Absence of an optional feature is not a failure.
+    if optional_absent:
+        lines.append("## Optional features absent\n")
+        lines.append("Matrix entries not run because the device does not "
+                     "declare the optional feature in `--supports`. The "
+                     "absence of an optional feature is not a failure.\n")
+        lines.append("| Feature | Entries not run |")
+        lines.append("|---|---|")
+        for feature, entries in _absent_by_feature(optional_absent).items():
+            lines.append(f"| `{feature}` | "
+                         + ", ".join(f"`{e}`" for e in entries) + " |")
+        lines.append("")
 
     # Failing SHALLs upfront — auditors look at this first.
     failing_shalls = [
@@ -330,8 +355,13 @@ def _render_markdown(
 
 def _render_json(
     runs: list[RunSummary], merged: list[AggregatedRequirement],
+    optional_absent: list[tuple[str, str]],
 ) -> dict[str, Any]:
     return {
+        "optional_features_absent": [
+            {"feature": feature, "entries": entries}
+            for feature, entries in _absent_by_feature(optional_absent).items()
+        ],
         "runs": [
             {
                 "path": str(run.path),
@@ -378,6 +408,14 @@ def _cli() -> argparse.Namespace:
         "--json-out", type=Path, default=None,
         help="Aggregated machine-readable JSON output path.",
     )
+    p.add_argument(
+        "--optional-absent", action="append", default=[],
+        metavar="ENTRY=FEATURE",
+        help=("A matrix entry that was not run because the device does "
+              "not declare its optional feature in --supports. Reported "
+              "as an optional feature absent, never as a failure. May be "
+              "repeated."),
+    )
     return p.parse_args()
 
 
@@ -393,9 +431,17 @@ def main() -> int:
         except (OSError, json.JSONDecodeError) as exc:
             print(f"error: failed to load {path}: {exc}", file=sys.stderr)
             return 2
+    optional_absent: list[tuple[str, str]] = []
+    for item in args.optional_absent:
+        entry, sep, feature = item.partition("=")
+        if not sep or not entry or not feature:
+            print(f"error: --optional-absent expects ENTRY=FEATURE, got {item!r}",
+                  file=sys.stderr)
+            return 2
+        optional_absent.append((entry, feature))
     _disambiguate_labels(runs)
     merged = _aggregate(runs)
-    md = _render_markdown(runs, merged)
+    md = _render_markdown(runs, merged, optional_absent)
     if args.out is not None:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(md)
@@ -404,7 +450,7 @@ def main() -> int:
         print(md)
     if args.json_out is not None:
         with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump(_render_json(runs, merged), f, indent=2)
+            json.dump(_render_json(runs, merged, optional_absent), f, indent=2)
         print(f"Wrote JSON report:    {args.json_out}", file=sys.stderr)
 
     # Exit non-zero if any SHALL failed in the aggregate.
