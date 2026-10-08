@@ -3830,7 +3830,10 @@ class IS1101Test(GenericTest):
         return self.has_i_o(id, "receiver")
 
     def is_input_adjust_to_caps(self, id):
-        return self.has_boolean_property_true(id, "input", "adjust_to_caps")
+        # adjust_to_caps is optional: IS-11 "An Input MUST indicate support of adjust_to_caps query parameter
+        # via adjust_to_caps property presence". Check the presence before the value.
+        return (self.has_property(id, "input", "adjust_to_caps")
+                and self.has_boolean_property_true(id, "input", "adjust_to_caps"))
 
     def has_property(self, id, type, property):
         i_o = "inputs/" if type == "input" else "outputs/"
