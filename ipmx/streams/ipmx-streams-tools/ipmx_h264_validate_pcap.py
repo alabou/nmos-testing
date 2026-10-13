@@ -1145,25 +1145,21 @@ def check_redundant_slices(ctx: ValidationContext) -> tuple[bool, str]:
 # SDP cross-validation helpers (H.264)
 # ---------------------------------------------------------------------------
 
-_H264_SDP_FIELD_MAP: list[tuple[str, str, type]] = [
-    ("packetization_mode", "h264_packetization_mode", int),
-    ("sprop_max_don_diff", "h26x_max_don_diff", int),
-    ("sprop_interleaving_depth", "h264_interleaving_depth", int),
-    ("sprop_deint_buf_req", "h264_deint_buf_req", int),
-    ("sprop_init_buf_time", "h264_init_buf_time", int),
+# Each entry: (MIB field, a=fmtp parameter name, MediaDescriptor attribute).
+# Presence is decided by the a=fmtp parameter name, never by the attribute's
+# value: a parameter given its default value (packetization-mode=0) is present.
+_H264_SDP_FIELD_MAP: list[tuple[str, str, str]] = [
+    ("packetization_mode", "packetization-mode", "h264_packetization_mode"),
+    ("sprop_max_don_diff", "sprop-max-don-diff", "h26x_max_don_diff"),
+    ("sprop_interleaving_depth", "sprop-interleaving-depth", "h264_interleaving_depth"),
+    ("sprop_deint_buf_req", "sprop-deint-buf-req", "h264_deint_buf_req"),
+    ("sprop_init_buf_time", "sprop-init-buf-time", "h264_init_buf_time"),
 ]
 
 
-def _sdp_field_is_set_h264(md: MediaDescriptor, attr: str, typ: type) -> bool:
-    """Return True if the SDP media descriptor attribute has a non-default value."""
-    val = getattr(md, attr, None)
-    if val is None:
-        return False
-    if typ is int:
-        return val != 0
-    if typ is str:
-        return val != ""
-    return False
+def _sdp_fmtp_has_h264(md: MediaDescriptor, fmtp_param: str) -> bool:
+    """Return True if *fmtp_param* is present on the SDP a=fmtp line."""
+    return fmtp_param in md.fmtp_parameters
 
 
 def check_sdp_tp_mode_h264(ctx: ValidationContext) -> tuple[bool, str]:
@@ -1196,8 +1192,11 @@ def check_mib_vs_sdp_fmtp_h264(ctx: ValidationContext) -> tuple[bool, str]:
     mask = data["mask"]
     mismatches: list[str] = []
 
+    # A field is compared only when both sides carry it. A field the MIB carries
+    # but the SDP does not has nothing to match here; TR-10-15c-130 checks the
+    # MIB against the stream instead.
     pli_bit = H264_INFO_FIELD_BITS["profile_level_id"]
-    if (mask & (1 << pli_bit)) and md.codec_profile_level_id:
+    if (mask & (1 << pli_bit)) and _sdp_fmtp_has_h264(md, "profile-level-id"):
         mib_pli: bytes = data["profile_level_id"]
         try:
             sdp_pli = bytes.fromhex(md.codec_profile_level_id)
@@ -1209,11 +1208,11 @@ def check_mib_vs_sdp_fmtp_h264(ctx: ValidationContext) -> tuple[bool, str]:
                 f"profile_level_id: MIB={mib_pli.hex()} SDP={sdp_pli.hex()}"
             )
 
-    for mib_field, sdp_attr, typ in _H264_SDP_FIELD_MAP:
+    for mib_field, fmtp_param, sdp_attr in _H264_SDP_FIELD_MAP:
         bit = H264_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):
             continue
-        if not _sdp_field_is_set_h264(md, sdp_attr, typ):
+        if not _sdp_fmtp_has_h264(md, fmtp_param):
             continue
         mib_val = data[mib_field]
         sdp_val = getattr(md, sdp_attr)
@@ -1221,7 +1220,7 @@ def check_mib_vs_sdp_fmtp_h264(ctx: ValidationContext) -> tuple[bool, str]:
             mismatches.append(f"{mib_field}: MIB={mib_val} SDP={sdp_val}")
 
     ps_bit = H264_INFO_FIELD_BITS["sprop_parameter_sets"]
-    if (mask & (1 << ps_bit)) and md.h264_parameter_sets:
+    if (mask & (1 << ps_bit)) and _sdp_fmtp_has_h264(md, "sprop-parameter-sets"):
         # TR-10-15c §16: the MIB stores the same base64 ASCII characters
         # (with optional ',' list separators) as the SDP a=fmtp value, so
         # the comparison is a byte-for-byte ASCII match.
@@ -1255,19 +1254,19 @@ def check_sdp_fmtp_in_mib_h264(ctx: ValidationContext) -> tuple[bool, str]:
     mask = data["mask"]
     missing: list[str] = []
 
-    if md.codec_profile_level_id:
+    if _sdp_fmtp_has_h264(md, "profile-level-id"):
         bit = H264_INFO_FIELD_BITS["profile_level_id"]
         if not (mask & (1 << bit)):
             missing.append("profile_level_id")
 
-    for mib_field, sdp_attr, typ in _H264_SDP_FIELD_MAP:
-        if not _sdp_field_is_set_h264(md, sdp_attr, typ):
+    for mib_field, fmtp_param, _sdp_attr in _H264_SDP_FIELD_MAP:
+        if not _sdp_fmtp_has_h264(md, fmtp_param):
             continue
         bit = H264_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):
             missing.append(mib_field)
 
-    if md.h264_parameter_sets:
+    if _sdp_fmtp_has_h264(md, "sprop-parameter-sets"):
         bit = H264_INFO_FIELD_BITS["sprop_parameter_sets"]
         if not (mask & (1 << bit)):
             missing.append("sprop_parameter_sets")

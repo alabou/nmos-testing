@@ -1645,29 +1645,41 @@ def check_no_backward_pred(ctx: ValidationContext) -> tuple[bool, str]:
 # SDP cross-validation helpers (H.265)
 # ---------------------------------------------------------------------------
 
-_H265_SDP_FIELD_MAP: list[tuple[str, str, type]] = [
-    ("profile_space", "h265_profile_space", int),
-    ("profile_id", "h265_profile_id", int),
-    ("level_id", "h265_level_id", int),
-    ("tier_flag", "h265_tier_flag", bool),
-    ("sprop_max_don_diff", "h26x_max_don_diff", int),
-    ("sprop_depack_buf_bytes", "h265_depack_buf_bytes", int),
-    ("sprop_depack_buf_nalus", "h265_depack_buf_nalus", int),
+# Each entry: (MIB field, a=fmtp parameter name, MediaDescriptor attribute, ...).
+# Presence is decided by the a=fmtp parameter name (TR-10-15 §16: "If the following
+# parameters are present in the 'a=fmtp' line..."), never by the attribute's value:
+# a parameter given its default value (tier-flag=0, profile-space=0) is present.
+_H265_SDP_FIELD_MAP: list[tuple[str, str, str, type]] = [
+    ("profile_space", "profile-space", "h265_profile_space", int),
+    ("profile_id", "profile-id", "h265_profile_id", int),
+    ("level_id", "level-id", "h265_level_id", int),
+    ("tier_flag", "tier-flag", "h265_tier_flag", bool),
+    ("sprop_max_don_diff", "sprop-max-don-diff", "h26x_max_don_diff", int),
+    ("sprop_depack_buf_bytes", "sprop-depack-buf-bytes", "h265_depack_buf_bytes", int),
+    ("sprop_depack_buf_nalus", "sprop-depack-buf-nalus", "h265_depack_buf_nalus", int),
 ]
 
-_H265_SDP_HEX_FIELDS: list[tuple[str, str, int]] = [
-    ("profile_compatibility_indicator", "h265_profile_compatibility_indicator", 4),
-    ("interop_constraints", "h265_interop_constraints", 6),
+_H265_SDP_HEX_FIELDS: list[tuple[str, str, str, int]] = [
+    ("profile_compatibility_indicator", "profile-compatibility-indicator",
+     "h265_profile_compatibility_indicator", 4),
+    ("interop_constraints", "interop-constraints", "h265_interop_constraints", 6),
 ]
 
-_H265_SDP_SPROP_FIELDS: list[tuple[str, str]] = [
-    ("sprop_vps", "h265_vps"),
-    ("sprop_sps", "h265_sps"),
-    ("sprop_pps", "h265_pps"),
+_H265_SDP_SPROP_FIELDS: list[tuple[str, str, str]] = [
+    ("sprop_vps", "sprop-vps", "h265_vps"),
+    ("sprop_sps", "sprop-sps", "h265_sps"),
+    ("sprop_pps", "sprop-pps", "h265_pps"),
 ]
 
-_H265_SDP_STRING_FIELDS: list[tuple[str, str]] = [
-    ("sprop_spatial_segmentation_idc", "h265_spatial_segmentation_idc"),
+_H265_SDP_STRING_FIELDS: list[tuple[str, str, str]] = [
+    ("sprop_spatial_segmentation_idc", "sprop-spatial-segmentation-idc",
+     "h265_spatial_segmentation_idc"),
+]
+
+# The MIB carries the fmtp value's ASCII characters (TR-10-15 §16.1 example:
+# tx-mode=SRST is carried as 'S' 'R' 'S' 'T').
+_H265_SDP_ASCII_FIELDS: list[tuple[str, str, str]] = [
+    ("tx_mode", "tx-mode", "h265_tx_mode"),
 ]
 
 
@@ -1688,18 +1700,9 @@ def _sdp_hex_to_bytes(hex_str: str, length: int) -> bytes | None:
     return raw[:length]
 
 
-def _sdp_field_is_set(md: MediaDescriptor, attr: str, typ: type) -> bool:
-    """Return True if the SDP media descriptor attribute has a non-default value."""
-    val = getattr(md, attr, None)
-    if val is None:
-        return False
-    if typ is bool:
-        return True  # bool is always explicitly set in SDP fmtp
-    if typ is int:
-        return val != 0
-    if typ is str:
-        return val != ""
-    return False
+def _sdp_fmtp_has(md: MediaDescriptor, fmtp_param: str) -> bool:
+    """Return True if *fmtp_param* is present on the SDP a=fmtp line."""
+    return fmtp_param in md.fmtp_parameters
 
 
 def check_sdp_tp_mode(ctx: ValidationContext) -> tuple[bool, str]:
@@ -1732,11 +1735,14 @@ def check_mib_vs_sdp_fmtp_h265(ctx: ValidationContext) -> tuple[bool, str]:
     mask = data["mask"]
     mismatches: list[str] = []
 
-    for mib_field, sdp_attr, typ in _H265_SDP_FIELD_MAP:
+    # A field is compared only when both sides carry it. A field the MIB carries
+    # but the SDP does not has nothing to match here; TR-10-15b-141 checks the
+    # MIB's PTL fields and parameter sets against the stream instead.
+    for mib_field, fmtp_param, sdp_attr, typ in _H265_SDP_FIELD_MAP:
         bit = H265_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):
             continue
-        if not _sdp_field_is_set(md, sdp_attr, typ):
+        if not _sdp_fmtp_has(md, fmtp_param):
             continue
         mib_val = data[mib_field]
         sdp_val = getattr(md, sdp_attr)
@@ -1745,13 +1751,13 @@ def check_mib_vs_sdp_fmtp_h265(ctx: ValidationContext) -> tuple[bool, str]:
         if mib_val != sdp_val:
             mismatches.append(f"{mib_field}: MIB={mib_val} SDP={sdp_val}")
 
-    for mib_field, sdp_attr, nbytes in _H265_SDP_HEX_FIELDS:
+    for mib_field, fmtp_param, sdp_attr, nbytes in _H265_SDP_HEX_FIELDS:
         bit = H265_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):
             continue
-        sdp_hex: str = getattr(md, sdp_attr, "")
-        if not sdp_hex:
+        if not _sdp_fmtp_has(md, fmtp_param):
             continue
+        sdp_hex: str = getattr(md, sdp_attr, "")
         mib_val = data[mib_field]
         if nbytes == 4:
             sdp_int = _sdp_hex_to_int(sdp_hex)
@@ -1765,13 +1771,13 @@ def check_mib_vs_sdp_fmtp_h265(ctx: ValidationContext) -> tuple[bool, str]:
                     f"SDP={sdp_bytes.hex()}"
                 )
 
-    for mib_field, sdp_attr in _H265_SDP_SPROP_FIELDS:
+    for mib_field, fmtp_param, sdp_attr in _H265_SDP_SPROP_FIELDS:
         bit = H265_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):
             continue
-        sdp_b64: str = getattr(md, sdp_attr, "")
-        if not sdp_b64:
+        if not _sdp_fmtp_has(md, fmtp_param):
             continue
+        sdp_b64: str = getattr(md, sdp_attr, "")
         mib_raw: bytes = data[mib_field]
         if not mib_raw:
             mismatches.append(f"{mib_field}: MIB empty but SDP has data")
@@ -1784,13 +1790,13 @@ def check_mib_vs_sdp_fmtp_h265(ctx: ValidationContext) -> tuple[bool, str]:
         if mib_raw != sdp_raw:
             mismatches.append(f"{mib_field}: MIB and SDP differ")
 
-    for mib_field, sdp_attr in _H265_SDP_STRING_FIELDS:
+    for mib_field, fmtp_param, sdp_attr in _H265_SDP_STRING_FIELDS:
         bit = H265_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):
             continue
-        sdp_str: str = getattr(md, sdp_attr, "")
-        if not sdp_str:
+        if not _sdp_fmtp_has(md, fmtp_param):
             continue
+        sdp_str: str = getattr(md, sdp_attr, "")
         mib_int_val = data[mib_field]
         try:
             sdp_int_val = int(sdp_str)
@@ -1799,6 +1805,17 @@ def check_mib_vs_sdp_fmtp_h265(ctx: ValidationContext) -> tuple[bool, str]:
             continue
         if mib_int_val != sdp_int_val:
             mismatches.append(f"{mib_field}: MIB={mib_int_val} SDP={sdp_int_val}")
+
+    for mib_field, fmtp_param, sdp_attr in _H265_SDP_ASCII_FIELDS:
+        bit = H265_INFO_FIELD_BITS[mib_field]
+        if not (mask & (1 << bit)):
+            continue
+        if not _sdp_fmtp_has(md, fmtp_param):
+            continue
+        mib_ascii: bytes = data[mib_field]
+        sdp_ascii = str(getattr(md, sdp_attr)).encode("ascii")
+        if mib_ascii != sdp_ascii:
+            mismatches.append(f"{mib_field}: MIB={mib_ascii!r} SDP={sdp_ascii!r}")
 
     if mismatches:
         return False, "MIB vs SDP mismatch: " + "; ".join(mismatches)
@@ -1823,32 +1840,15 @@ def check_sdp_fmtp_in_mib_h265(ctx: ValidationContext) -> tuple[bool, str]:
     mask = data["mask"]
     missing: list[str] = []
 
-    for mib_field, sdp_attr, typ in _H265_SDP_FIELD_MAP:
-        if not _sdp_field_is_set(md, sdp_attr, typ):
-            continue
-        bit = H265_INFO_FIELD_BITS[mib_field]
-        if not (mask & (1 << bit)):
-            missing.append(mib_field)
-
-    for mib_field, sdp_attr, _nbytes in _H265_SDP_HEX_FIELDS:
-        sdp_hex = getattr(md, sdp_attr, "")
-        if not sdp_hex:
-            continue
-        bit = H265_INFO_FIELD_BITS[mib_field]
-        if not (mask & (1 << bit)):
-            missing.append(mib_field)
-
-    for mib_field, sdp_attr in _H265_SDP_SPROP_FIELDS:
-        sdp_b64 = getattr(md, sdp_attr, "")
-        if not sdp_b64:
-            continue
-        bit = H265_INFO_FIELD_BITS[mib_field]
-        if not (mask & (1 << bit)):
-            missing.append(mib_field)
-
-    for mib_field, sdp_attr in _H265_SDP_STRING_FIELDS:
-        sdp_str = getattr(md, sdp_attr, "")
-        if not sdp_str:
+    fmtp_fields = (
+        [(mib_field, fmtp_param) for mib_field, fmtp_param, _attr, _typ in _H265_SDP_FIELD_MAP]
+        + [(mib_field, fmtp_param) for mib_field, fmtp_param, _attr, _nbytes in _H265_SDP_HEX_FIELDS]
+        + [(mib_field, fmtp_param) for mib_field, fmtp_param, _attr in _H265_SDP_SPROP_FIELDS]
+        + [(mib_field, fmtp_param) for mib_field, fmtp_param, _attr in _H265_SDP_STRING_FIELDS]
+        + [(mib_field, fmtp_param) for mib_field, fmtp_param, _attr in _H265_SDP_ASCII_FIELDS]
+    )
+    for mib_field, fmtp_param in fmtp_fields:
+        if not _sdp_fmtp_has(md, fmtp_param):
             continue
         bit = H265_INFO_FIELD_BITS[mib_field]
         if not (mask & (1 << bit)):

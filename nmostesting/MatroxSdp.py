@@ -14,7 +14,7 @@
 
 import re
 from io import StringIO
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Set, Tuple
 import math
 from enum import Enum
 
@@ -520,6 +520,10 @@ class MediaDescriptor:
         self.sample_rate: uint64 = 0
         self.channels: uint = 0
         # FMTP Generic
+        # Names (lowercased) of the parameters present on the a=fmtp line, whether or not
+        # they are recognized. Tells a parameter given its default value apart from an
+        # absent one, which the typed fields below cannot (e.g. tier-flag=0 vs no tier-flag).
+        self.fmtp_parameters: Set[str] = set()
         self.ipmx: bool = False
         self.hkep: bool = False
         self.privacy: bool = False
@@ -1195,6 +1199,8 @@ class MatroxSdp:
             param, val = pair.split(b'=', 1) if b'=' in pair else (pair, None)
             param = param.strip().decode('utf-8')
             val = val.strip().decode('utf-8') if val else None
+            if param:
+                self.current_media.fmtp_parameters.add(param.lower())
             method_name = f"process_parameter_{param.replace('-', '_').lower()}"
             if hasattr(self, method_name):
                 err = getattr(self, method_name)(val.encode('utf-8') if val else None)
