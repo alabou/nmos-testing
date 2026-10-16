@@ -107,6 +107,7 @@ USB_REQ_SET_PROTOCOL     = 0x0B
 USB_DT_DEVICE    = 0x01
 USB_DT_CONFIG    = 0x02
 USB_DT_STRING    = 0x03
+USB_DT_DEVICE_QUALIFIER = 0x06
 USB_DT_INTERFACE = 0x04
 USB_DT_ENDPOINT  = 0x05
 USB_DT_HID       = 0x21
@@ -495,6 +496,14 @@ class IpmxReceiverSession:
         self.initial_ctr     = initial_ctr
         self.echo_version    = echo_version
         self.iv_swapn        = iv_swapn
+        # Test options set by run_test() (see --strict-actuallength,
+        # --enumerate-in-sequence, --device-qualifier).
+        self.strict_actuallength   = False
+        self.enumerate_in_sequence = False
+        self.device_qualifier      = False
+        self.enum_lock = threading.Lock()   # one channel enumerates at a time when in sequence
+        # Findings the tester makes itself (the validators rebuild theirs on every pass).
+        self.tester_findings: list[Finding] = []
 
         # Session object used by validators (mirrored from usbDissector)
         self.session = Session(
@@ -662,6 +671,8 @@ class IpmxReceiverSession:
                 encrypted=self.encrypted,
                 decrypted=decrypted,
             )
+        with self._lock:
+            sess.findings.extend(self.tester_findings)
 
         # Report only new findings
         current_keys = {
@@ -682,6 +693,14 @@ class IpmxReceiverSession:
                 print(f"{color}  [LIVE {f.severity.value}] §{f.section}: {f.description}{reset}",
                       flush=True)
 
+    def add_tester_finding(self, severity: Severity, section: str, description: str,
+                           packet_number: Optional[int] = None) -> None:
+        """Record a finding the tester itself observed (not derived by the validators)."""
+        with self._lock:
+            self.tester_findings.append(Finding(severity, section, description, packet_number))
+        if self.live_validate:
+            self._validate_and_report()
+
     def final_report(self) -> None:
         """Run a final validation pass and print the findings summary."""
         if self.hid_only:
@@ -698,6 +717,8 @@ class IpmxReceiverSession:
         if not sess.findings:
             print("  [OK] No violations found")
         print(f"\nTotal: {errors} error(s), {warnings} warning(s)")
+        # Any ERROR is a failed requirement; continuing past a non-fatal one never changes that.
+        print(f"Result: {'FAIL' if errors else 'PASS'}")
 
     # ------------------------------------------------------------------
     # Console output
@@ -1143,6 +1164,11 @@ class ControlChannelClient:
 # DataChannelHandler — USB enumeration + interrupt polling
 # ---------------------------------------------------------------------------
 
+class ReturnDataUnusable(Exception):
+    """A Submit Return the tester cannot continue with on its data channel (see
+    DataChannelHandler._return_data). The channel stops; the run has already failed."""
+
+
 class DataChannelHandler:
     """
     Handles one accepted data channel connection from the Sender:
@@ -1167,7 +1193,9 @@ class DataChannelHandler:
         self._stop      = stop_event or threading.Event()
         self._seqnum    = 0
         self._substreamid: Optional[int] = None
+        self._usbspeed: Optional[int] = None   # USBSPEED of the channel's USB Stream Information
         self._prev_hid: bytes = b''   # last HID report; used to suppress repeated reports
+        self._warned_excess = False   # bytes past ACTUALLENGTH already reported on this channel
 
     def shutdown(self) -> None:
         """Close the data socket immediately, unblocking any recv in progress."""
@@ -1460,6 +1488,7 @@ class DataChannelHandler:
         # for unencrypted we read it from the parsed payload.
         if not msg.payload.get('_encrypted'):
             substreamid = msg.payload.get('substreamid', 0)
+            self._usbspeed = msg.payload.get('usbspeed')
         else:
             substreamid = payload_ssid if payload_ssid else handshake_ssid
         self._substreamid = substreamid
@@ -1494,7 +1523,7 @@ class DataChannelHandler:
         time.sleep(1.0)
 
         # Step 3 — USB enumeration
-        interrupt_ep = self._enumerate()
+        interrupt_ep = self._run_enumeration()
 
         if interrupt_ep is None:
             sess.warn("No HID interrupt IN endpoint found — skipping polling")
@@ -1513,6 +1542,121 @@ class DataChannelHandler:
 
     # ------------------------------------------------------------------
 
+    def _run_enumeration(self) -> Optional[EndpointInfo]:
+        """Enumerate this channel's device; with --enumerate-in-sequence, one channel at a
+        time across the session. TR-10-14 requires neither order: once a Sender has the USB
+        Stream Status it "shall be ready to receive USB Submit messages" on that channel."""
+        try:
+            if not self._session.enumerate_in_sequence:
+                return self._enumerate()
+            with self._session.enum_lock:
+                return self._enumerate()
+        except ReturnDataUnusable as e:
+            self._session.error(f"Data channel {self._sid()}: cannot continue: {e}. "
+                                f"Enumeration of this channel stops; the run FAILS")
+            return None
+
+    def _sid(self) -> str:
+        return f"0x{self._substreamid:02X}" if self._substreamid is not None else "?"
+
+    def _return_data(self, ret: Optional[IpmxUsbMessage]) -> bytes:
+        """The data a Submit Return carries: per Table 14, the ACTUALLENGTH bytes of
+        TRANFERDATA. Any ACTUALLENGTH other than the number of bytes the message carries after
+        RSTATUS (its DATA is LENGTH - 24 bytes, Table 1) is a §9.18-20 SHALL violation, which
+        the validators report as an ERROR: the run FAILS. Whether the tester can continue on
+        the channel depends on the case:
+
+        * ACTUALLENGTH 0 with bytes present (a Sender that leaves the field unset): continues
+          with the bytes present.
+        * 0 < ACTUALLENGTH < bytes present: continues with the ACTUALLENGTH bytes; the bytes
+          past them belong to no field and are not used.
+        * ACTUALLENGTH larger than the bytes present: the message lacks its own data - cannot
+          continue (ReturnDataUnusable).
+        * With --strict-actuallength, ACTUALLENGTH 0 with bytes present cannot continue either.
+
+        The first continued violation on a channel is printed as an error."""
+        if ret is None or ret.payload.get('_encrypted'):
+            return b''
+
+        def _b(v) -> bytes:
+            return bytes.fromhex(v) if isinstance(v, str) else bytes(v or b'')
+
+        td = _b(ret.payload.get('transferdata') or '')
+        actual = ret.payload.get('actuallength', 0)
+        present = max(len(ret.data) - 12, 0)   # bytes after SEQNUM..RSTATUS (Figure 23)
+        if actual == present:
+            return td
+        where = f"{ret.msg_type_name} SEQNUM={ret.payload.get('seqnum')}"
+        if actual > present:
+            raise ReturnDataUnusable(f"{where}: ACTUALLENGTH={actual} exceeds the {present} "
+                                     f"byte(s) the message carries (§9.18-20)")
+        if actual == 0 and self._session.strict_actuallength:
+            raise ReturnDataUnusable(f"{where}: ACTUALLENGTH=0 with {present} byte(s) after "
+                                     f"RSTATUS, not accepted with --strict-actuallength "
+                                     f"(§9.18-20)")
+        if actual == 0:
+            use = _b(ret.payload.get('excess_data') or '')
+            note = (f"ACTUALLENGTH=0 but {present} byte(s) follow RSTATUS; continuing with "
+                    f"those bytes")
+        else:
+            use = td
+            note = (f"{present - actual} byte(s) follow the ACTUALLENGTH={actual} bytes of "
+                    f"data; continuing with the ACTUALLENGTH bytes")
+        if not self._warned_excess:
+            self._warned_excess = True
+            self._session.error(f"Data channel {self._sid()}: {where}: {note}. A §9.18-20 "
+                                f"SHALL violation: the run FAILS (non-fatal, the test continues)")
+        return use
+
+    def _check_device_qualifier(self, bcd_usb: Optional[int]) -> bool:
+        """GET_DESCRIPTOR(Device_Qualifier, 10), sent with --device-qualifier.
+
+        Optional for a host (USB 2.0 §9.2.6.6: "These descriptors are not retrieved unless
+        the host explicitly issues the corresponding GetDescriptor requests"), and not sent to
+        a device below bcdUSB 0x0200 ("A USB 1.x device ... should not be issued the
+        other_speed requests"). A device with version 0200H that answers neither a
+        device_qualifier descriptor nor a request error is reported against §9.6.2: "If a
+        full-speed only device (with a device descriptor version number equal to 0200H)
+        receives a GetDescriptor() request for a device_qualifier, it must respond with a
+        request error." Returns True when the Sender closed the channel (fatal)."""
+        sess = self._session
+        if bcd_usb is None:
+            sess.warn("GET_DESCRIPTOR(Device_Qualifier): skipped, bcdUSB unknown "
+                      "(no device descriptor)")
+            return False
+        if bcd_usb < 0x0200:
+            sess.log(f"    GET_DESCRIPTOR(Device_Qualifier): skipped, bcdUSB=0x{bcd_usb:04X} "
+                     f"< 0x0200 (USB 2.0 §9.2.6.6)")
+            return False
+        ret = self._ctrl_transfer(
+            _get_descriptor_req(USB_DT_DEVICE_QUALIFIER, 0, 10), 10)
+        if ret is None:
+            if self._ch.closed:
+                return True
+            sess.warn("GET_DESCRIPTOR(Device_Qualifier): timeout")
+            return False
+        rstatus = ret.payload.get('rstatus', -1)
+        rname = ret.payload.get('rstatus_name', '?')
+        data = self._return_data(ret)
+        speed = (usb.UsbSpeed(self._usbspeed).name
+                 if self._usbspeed in usb.UsbSpeed._value2member_map_ else "unknown speed")
+        if rstatus != 0:
+            sess.log(f"    GET_DESCRIPTOR(Device_Qualifier): request error {rname} "
+                     f"(what USB 2.0 §9.6.2 requires of a full-speed only device)")
+        elif len(data) >= 10 and data[1] == USB_DT_DEVICE_QUALIFIER:
+            sess.log(f"    GET_DESCRIPTOR(Device_Qualifier): OK, the device declares "
+                     f"high-speed capability  data={data.hex()}")
+        else:
+            sid = f"0x{self._substreamid:02X}" if self._substreamid is not None else "?"
+            desc = (f"Data channel (substreamid={sid}): GET_DESCRIPTOR(Device_Qualifier) answered "
+                    f"{rname} with {len(data)} byte(s) and no device_qualifier descriptor, by a "
+                    f"device with bcdUSB=0x{bcd_usb:04X} operating at {speed}; a full-speed only "
+                    f"device with version 0200H must respond with a request error "
+                    f"(USB 2.0 §9.6.2)")
+            sess.error(desc)
+            sess.add_tester_finding(Severity.ERROR, "USB2-9.6.2", desc)
+        return False
+
     def _enumerate(self) -> Optional[EndpointInfo]:
         """
         Drive the USB host enumeration sequence against the real device.
@@ -1523,17 +1667,8 @@ class DataChannelHandler:
         sess.log("  Starting USB enumeration …")
 
         def _xfr(ret) -> bytes:
-            """Extract USB transfer data bytes from a SUBMIT_RETURN payload.
-
-            The payload stores transferdata as a hex string (see decoder);
-            convert back to bytes for USB descriptor parsing.
-            """
-            if ret is None or ret.payload.get('_encrypted'):
-                return b''
-            td = ret.payload.get('transferdata') or ''
-            if isinstance(td, str):
-                return bytes.fromhex(td) if td else b''
-            return bytes(td)
+            """USB transfer data bytes of a SUBMIT_RETURN (see _return_data)."""
+            return self._return_data(ret)
 
         def _ok(ret: Optional[IpmxUsbMessage]) -> bool:
             if ret is None:
@@ -1550,6 +1685,7 @@ class DataChannelHandler:
         max_pkt0     = 8
         device_class = 0
         num_strings  = 0
+        bcd_usb: Optional[int] = None
         int_ep: Optional[EndpointInfo] = None
         fatal = False   # only set when Sender closes the connection
 
@@ -1586,10 +1722,15 @@ class DataChannelHandler:
                 raw_dev = _xfr(ret)
                 device_class = raw_dev[4]  if len(raw_dev) >= 5  else 0
                 num_strings  = raw_dev[14] if len(raw_dev) >= 15 else 0
+                bcd_usb = struct.unpack_from('<H', raw_dev, 2)[0] if len(raw_dev) >= 4 else None
                 sess.log(f"    Device class=0x{device_class:02X}  "
                          f"data={raw_dev.hex() or '(empty)'}")
             elif not fatal:
                 sess.warn(f"GET_DESCRIPTOR(Device,18): {_status(ret)}")
+
+        # 3b. GET_DESCRIPTOR(Device_Qualifier, 10) — with --device-qualifier only
+        if not fatal and sess.device_qualifier:
+            fatal = self._check_device_qualifier(bcd_usb)
 
         # 4. GET_DESCRIPTOR(Config, 9) — learn wTotalLength
         total_len = 34
@@ -1696,9 +1837,13 @@ class DataChannelHandler:
                 sess.warn(f"Expected INTERRUPT_SUBMIT_RETURN, got {ret.msg_type_name}")
                 break
 
+            try:
+                td = self._return_data(ret)
+            except ReturnDataUnusable as e:
+                sess.error(f"Data channel {self._sid()}: cannot continue: {e}. Polling of "
+                           f"this channel stops; the run FAILS")
+                break
             if (sess.verbose or sess.hid_only) and not ret.payload.get('_encrypted'):
-                td_raw = ret.payload.get('transferdata') or ''
-                td = bytes.fromhex(td_raw) if isinstance(td_raw, str) else bytes(td_raw)
                 if td != self._prev_hid:
                     self._prev_hid = td
                     if any(td):
@@ -1724,7 +1869,7 @@ class DataChannelHandler:
         self._send(usb.build_usb_stream_reset_return())
         self._seqnum = 0
         self._prev_hid = b''
-        return self._enumerate()
+        return self._run_enumeration()
 
     # ------------------------------------------------------------------
 
@@ -1958,6 +2103,9 @@ def run_test(
     matrox_queries: bool = False,
     echo_version: bool = False,
     iv_swapn: bool = False,
+    strict_actuallength: bool = False,
+    enumerate_in_sequence: bool = False,
+    device_qualifier: bool = False,
 ) -> int:
     """
     Run the live Receiver test.  Blocks until duration expires or Ctrl-C.
@@ -1992,6 +2140,9 @@ def run_test(
         iv_swapn         = iv_swapn,
     )
     session.matrox_queries = matrox_queries
+    session.strict_actuallength = strict_actuallength
+    session.enumerate_in_sequence = enumerate_in_sequence
+    session.device_qualifier = device_qualifier
 
     stop_event = threading.Event()
 
@@ -2160,6 +2311,27 @@ Examples:
              "reject version 0.0 responses).",
     )
 
+    parser.add_argument(
+        '--strict-actuallength', action='store_true', default=False,
+        help="Do not continue past a Submit Return with ACTUALLENGTH 0 and bytes after "
+             "RSTATUS: that channel stops. Default: such a Return is a §9.18-20 error "
+             "(the run fails) but the test continues with those bytes. Either way a "
+             "Return shorter than its ACTUALLENGTH stops the channel, and one with "
+             "bytes past a non-zero ACTUALLENGTH continues with ACTUALLENGTH bytes.",
+    )
+    parser.add_argument(
+        '--enumerate-in-sequence', action='store_true', default=False,
+        help="Enumerate the data channels one at a time instead of all at once. "
+             "TR-10-14 requires neither; use it to test further a Sender that fails "
+             "under concurrent enumeration.",
+    )
+    parser.add_argument(
+        '--device-qualifier', action='store_true', default=False,
+        help="Request the device_qualifier descriptor during enumeration (optional "
+             "for a host, USB 2.0 §9.2.6.6) and report a device with bcdUSB 0x0200 "
+             "that answers neither a qualifier nor a request error (§9.6.2).",
+    )
+
     pepmod.add_pep_args(parser)
 
     args = parser.parse_args()
@@ -2286,6 +2458,9 @@ Examples:
         initial_ctr      = initial_ctr,
         matrox_queries   = args.matrox_queries,
         echo_version     = args.echo_version,
+        strict_actuallength   = args.strict_actuallength,
+        enumerate_in_sequence = args.enumerate_in_sequence,
+        device_qualifier      = args.device_qualifier,
         iv_swapn         = iv_swapn,
     ))
 
