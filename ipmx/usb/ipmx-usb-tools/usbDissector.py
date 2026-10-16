@@ -1404,6 +1404,41 @@ def _validate_data_channel(
                       f"USB Control Submit USBDEVREQ is {len(req_bytes)} bytes; SHALL be 8",
                       packet_number=cm.packet_number)
 
+        # -------------------------------------------------------------- §9.14-9.16, §9.18-9.20
+        # SHALL: "Fields of the DATA field shall be as described in Table 10 / 11 / 14".
+        # DATA is LENGTH - 24 bytes (Table 1) and those tables account for every byte of it:
+        # the fixed fields plus TRANFERDATA of M bytes, M = TRANSFERLENGTH (OUT Submit), 0 (IN
+        # Submit) or ACTUALLENGTH (Submit Return). Bytes past that, or missing, are a violation;
+        # the decoder keeps the spec reading of TRANFERDATA and shows the rest as excess_data.
+        # One finding per message type, with the count: a sender that gets this wrong usually
+        # does so in every message.
+        size_mismatches: dict[MsgType, list[tuple[ChannelMessage, int]]] = {}
+        size_checked: dict[MsgType, int] = {}
+        for cm in all_msgs:
+            mt = cm.msg.msg_type_enum
+            if mt is None or cm.msg.payload.get('_encrypted'):
+                continue
+            expected = usb.defined_data_length(mt, cm.msg.data)
+            if expected is None:
+                continue
+            size_checked[mt] = size_checked.get(mt, 0) + 1
+            if len(cm.msg.data) != expected:
+                size_mismatches.setdefault(mt, []).append((cm, expected))
+        for mt, bad in size_mismatches.items():
+            first, expected = bad[0]
+            p = first.msg.payload
+            is_return = not (mt & 0x01)
+            m_field = (f"ACTUALLENGTH={p.get('actuallength')}" if is_return
+                       else f"TRANSFERLENGTH={p.get('transferlength')}, D={p.get('direction')}")
+            table = "14" if is_return else ("10" if mt == MsgType.USB_CONTROL_SUBMIT else "11")
+            s.add(Severity.ERROR, "9.18-20" if is_return else "9.14-16",
+                  f"Data channel (substreamid=0x{channel.substreamid:02X}): {mt.name} DATA is "
+                  f"{len(first.msg.data)} bytes but its Table {table} fields total {expected} "
+                  f"({m_field}), in {len(bad)} of {size_checked[mt]} messages "
+                  f"(first SEQNUM={p.get('seqnum')}); fields of the DATA field SHALL be as "
+                  f"described in Table {table}",
+                  packet_number=first.packet_number)
+
         # -------------------------------------------------------------- §10
         for cm in sender_msgs:
             ssid = cm.msg.payload.get('substreamid')
@@ -1709,6 +1744,7 @@ _ALL_REQUIREMENTS: list[tuple[str, str, str]] = [
     # §9.14 — SEQNUM
     ("9.14",     "SHALL",  "Submit SEQNUM starts at 0 and increments by 1 per Submit"),
     ("9.14",     "SHALL",  "Submit Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0"),
+    ("9.14-16",  "SHALL",  "Control/Bulk/Interrupt Submit DATA SHALL be exactly its Table 10/11 fields (TRANFERDATA = TRANSFERLENGTH bytes on OUT, none on IN)"),
     # §9.18 — Submit Return
     ("9.18",     "SHALL",  "Submit Return SEQNUM SHALL match an outstanding Submit"),
     ("9.18",     "SHALL",  "Submit Return ENDPOINT SHALL match Submit ENDPOINT"),
@@ -1716,6 +1752,7 @@ _ALL_REQUIREMENTS: list[tuple[str, str, str]] = [
     ("9.18",     "SHALL",  "OUT (D=0) Submit Return: ACTUALLENGTH SHALL be 0"),
     ("9.18",     "SHALL",  "IN (D=1) Submit Return: ACTUALLENGTH SHALL be ≤ TRANSFERLENGTH"),
     ("9.18",     "SHALL",  "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0"),
+    ("9.18-20",  "SHALL",  "Control/Bulk/Interrupt Submit Return DATA SHALL be exactly its Table 14 fields (TRANFERDATA = ACTUALLENGTH bytes)"),
     # §11 — Heartbeat
     ("11",       "SHALL",  "Heartbeat gap SHALL be ≤ 2 × Heartbeat_Period (unresponsive threshold)"),
     ("11",       "SHOULD", "Heartbeat gap SHOULD be ≤ 1.1 × Heartbeat_Period (jitter budget)"),

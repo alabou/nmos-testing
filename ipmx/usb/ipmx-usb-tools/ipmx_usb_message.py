@@ -595,6 +595,44 @@ def _decode_usb_stream_reset_return(_data: bytes) -> dict:
     return {}
 
 
+#: DATA bytes before TRANFERDATA: Table 10 (Control Submit: SEQNUM to USBDEVREQ), Table 11
+#: (Bulk/Interrupt Submit) and Table 14 (Control/Bulk/Interrupt Submit Return).
+_FIXED_DATA_BYTES: dict[int, int] = {
+    MsgType.USB_CONTROL_SUBMIT:          20,
+    MsgType.USB_BULK_SUBMIT:             12,
+    MsgType.USB_INTERRUPT_SUBMIT:        12,
+    MsgType.USB_CONTROL_SUBMIT_RETURN:   12,
+    MsgType.USB_BULK_SUBMIT_RETURN:      12,
+    MsgType.USB_INTERRUPT_SUBMIT_RETURN: 12,
+}
+
+
+def defined_data_length(msg_type: int, data: bytes) -> Optional[int]:
+    """The exact DATA length Tables 10, 11 and 14 define for a Control, Bulk or Interrupt
+    Submit or Submit Return: the fixed fields plus TRANFERDATA of M bytes, where M is
+    TRANSFERLENGTH for an OUT (D=0) Submit, 0 for an IN (D=1) Submit (Tables 10, 11), and
+    ACTUALLENGTH for a Submit Return (Table 14).  DATA itself is LENGTH - 24 bytes (Table 1),
+    so a message whose DATA differs from this carries bytes no field accounts for, or lacks
+    some.  None for any other message type, or when DATA cannot hold the fixed fields.
+    """
+    fixed = _FIXED_DATA_BYTES.get(msg_type)
+    if fixed is None or len(data) < fixed:
+        return None
+    if msg_type & 0x01:   # Submit (bit 0 = 1, Receiver-to-Sender)
+        direction = data[3] & 0x01
+        m = struct.unpack_from('>I', data, 8)[0] if direction == 0 else 0
+    else:                 # Submit Return
+        m = struct.unpack_from('>I', data, 4)[0]
+    return fixed + m
+
+
+def _excess(msg_type: int, data: bytes) -> dict:
+    """`excess_data`: the bytes past what the message's fields define, so a display shows
+    them instead of silently dropping them (see defined_data_length)."""
+    n = defined_data_length(msg_type, data)
+    return {'excess_data': data[n:].hex()} if n is not None and len(data) > n else {}
+
+
 def _decode_submit_common(data: bytes) -> dict:
     """Shared fields for Control/Bulk/Interrupt Submit (Tables 10, 11)."""
     if len(data) < 12:
@@ -605,7 +643,8 @@ def _decode_submit_common(data: bytes) -> dict:
     direction = (endpoint_byte >> 0) & 0x01   # D bit
     binterval = struct.unpack_from('>I', data, 4)[0]
     transferlength = struct.unpack_from('>I', data, 8)[0]
-    transferdata = data[12:] if direction == 0 else b''
+    # Table 11: on OUT, TRANFERDATA is M bytes where M is TRANSFERLENGTH; on IN there is none.
+    transferdata = data[12:12 + transferlength] if direction == 0 else b''
     return {
         'seqnum': seqnum,
         'endpoint': endpoint,
@@ -613,6 +652,7 @@ def _decode_submit_common(data: bytes) -> dict:
         'binterval': binterval,
         'transferlength': transferlength,
         'transferdata': transferdata.hex() if transferdata else None,
+        **_excess(MsgType.USB_BULK_SUBMIT, data),
     }
 
 
@@ -624,9 +664,11 @@ def _decode_usb_control_submit(data: bytes) -> dict:
     if not base:
         return {}
     usbdevreq = data[12:20]
-    transferdata = data[20:] if base['direction'] == 0 else b''
+    transferdata = data[20:20 + base['transferlength']] if base['direction'] == 0 else b''
     base['usbdevreq'] = usbdevreq.hex()
     base['transferdata'] = transferdata.hex() if transferdata else None
+    base.pop('excess_data', None)
+    base.update(_excess(MsgType.USB_CONTROL_SUBMIT, data))
     return base
 
 
@@ -690,6 +732,7 @@ def _decode_submit_return_common(data: bytes) -> dict:
         'rstatus': rstatus,
         'rstatus_name': StatusCode(rstatus).name if rstatus in _VALID_STATUS_CODES else f'UNKNOWN(0x{rstatus:08X})',
         'transferdata': transferdata.hex() if transferdata else None,
+        **_excess(MsgType.USB_INTERRUPT_SUBMIT_RETURN, data),
     }
 
 
