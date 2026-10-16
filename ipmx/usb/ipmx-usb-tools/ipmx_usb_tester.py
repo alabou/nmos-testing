@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import enum
 import logging
 import os
 import socket
@@ -501,6 +502,8 @@ class IpmxReceiverSession:
         self.strict_actuallength   = False
         self.enumerate_in_sequence = False
         self.device_qualifier      = False
+        self.set_address           = SetAddressMode.UNIQUE
+        self._next_address         = 1      # USB addresses 1..127, allocated per device
         self.enum_lock = threading.Lock()   # one channel enumerates at a time when in sequence
         # Findings the tester makes itself (the validators rebuild theirs on every pass).
         self.tester_findings: list[Finding] = []
@@ -693,6 +696,13 @@ class IpmxReceiverSession:
                 print(f"{color}  [LIVE {f.severity.value}] §{f.section}: {f.description}{reset}",
                       flush=True)
 
+    def allocate_address(self) -> int:
+        """The next free USB device address, 1..127, as a host allocates them."""
+        with self._lock:
+            addr = self._next_address
+            self._next_address = addr % 127 + 1
+            return addr
+
     def add_tester_finding(self, severity: Severity, section: str, description: str,
                            packet_number: Optional[int] = None) -> None:
         """Record a finding the tester itself observed (not derived by the validators)."""
@@ -705,6 +715,14 @@ class IpmxReceiverSession:
         """Run a final validation pass and print the findings summary."""
         if self.hid_only:
             return   # --hid mode: skip report entirely, keep output clean
+        with self._lock:
+            no_session = not self.ctrl_sender_msgs
+        if no_session and not any(f.section == "8.3.1.1" for f in self.tester_findings):
+            # Nothing was tested: a run without a Sender session must not PASS.
+            self.add_tester_finding(
+                Severity.ERROR, "8.3.1.1",
+                f"No session with the Sender at {self.sender_ip}:{self.sender_ctrl_port}: "
+                f"no Sender Connection Information was received, so nothing was tested")
         self._validate_and_report()
         sess = self.session
         errors   = sum(1 for f in sess.findings if f.severity == Severity.ERROR)
@@ -1164,6 +1182,15 @@ class ControlChannelClient:
 # DataChannelHandler — USB enumeration + interrupt polling
 # ---------------------------------------------------------------------------
 
+class SetAddressMode(enum.Enum):
+    """What the tester sends as SET_ADDRESS during enumeration (--set-address)."""
+    # What a USB host does (USB 2.0 §9.1.2, step 5: "The host assigns a unique address to the
+    # USB device"): each device its own address, allocated 1, 2, 3, ... across the session.
+    UNIQUE = "unique"
+    # No SET_ADDRESS at all, like a Receiver that keeps the bus address local (Avio 2).
+    NONE = "none"
+
+
 class ReturnDataUnusable(Exception):
     """A Submit Return the tester cannot continue with on its data channel (see
     DataChannelHandler._return_data). The channel stops; the run has already failed."""
@@ -1196,6 +1223,7 @@ class DataChannelHandler:
         self._usbspeed: Optional[int] = None   # USBSPEED of the channel's USB Stream Information
         self._prev_hid: bytes = b''   # last HID report; used to suppress repeated reports
         self._warned_excess = False   # bytes past ACTUALLENGTH already reported on this channel
+        self._address: Optional[int] = None   # USB address given by SET_ADDRESS (unique mode)
 
     def shutdown(self) -> None:
         """Close the data socket immediately, unblocking any recv in progress."""
@@ -1704,13 +1732,18 @@ class DataChannelHandler:
         elif not fatal:
             sess.warn(f"GET_DESCRIPTOR(Device,8): {_status(ret)}")
 
-        # 2. SET_ADDRESS(3)
-        if not fatal:
-            ret = self._ctrl_transfer(_set_address_req(3), 0)
+        # 2. SET_ADDRESS — --set-address: "unique" (default) gives each device its own
+        #    address, as a USB host does; "none" sends none. TR-10-14 says nothing of
+        #    SET_ADDRESS. A channel keeps its address when it re-enumerates.
+        if not fatal and sess.set_address == SetAddressMode.UNIQUE:
+            if self._address is None:
+                self._address = sess.allocate_address()
+            addr = self._address
+            ret = self._ctrl_transfer(_set_address_req(addr), 0)
             if ret is None and self._ch.closed:
                 fatal = True
             elif not _ok(ret):
-                sess.warn(f"SET_ADDRESS(3): {_status(ret)}")
+                sess.warn(f"SET_ADDRESS({addr}): {_status(ret)}")
 
         # 3. GET_DESCRIPTOR(Device, 18) — full device descriptor
         if not fatal:
@@ -1815,10 +1848,15 @@ class DataChannelHandler:
             # Table 11: the next Submit takes the next SEQNUM whatever this one gets back.
             self._seqnum += 1
 
-            # Wait for INTERRUPT_SUBMIT_RETURN
-            ret = self._ch.recv_msg(timeout=interval * 20 + 2.0)
+            # Wait for INTERRUPT_SUBMIT_RETURN. An interrupt IN transfer completes only when
+            # the device has data, so a quiet endpoint (an absolute mouse that does not move)
+            # is normal: keep waiting while the test runs instead of abandoning the channel.
+            ret = None
+            while ret is None and not self._stop.is_set() and not self._ch.closed:
+                ret = self._ch.recv_msg(timeout=1.0)
             if ret is None:
-                sess.warn("Timeout on INTERRUPT_SUBMIT_RETURN")
+                if self._ch.closed:
+                    sess.warn("Sender closed the data channel with an INTERRUPT_SUBMIT pending")
                 break
 
             self._record_sender_msg(ret)
@@ -2106,6 +2144,8 @@ def run_test(
     strict_actuallength: bool = False,
     enumerate_in_sequence: bool = False,
     device_qualifier: bool = False,
+    set_address: SetAddressMode = SetAddressMode.UNIQUE,
+    first_address: int = 1,
 ) -> int:
     """
     Run the live Receiver test.  Blocks until duration expires or Ctrl-C.
@@ -2143,6 +2183,8 @@ def run_test(
     session.strict_actuallength = strict_actuallength
     session.enumerate_in_sequence = enumerate_in_sequence
     session.device_qualifier = device_qualifier
+    session.set_address = set_address
+    session._next_address = first_address
 
     stop_event = threading.Event()
 
@@ -2331,6 +2373,20 @@ Examples:
              "for a host, USB 2.0 §9.2.6.6) and report a device with bcdUSB 0x0200 "
              "that answers neither a qualifier nor a request error (§9.6.2).",
     )
+    parser.add_argument(
+        '--set-address', type=SetAddressMode, default=SetAddressMode.UNIQUE,
+        choices=list(SetAddressMode), metavar='{unique,none}',
+        help="SET_ADDRESS during enumeration: 'unique' (default) gives each device its "
+             "own address, 1, 2, 3, ..., as a USB host does (USB 2.0 §9.1.2); 'none' "
+             "sends no SET_ADDRESS, like a Receiver that keeps the bus address local. "
+             "TR-10-14 says nothing of SET_ADDRESS.",
+    )
+    parser.add_argument(
+        '--first-address', type=int, default=1, metavar='N',
+        help="First address 'unique' gives (1-127, default 1); the next devices get N+1, "
+             "N+2, ... A host gives the next free addresses on its bus, so behind a "
+             "Receiver whose host has other USB devices they rarely start at 1.",
+    )
 
     pepmod.add_pep_args(parser)
 
@@ -2345,6 +2401,8 @@ Examples:
 
     if not (5 <= args.hbeat <= 30):
         parser.error("--hbeat must be in [5, 30]")
+    if not (1 <= args.first_address <= 127):
+        parser.error("--first-address must be in [1, 127]")
 
     # ---- Resolve Sender IP and port from SDP and/or CLI ----
     sender_ip: Optional[str] = args.sender_ip
@@ -2461,6 +2519,8 @@ Examples:
         strict_actuallength   = args.strict_actuallength,
         enumerate_in_sequence = args.enumerate_in_sequence,
         device_qualifier      = args.device_qualifier,
+        set_address           = args.set_address,
+        first_address         = args.first_address,
         iv_swapn         = iv_swapn,
     ))
 

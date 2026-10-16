@@ -59,6 +59,10 @@ import usb_decode
 from ipmx_usb_message import IpmxUsbMessage, MsgType, StatusCode, _VALID_STATUS_CODES
 from tcp_reassembler import TcpConnection, make_stream_key, find_contiguous_blocks
 
+#: A Control/Bulk Submit with no Return although its channel carried traffic for this long
+#: after it is reported as unanswered (§9.18, §9.19).
+UNANSWERED_GRACE_S = 10.0
+
 
 # ---------------------------------------------------------------------------
 # Validation result helpers
@@ -1319,6 +1323,27 @@ def _validate_data_channel(
                           "is not a defined status code; SHALL use UNKNOWN_ERROR",
                           packet_number=cm.packet_number)
 
+        # -------------------------------------------------------------- §9.18, §9.19
+        # SHALL: "USB Control Submit Return message shall be sent by a Sender in response to
+        # a USB Control Submit message" (§9.19 the same for Bulk). A Control or Bulk Submit
+        # still unanswered UNANSWERED_GRACE_S before the channel's last message never got
+        # its Return; the grace keeps Submits in flight at the end of a capture out of it.
+        # Interrupt and Isochronous Submits are not checked: an interrupt IN Submit legitimately
+        # stays pending until the device has data.
+        if all_msgs:
+            last_ts = max(m.timestamp for m in all_msgs)
+            for seqnum, sub in sorted(pending_submits.items()):
+                if sub['msg_type'] not in (MsgType.USB_CONTROL_SUBMIT, MsgType.USB_BULK_SUBMIT):
+                    continue
+                if last_ts - sub['timestamp'] < UNANSWERED_GRACE_S:
+                    continue
+                s.add(Severity.ERROR, "9.18-19/ret",
+                      f"Data channel (substreamid=0x{channel.substreamid:02X}): "
+                      f"{sub['msg_type'].name} SEQNUM={seqnum} got no Submit Return "
+                      f"(none in the {last_ts - sub['timestamp']:.0f} s that followed on this "
+                      f"channel); a Sender SHALL send one in response",
+                      packet_number=sub['packet_number'])
+
         # -------------------------------------------------------------- 9.17
         # ISO_SUBMIT: when A=1 (ASAP), STARTFRAME SHALL be 0
         for cm in receiver_msgs:
@@ -1753,6 +1778,7 @@ _ALL_REQUIREMENTS: list[tuple[str, str, str]] = [
     ("9.18",     "SHALL",  "IN (D=1) Submit Return: ACTUALLENGTH SHALL be ≤ TRANSFERLENGTH"),
     ("9.18",     "SHALL",  "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0"),
     ("9.18-20",  "SHALL",  "Control/Bulk/Interrupt Submit Return DATA SHALL be exactly its Table 14 fields (TRANFERDATA = ACTUALLENGTH bytes)"),
+    ("9.18-19/ret", "SHALL", "Every Control/Bulk Submit SHALL get its Submit Return (none after 10 s of further traffic = missing)"),
     # §11 — Heartbeat
     ("11",       "SHALL",  "Heartbeat gap SHALL be ≤ 2 × Heartbeat_Period (unresponsive threshold)"),
     ("11",       "SHOULD", "Heartbeat gap SHOULD be ≤ 1.1 × Heartbeat_Period (jitter budget)"),
