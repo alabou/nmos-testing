@@ -632,6 +632,11 @@ class IpmxReceiverSession:
         sess.control = ControlChannel()
         sess.data_channels = {}
 
+        # The recorded messages are already decrypted whenever a PEP key was derived. Without
+        # `decrypted`, an encrypted session skips every payload check of the validators
+        # (SEQNUM, Submit/Return matching, ACTUALLENGTH, RSTATUS, DATA sizes).
+        decrypted = self.pep_key is not None
+
         # Only validate the control channel once both sides have spoken
         # (avoids transient false positives when SCI arrives before SCS is sent).
         if ctrl_s and ctrl_r:
@@ -639,6 +644,7 @@ class IpmxReceiverSession:
                 sess, ctrl_s, ctrl_r,
                 expected_cid=None, expected_sn=None,
                 encrypted=self.encrypted,
+                decrypted=decrypted,
             )
 
         for substreamid in set(data_s) | set(data_r):
@@ -654,6 +660,7 @@ class IpmxReceiverSession:
                 sess, channel,
                 s_msgs, r_msgs,
                 encrypted=self.encrypted,
+                decrypted=decrypted,
             )
 
         # Report only new findings
@@ -1235,20 +1242,24 @@ class DataChannelHandler:
         direction = 1 if (req[0] & 0x80) else 0   # bmRequestType bit 7
 
         for attempt in range(1 + retries):
+            seq = self._seqnum
             self._send(usb.build_usb_control_submit(
-                self._seqnum, endpoint, direction, binterval,
+                seq, endpoint, direction, binterval,
                 transferlength, req,
             ))
+            # Table 10: every Submit sent takes the next SEQNUM, whether or not it is
+            # answered - a timed-out Submit must not lend its number to the next one.
+            self._seqnum += 1
             ret = self._recv(timeout=10.0)
             if ret is None:
                 if self._ch.closed:
                     self._session.warn(
                         f"Sender closed data channel before replying to "
-                        f"CONTROL_SUBMIT seq={self._seqnum}")
+                        f"CONTROL_SUBMIT seq={seq}")
                 else:
                     self._session.warn(
                         f"Timeout (10 s) on CONTROL_SUBMIT_RETURN "
-                        f"seq={self._seqnum}")
+                        f"seq={seq}")
                 return None
 
             is_submit_return = (ret.msg_type_name
@@ -1269,11 +1280,9 @@ class DataChannelHandler:
                 self._session.log(
                     f"    STALL on attempt {attempt + 1}/{1 + retries}, "
                     f"retrying in 0.5 s …")
-                self._seqnum += 1
                 time.sleep(0.5)
                 continue
 
-            self._seqnum += 1
             return ret
 
         return None
@@ -1662,6 +1671,8 @@ class DataChannelHandler:
                 self._seqnum, ep.endpoint_num, ep.direction,
                 ep.interval, max_pkt,
             ))
+            # Table 11: the next Submit takes the next SEQNUM whatever this one gets back.
+            self._seqnum += 1
 
             # Wait for INTERRUPT_SUBMIT_RETURN
             ret = self._ch.recv_msg(timeout=interval * 20 + 2.0)
@@ -1684,8 +1695,6 @@ class DataChannelHandler:
             if mt != MsgType.USB_INTERRUPT_SUBMIT_RETURN:
                 sess.warn(f"Expected INTERRUPT_SUBMIT_RETURN, got {ret.msg_type_name}")
                 break
-
-            self._seqnum += 1
 
             if (sess.verbose or sess.hid_only) and not ret.payload.get('_encrypted'):
                 td_raw = ret.payload.get('transferdata') or ''
