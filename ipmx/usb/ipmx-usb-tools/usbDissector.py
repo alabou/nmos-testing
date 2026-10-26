@@ -29,8 +29,10 @@ See --help for all options.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import math
+import statistics
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -74,6 +76,98 @@ class Severity(str, Enum):
     INFO    = "INFO"
 
 
+class Requirement(Enum):
+    """
+    The requirements checklist (-r): one member per normative statement a check
+    enforces, in checklist order. Each finding names the member its check enforces,
+    so a row fails only on its own findings, never on another row's in the same section.
+    """
+    # §8 — Communication channels
+    CTRL_FIRST_IS_SENDER_INFO   = ("8.3.1.1",  "SHALL",  "Control channel: first Sender message is SenderConnectionInfo")
+    CTRL_STATUS_RESPONSE        = ("8.3.1.1",  "SHALL",  "Control channel: Receiver sends SenderConnectionStatus in response")
+    DATA_FIRST_IS_STREAM_INFO   = ("8.3.1.2",  "SHALL",  "Data channel: first Sender message is USBStreamInformation")
+    DATA_STATUS_RESPONSE        = ("8.3.1.2",  "SHALL",  "Data channel: Receiver sends USBStreamStatus in response")
+    DATA_NO_SUBMIT_BEFORE_STATUS = ("8.3.1.2", "SHALL",  "Data channel: Receiver does not send USB Submit before USBStreamStatus")
+    # §9 — Message framing
+    HEADER_RESERVED_ZERO        = ("9",        "SHALL",  "Header Reserved 7 bits SHALL be 0 before transmission")
+    ENCRYPTED                   = ("9",        "SHOULD", "Messages SHOULD be encrypted and authenticated (TR-10-13)")
+    # §9.1 — SenderConnectionInfo
+    SCI_MAVER                   = ("9.1",      "SHALL",  "SenderConnectionInfo: MAVER=0 for this version")
+    SCI_MIVER                   = ("9.1",      "SHALL",  "SenderConnectionInfo: MIVER=0 for this version")
+    SCI_RESERVED                = ("9.1",      "SHALL",  "SenderConnectionInfo: Reserved byte SHALL be 0")
+    SCI_CID                     = ("9.1",      "SHALL",  "SenderConnectionInfo: CID matches expected value (if supplied)")
+    SCI_SN                      = ("9.1",      "SHALL",  "SenderConnectionInfo: SN matches expected value (if supplied)")
+    # §9.2 — SenderConnectionStatus
+    SCS_VERSION                 = ("9.2",      "SHALL",  "SenderConnectionStatus: Receiver version ≤ Sender version")
+    SCS_HBEAT_RANGE             = ("9.2",      "SHALL",  "SenderConnectionStatus: HBEAT in [5, 30]")
+    SCS_RSVD                    = ("9.2",      "SHALL",  "SenderConnectionStatus: Rsvd 3 bits SHALL be 0")
+    # §9.4 — VendorSpecificInfo
+    VSI_VMTYPE_RESERVED         = ("9.4",      "SHALL",  "VendorSpecificInfo VMTYPE 1-15 are reserved — SHALL NOT be used")
+    VSI_VMDATA_LENGTH           = ("9.4",      "SHALL",  "VendorSpecificInfo VMTYPE=0 VMDATA SHALL be ≤ 256 bytes")
+    # §9.5/9.6 — VendorSpecificQuery/Return
+    VSQ_ANSWERED                = ("9.6",      "SHALL",  "VendorSpecificQuery: Receiver SHALL answer every query")
+    VSQ_VQSTS_RESERVED          = ("9.6",      "SHALL",  "VendorSpecificQuery: VQSTS=255 for unknown/reserved VQTYPE")
+    VSQR_VQDATA_LENGTH          = ("9.6",      "SHALL",  "VendorSpecificQueryReturn VQDATA (VQTYPE=0) SHALL be ≤ 256 bytes")
+    VSQR_CID                    = ("9.6",      "SHALL",  "VendorSpecificQueryReturn CID SHALL match Query CID for VQTYPE 16-255")
+    # §9.3 — Heartbeat
+    HEARTBEAT_EMPTY             = ("9.3",      "SHALL",  "Heartbeat DATA SHALL be empty (0 bytes)")
+    # §9.7 — USBStreamInfo
+    SSI_SUBSTREAMID_BIT0        = ("9.7",      "SHALL",  "USBStreamInfo SUBSTREAMID bit 0 SHALL be 0 (Sender-to-Receiver direction)")
+    SSI_SUBSTREAMID_CHANNEL     = ("9.7",      "SHALL",  "USBStreamInfo SUBSTREAMID bits 7:1 SHALL be in [1, 127] for data channels")
+    HANDSHAKE_SSID              = ("9.7",      "SHOULD", "Data-channel handshake (USB_STREAM_INFO/USB_STREAM_STATUS) "
+                                                         "SHOULD be encrypted with SSID 2 (S2R) / 3 (R2S)")
+    # §9.8 — USBStreamStatus
+    USS_CSTATUS                 = ("9.8",      "SHALL",  "USBStreamStatus CSTATUS SHALL be 0 (OK) or 255 (error); others are reserved")
+    # §9.9 — USBStreamReset
+    RESET_WAIT                  = ("9.9",      "SHALL",  "USBStreamReset: Receiver SHALL wait for ResetReturn before further Submits")
+    # §9.10 — USBStreamResetReturn
+    RESET_RETURN_SENT           = ("9.10",     "SHALL",  "USBStreamResetReturn SHALL be sent by the Sender for every USBStreamReset")
+    RESET_RETURN_EMPTY          = ("9.10",     "SHALL",  "USBStreamResetReturn DATA SHALL be empty (0 bytes)")
+    # §9.11 — USBWakeupControl
+    WAKECTRL_VALUE              = ("9.11",     "SHALL",  "USBWakeupControl WAKECTRL SHALL be 0 or 1")
+    # §9.12 — USB Enter Sleep
+    SLEEP_CLOSE                 = ("9.12",     "SHALL",  "USB Enter Sleep + WoL enabled: Sender SHALL close all connections")
+    SLEEP_NO_RECONNECT          = ("9.12",     "SHOULD", "USB Enter Sleep received: Receiver SHOULD NOT reconnect until WoL")
+    # §9.15 — USB Control Submit
+    CONTROL_USBDEVREQ_LENGTH    = ("9.15",     "SHALL",  "USB Control Submit USBDEVREQ SHALL be 8 bytes")
+    # §9.17 — USB Isochronous Submit
+    ISO_ASAP_STARTFRAME         = ("9.17",     "SHALL",  "USB Isochronous Submit: STARTFRAME SHALL be 0 when A (ASAP) is 1")
+    # §10 — Sub-stream multiplexing
+    SUBSTREAM_PARITY            = ("10",       "SHALL",  "S2R substreamid SHALL be even; R2S substreamid SHALL be odd")
+    # §9.14 — SEQNUM
+    SUBMIT_SEQNUM               = ("9.14",     "SHALL",  "Submit SEQNUM starts at 0 and increments by 1 per Submit")
+    SUBMIT_RSVD                 = ("9.14",     "SHALL",  "Submit Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0")
+    SUBMIT_DATA_FIELDS          = ("9.14-16",  "SHALL",  "Control/Bulk/Interrupt Submit DATA SHALL be exactly its Table 10/11 fields (TRANFERDATA = TRANSFERLENGTH bytes on OUT, none on IN)")
+    # §9.18 — Submit Return
+    RETURN_SEQNUM               = ("9.18",     "SHALL",  "Submit Return SEQNUM SHALL match an outstanding Submit")
+    RETURN_ENDPOINT             = ("9.18",     "SHALL",  "Submit Return ENDPOINT SHALL match Submit ENDPOINT")
+    RETURN_DIRECTION            = ("9.18",     "SHALL",  "Submit Return D SHALL match Submit D")
+    RETURN_OUT_LENGTH           = ("9.18",     "SHALL",  "OUT (D=0) Submit Return: ACTUALLENGTH SHALL be 0")
+    RETURN_IN_LENGTH            = ("9.18",     "SHALL",  "IN (D=1) Submit Return: ACTUALLENGTH SHALL be ≤ TRANSFERLENGTH")
+    RETURN_RSVD                 = ("9.18",     "SHALL",  "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0")
+    RETURN_DATA_FIELDS          = ("9.18-20",  "SHALL",  "Control/Bulk/Interrupt Submit Return DATA SHALL be exactly its Table 14 fields (TRANFERDATA = ACTUALLENGTH bytes)")
+    RETURN_SENT                 = ("9.18-19/ret", "SHALL", "Every Control/Bulk Submit SHALL get its Submit Return (none after 10 s of further traffic = missing)")
+    # §11 — Heartbeat
+    HEARTBEAT_GAP_MAX           = ("11",       "SHALL",  "Heartbeat gap SHALL be ≤ 2 × Heartbeat_Period (unresponsive threshold)")
+    HEARTBEAT_GAP_JITTER        = ("11",       "SHOULD", "Heartbeat gap SHOULD be ≤ 1.1 × Heartbeat_Period (jitter budget)")
+    # §12 — Encryption
+    CLEAR_CTR_ZERO              = ("12",       "SHALL",  "Unencrypted mode: CTR SHALL be 0 on every message")
+    CLEAR_KEYVERSION_ZERO       = ("12",       "SHALL",  "Unencrypted mode: KEYVERSION SHALL be 0 on every message")
+    CLEAR_MAC_ZERO              = ("12",       "SHALL",  "Unencrypted mode: MAC SHALL be 0x0000000000000000 on every message")
+    CTR_MONOTONIC               = ("12",       "SHALL",  "Encrypted mode: CTR SHALL increase monotonically per direction")
+    KEYVERSION_NONZERO_CONSISTENT = ("12",     "SHALL",  "Encrypted mode: KEYVERSION SHALL be non-zero and consistent within a TCP session")
+    CMAC_VERIFIES               = ("12",       "SHALL",  "Encrypted mode: CMAC-64 authentication SHALL verify correctly")
+    MODE_ALLOWED                = ("12",       "SHALL",  "Mode SHALL be one of the allowed values (AES-128/256-CTR_CMAC-64-AAD, ECDH variants)")
+    MODE_AES128_SUPPORTED       = ("12",       "SHALL",  "Senders and Receivers SHALL support AES-128-CTR_CMAC-64-AAD mode")
+    # §A.1 — Status codes
+    STATUS_DEFINED              = ("A.1",      "SHALL",  "RSTATUS / ISOSTATUS SHALL be a defined status code")
+
+    def __init__(self, section: str, level: str, text: str) -> None:
+        self.section = section
+        self.level = level
+        self.text = text
+
+
 @dataclass
 class Finding:
     severity: Severity
@@ -81,11 +175,15 @@ class Finding:
     description: str
     packet_number: Optional[int] = None
     detail: Optional[str] = None
+    connection: Optional[str] = None   # label of the TCP connection it was found on, if any
+    requirement: Optional[Requirement] = None   # the checklist row its check enforces, if any
 
     def __str__(self) -> str:
         pkt = f" [pkt #{self.packet_number}]" if self.packet_number else ""
-        detail = f"\n    Detail: {self.detail}" if self.detail else ""
-        return f"  [{self.severity.value}] §{self.section}{pkt}: {self.description}{detail}"
+        conn = f" [{self.connection}]" if self.connection else ""
+        detail = f"\n    Detail: {_printable(self.detail)}" if self.detail else ""
+        return (f"  [{self.severity.value}] §{self.section}{pkt}{conn}: "
+                f"{_printable(self.description)}{detail}")
 
 
 # ---------------------------------------------------------------------------
@@ -106,12 +204,67 @@ class ChannelMessage:
 
 
 # ---------------------------------------------------------------------------
+# TCP connection lifecycle
+#
+# Communication channels are TCP connections (§8). SYN, FIN and RST segments
+# carry no payload, so they never reach the stream reassembler; they are
+# collected separately so the report can say when each channel opened, when it
+# ended and which side ended it. A Sender closing a data channel means the USB
+# device was disconnected (§8.3.1.2), so a channel closed while its device is
+# still attached shows up on the wire only here.
+# ---------------------------------------------------------------------------
+
+class TcpEventKind(str, Enum):
+    SYN = "SYN"    # connection request from the TCP client
+    FIN = "FIN"    # orderly close by the side that sent it
+    RST = "RST"    # abort by the side that sent it
+
+
+class ChannelRole(str, Enum):
+    SENDER   = "Sender"
+    RECEIVER = "Receiver"
+
+
+@dataclass
+class TcpEvent:
+    """One connection-level TCP segment."""
+    kind: TcpEventKind
+    packet_number: int
+    timestamp: float
+    endpoint: str          # "ip:port" of the side that sent it
+
+
+@dataclass
+class TcpLifecycle:
+    """How one TCP connection opened and ended within the capture.
+
+    Only the client's first SYN, the first FIN from each side and the first RST
+    are kept; later ones are retransmissions or the rest of the teardown.
+    """
+    syn: Optional[TcpEvent] = None          # None: the connection opened before the capture
+    fins: list[TcpEvent] = field(default_factory=list)
+    rst: Optional[TcpEvent] = None
+    first_timestamp: Optional[float] = None
+    last_timestamp: Optional[float] = None
+
+    @property
+    def opened_at(self) -> Optional[float]:
+        return self.syn.timestamp if self.syn else self.first_timestamp
+
+    @property
+    def close(self) -> Optional[TcpEvent]:
+        """The segment that ended the connection (its first FIN or RST), or None if still open."""
+        events = self.fins[:1] + ([self.rst] if self.rst else [])
+        return min(events, key=lambda e: e.packet_number) if events else None
+
+
+# ---------------------------------------------------------------------------
 # Session and channel models
 # ---------------------------------------------------------------------------
 
 @dataclass
 class DataChannel:
-    """Tracks state for one data channel (one USB device)."""
+    """Tracks state for one data channel (one USB device) over one TCP connection."""
     substreamid: int
     busid: str
     usbspeed: int
@@ -121,6 +274,19 @@ class DataChannel:
     messages: list[ChannelMessage] = field(default_factory=list)
     # per-direction SEQNUM trackers: {seqnum: packet_number}
     submit_seqnums: dict[int, dict] = field(default_factory=dict)  # seqnum → submit info
+    # TCP connection carrying the channel (left empty by callers that validate live traffic)
+    index: int = 0                            # 1-based, in the order the connections opened
+    key: str = ''                             # canonical stream key
+    sender_endpoint: str = ''                 # "ip:port" of the Sender side
+    connection: Optional[TcpLifecycle] = None
+
+    @property
+    def receiver_endpoint(self) -> str:
+        return next((e for e in self.key.split('-') if e != self.sender_endpoint), '')
+
+    @property
+    def label(self) -> str:
+        return f"data #{self.index} {self.sender_endpoint}->{self.receiver_endpoint}"
 
 
 @dataclass
@@ -134,6 +300,18 @@ class ControlChannel:
     connection_status_pkt: Optional[int] = None
     # Vendor query tracking: vqtype → list of (pkt_num, answered)
     pending_vendor_queries: dict[int, list[int]] = field(default_factory=dict)
+    # TCP connection carrying the channel (left empty by callers that validate live traffic)
+    key: str = ''                             # canonical stream key
+    sender_endpoint: str = ''                 # "ip:port" of the Sender side
+    connection: Optional[TcpLifecycle] = None
+
+    @property
+    def receiver_endpoint(self) -> str:
+        return next((e for e in self.key.split('-') if e != self.sender_endpoint), '')
+
+    @property
+    def label(self) -> str:
+        return f"control {self.receiver_endpoint}->{self.sender_endpoint}"
 
 
 @dataclass
@@ -144,12 +322,19 @@ class Session:
     receiver_ip: str
     receiver_data_port: int = 0
     control: ControlChannel = field(default_factory=ControlChannel)
+    # The latest data-channel connection per SUBSTREAMID. A Sender that closes and
+    # reopens a channel leaves several connections per SUBSTREAMID: every one of them
+    # is in data_connections.
     data_channels: dict[int, DataChannel] = field(default_factory=dict)  # substreamid → channel
+    data_connections: list[DataChannel] = field(default_factory=list)    # in the order they opened
     findings: list[Finding] = field(default_factory=list)
+    capture_end: Optional[float] = None       # timestamp of the capture's last packet
 
     def add(self, severity: Severity, section: str, description: str,
-            packet_number: int = None, detail: str = None) -> None:
-        self.findings.append(Finding(severity, section, description, packet_number, detail))
+            packet_number: int = None, detail: str = None,
+            requirement: Optional[Requirement] = None) -> None:
+        self.findings.append(Finding(severity, section, description, packet_number, detail,
+                                     requirement=requirement))
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +485,79 @@ def _collect_streams(packets: list) -> dict[str, TcpConnection]:
             conn.feed_reverse(tcp.seq, payload, meta)
 
     return connections
+
+
+def _collect_lifecycles(packets: list) -> dict[str, TcpLifecycle]:
+    """
+    Record how each TCP connection opened and ended: its SYN, FINs and RST.
+    Returns dict of stream_key → TcpLifecycle, keyed and numbered as _collect_streams.
+    """
+    lifecycles: dict[str, TcpLifecycle] = {}
+
+    for pkt_num, pkt in enumerate(packets, 1):
+        if not pkt.haslayer(TCP) or not pkt.haslayer(IP):
+            continue
+        tcp = pkt[TCP]
+        ip = pkt[IP]
+
+        key = make_stream_key(ip.src, tcp.sport, ip.dst, tcp.dport)
+        lc = lifecycles.setdefault(key, TcpLifecycle())
+        ts = float(pkt.time) if hasattr(pkt, 'time') else 0.0
+        if lc.first_timestamp is None:
+            lc.first_timestamp = ts
+        lc.last_timestamp = ts
+
+        endpoint = f"{ip.src}:{tcp.sport}"
+        if tcp.flags.S and not tcp.flags.A and lc.syn is None:
+            lc.syn = TcpEvent(TcpEventKind.SYN, pkt_num, ts, endpoint)
+        if tcp.flags.F and all(f.endpoint != endpoint for f in lc.fins):
+            lc.fins.append(TcpEvent(TcpEventKind.FIN, pkt_num, ts, endpoint))
+        if tcp.flags.R and lc.rst is None:
+            lc.rst = TcpEvent(TcpEventKind.RST, pkt_num, ts, endpoint)
+
+    return lifecycles
+
+
+def _close_role(event: TcpEvent, sender_endpoint: str) -> ChannelRole:
+    return ChannelRole.SENDER if event.endpoint == sender_endpoint else ChannelRole.RECEIVER
+
+
+def _endpoint_ip(endpoint: str) -> str:
+    return endpoint.rpartition(':')[0]
+
+
+def _session_for_data_channel(sessions: list[Session], channel: DataChannel,
+                              opened_at: float) -> Optional[Session]:
+    """
+    The session a data channel belongs to: its Sender and Receiver, and the control
+    connection that was up when the data channel opened.
+
+    A Sender opens data channels for a Receiver that holds its control channel
+    (§8.3.1.2), so after a control-channel reconnect each data channel belongs to
+    the control connection open at the time. Falls back to the latest control
+    connection opened before it; None when no session has this Sender.
+    """
+    sender_ip = _endpoint_ip(channel.sender_endpoint)
+    receiver_ip = _endpoint_ip(channel.receiver_endpoint)
+    same_sender = [s for s in sessions if s.sender_ip == sender_ip]
+    candidates = ([s for s in same_sender
+                   if _endpoint_ip(s.control.receiver_endpoint) == receiver_ip] or same_sender)
+
+    spans = []
+    for s in candidates:
+        lc = s.control.connection
+        start = (lc.opened_at if lc is not None
+                 else min((m.timestamp for m in s.control.messages), default=None))
+        end = lc.close.timestamp if lc is not None and lc.close is not None else None
+        spans.append((s, start, end))
+
+    for s, start, end in spans:
+        if start is not None and start <= opened_at and (end is None or opened_at <= end):
+            return s
+    earlier = [(start, s) for s, start, _end in spans if start is not None and start <= opened_at]
+    if earlier:
+        return max(earlier, key=lambda e: e[0])[1]
+    return candidates[0] if candidates else None
 
 
 def _parse_messages_from_connection(
@@ -718,7 +976,8 @@ def _check_reserved_header_bits(
         session.add(Severity.ERROR, "9",
                     f"{cm.msg.msg_type_name}: Reserved header bits are 0x{reserved_bits:02X}; "
                     "SHALL be 0",
-                    packet_number=cm.packet_number)
+                    packet_number=cm.packet_number,
+                    requirement=Requirement.HEADER_RESERVED_ZERO)
 
 
 def _check_endpoint_rsvd_bits(
@@ -739,7 +998,8 @@ def _check_endpoint_rsvd_bits(
         session.add(Severity.ERROR, section,
                     f"{cm.msg.msg_type_name}: Reserved bits in endpoint byte are 0x{rsvd:X}; "
                     "SHALL be 0",
-                    packet_number=cm.packet_number)
+                    packet_number=cm.packet_number,
+                    requirement=Requirement.SUBMIT_RSVD if role == "submit" else Requirement.RETURN_RSVD)
 
 
 def _validate_control_channel(
@@ -767,7 +1027,8 @@ def _validate_control_channel(
     # Issue a WARNING if the stream appears unencrypted and --encrypted was not set.
     if not encrypted:
         s.add(Severity.WARNING, "9",
-              "Stream is not encrypted; messages SHOULD be encrypted and authenticated (TR-10-13)")
+              "Stream is not encrypted; messages SHOULD be encrypted and authenticated (TR-10-13)",
+              requirement=Requirement.ENCRYPTED)
 
     # ------------------------------------------------------------------ §12 MAC verification
     if decrypted:
@@ -775,13 +1036,15 @@ def _validate_control_channel(
             if cm.mac_ok is False:
                 s.add(Severity.ERROR, "12",
                       f"{cm.msg.msg_type_name}: CMAC-64 verification failed",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CMAC_VERIFIES)
 
     # ------------------------------------------------------------------ 8.3.1.1
     # SHALL: first message on control channel from Sender is SenderConnectionInfo.
     if not sender_msgs:
         s.add(Severity.ERROR, "8.3.1.1",
-              "No messages from Sender on control channel")
+              "No messages from Sender on control channel",
+              requirement=Requirement.CTRL_FIRST_IS_SENDER_INFO)
         return
 
     first_sender = sender_msgs[0]
@@ -789,7 +1052,8 @@ def _validate_control_channel(
         s.add(Severity.ERROR, "8.3.1.1",
               f"First Sender message is {first_sender.msg.msg_type_name}; "
               "expected SenderConnectionInfo",
-              packet_number=first_sender.packet_number)
+              packet_number=first_sender.packet_number,
+              requirement=Requirement.CTRL_FIRST_IS_SENDER_INFO)
 
     # Store SenderConnectionInfo payload for later checks
     sci = next((m for m in sender_msgs
@@ -806,18 +1070,21 @@ def _validate_control_channel(
         if info.get('maver', -1) != 0:
             s.add(Severity.ERROR, "9.1",
                   f"SenderConnectionInfo MAVER={info['maver']}; SHALL be 0",
-                  packet_number=sci.packet_number)
+                  packet_number=sci.packet_number,
+                  requirement=Requirement.SCI_MAVER)
         # SHALL: MIVER = 0 for this version
         if info.get('miver', -1) != 0:
             s.add(Severity.ERROR, "9.1",
                   f"SenderConnectionInfo MIVER={info['miver']}; SHALL be 0",
-                  packet_number=sci.packet_number)
+                  packet_number=sci.packet_number,
+                  requirement=Requirement.SCI_MIVER)
         # SHALL: Reserved byte (byte 1 of DATA) SHALL be 0
         raw_data = sci.msg.data
         if len(raw_data) >= 2 and raw_data[1] != 0:
             s.add(Severity.ERROR, "9.1",
                   f"SenderConnectionInfo Reserved byte=0x{raw_data[1]:02X}; SHALL be 0",
-                  packet_number=sci.packet_number)
+                  packet_number=sci.packet_number,
+                  requirement=Requirement.SCI_RESERVED)
         # CID match
         if expected_cid is not None:
             actual_cid = bytes.fromhex(info.get('cid', ''))
@@ -825,7 +1092,8 @@ def _validate_control_channel(
                 s.add(Severity.ERROR, "9.1",
                       f"SenderConnectionInfo CID={info.get('cid')} does not match "
                       f"expected {expected_cid.hex().upper()}",
-                      packet_number=sci.packet_number)
+                      packet_number=sci.packet_number,
+                      requirement=Requirement.SCI_CID)
         # SN match
         if expected_sn is not None:
             actual_sn = info.get('sn', '')
@@ -833,7 +1101,8 @@ def _validate_control_channel(
                 s.add(Severity.ERROR, "9.1",
                       f"SenderConnectionInfo SN='{actual_sn}' does not match "
                       f"expected '{expected_sn}'",
-                      packet_number=sci.packet_number)
+                      packet_number=sci.packet_number,
+                      requirement=Requirement.SCI_SN)
 
     # ------------------------------------------------------------------ 8.3.1.1
     # SHALL: on reception of SenderConnectionInfo Receiver SHALL send SenderConnectionStatus
@@ -842,7 +1111,8 @@ def _validate_control_channel(
     if sci and not scs:
         s.add(Severity.ERROR, "8.3.1.1",
               "Receiver did not send SenderConnectionStatus after SenderConnectionInfo",
-              packet_number=sci.packet_number)
+              packet_number=sci.packet_number,
+              requirement=Requirement.CTRL_STATUS_RESPONSE)
 
     if scs:
         ctrl.receiver_status = scs.msg.payload
@@ -859,13 +1129,15 @@ def _validate_control_channel(
             s.add(Severity.ERROR, "9.2",
                   f"SenderConnectionStatus version ({sts.get('maver')}.{sts.get('miver')}) "
                   f"exceeds Sender version ({ctrl.sender_info.get('maver')}.{ctrl.sender_info.get('miver')})",
-                  packet_number=scs.packet_number)
+                  packet_number=scs.packet_number,
+                  requirement=Requirement.SCS_VERSION)
         # SHALL: HBEAT in [5, 30]
         hbeat = sts.get('hbeat', -1)
         if not (5 <= hbeat <= 30):
             s.add(Severity.ERROR, "9.2",
                   f"HBEAT={hbeat} out of valid range [5, 30]",
-                  packet_number=scs.packet_number)
+                  packet_number=scs.packet_number,
+                  requirement=Requirement.SCS_HBEAT_RANGE)
         # SHALL: Rsvd 3 bits in byte 1 of SenderConnectionStatus DATA SHALL be 0
         raw_scs_data = scs.msg.data
         if len(raw_scs_data) >= 2:
@@ -873,7 +1145,8 @@ def _validate_control_channel(
             if rsvd3 != 0:
                 s.add(Severity.ERROR, "9.2",
                       f"SenderConnectionStatus Rsvd bits=0x{rsvd3:X}; SHALL be 0",
-                      packet_number=scs.packet_number)
+                      packet_number=scs.packet_number,
+                      requirement=Requirement.SCS_RSVD)
         # Record receiver data port
         session.receiver_data_port = sts.get('port', 0)
 
@@ -889,7 +1162,8 @@ def _validate_control_channel(
         if 1 <= vmtype <= 15:
             s.add(Severity.ERROR, "9.4",
                   f"VendorSpecificInfo VMTYPE={vmtype} is reserved (1-15); SHALL NOT be used",
-                  packet_number=cm.packet_number)
+                  packet_number=cm.packet_number,
+                  requirement=Requirement.VSI_VMTYPE_RESERVED)
         # SHALL: VMTYPE=0 VMDATA SHALL be ≤ 256 bytes
         if vmtype == 0:
             vmdata = p.get('vmdata_str', '') or p.get('vmdata', '')
@@ -897,7 +1171,8 @@ def _validate_control_channel(
             if vmdata_len > 256:
                 s.add(Severity.ERROR, "9.4",
                       f"VendorSpecificInfo VMTYPE=0 VMDATA={vmdata_len} bytes; SHALL be ≤ 256",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.VSI_VMDATA_LENGTH)
 
     # ------------------------------------------------------------------ §9.6 — VendorSpecificQuery/Return
     # Skip payload checks for encrypted messages.
@@ -910,7 +1185,8 @@ def _validate_control_channel(
     if len(returns) < len(queries):
         s.add(Severity.ERROR, "9.6",
               f"Receiver sent {len(returns)} VendorSpecificQueryReturn(s) "
-              f"for {len(queries)} VendorSpecificQuery message(s)")
+              f"for {len(queries)} VendorSpecificQuery message(s)",
+              requirement=Requirement.VSQ_ANSWERED)
 
     for idx, q in enumerate(queries):
         vqtype = q.msg.payload.get('vqtype', -1)
@@ -924,7 +1200,8 @@ def _validate_control_channel(
                     s.add(Severity.ERROR, "9.6",
                           f"VendorSpecificQueryReturn for reserved VQTYPE={vqtype}: "
                           f"VQSTS={vqsts}; SHALL be 255",
-                          packet_number=ret.packet_number)
+                          packet_number=ret.packet_number,
+                          requirement=Requirement.VSQ_VQSTS_RESERVED)
             # SHALL: VQTYPE=0 VQDATA SHALL be ≤ 256 bytes
             if vqtype == 0 and vqsts == 0:
                 vqdata = ret.msg.payload.get('vqdata_str', '')
@@ -933,7 +1210,8 @@ def _validate_control_channel(
                     s.add(Severity.ERROR, "9.6",
                           f"VendorSpecificQueryReturn VQTYPE=0 VQDATA={vqdata_len} bytes; "
                           "SHALL be ≤ 256",
-                          packet_number=ret.packet_number)
+                          packet_number=ret.packet_number,
+                          requirement=Requirement.VSQR_VQDATA_LENGTH)
             # SHALL: CID in QueryReturn SHALL match Query CID for VQTYPE 16-255
             if vqtype >= 16:
                 ret_cid = ret.msg.payload.get('cid', '')
@@ -941,7 +1219,8 @@ def _validate_control_channel(
                     s.add(Severity.ERROR, "9.6",
                           f"VendorSpecificQueryReturn CID={ret_cid} does not match "
                           f"Query CID={q_cid} for VQTYPE={vqtype}",
-                          packet_number=ret.packet_number)
+                          packet_number=ret.packet_number,
+                          requirement=Requirement.VSQR_CID)
 
     # ------------------------------------------------------------------ §9.12 — USB Enter Sleep / WoL
     # Skip payload-dependent checks when encrypted.
@@ -967,7 +1246,8 @@ def _validate_control_channel(
             s.add(Severity.ERROR, "9.12",
                   "Sender sent messages after USB Enter Sleep with WoL enabled; "
                   "SHALL close all connections",
-                  packet_number=after_sleep[0].packet_number)
+                  packet_number=after_sleep[0].packet_number,
+                  requirement=Requirement.SLEEP_CLOSE)
 
     # ------------------------------------------------------------------ §9.3 — Heartbeat DATA
     hbeat_msgs = [m for m in sender_msgs if m.msg.msg_type_enum == MsgType.HEARTBEAT]
@@ -975,7 +1255,8 @@ def _validate_control_channel(
         if len(cm.msg.data) != 0:
             s.add(Severity.ERROR, "9.3",
                   f"Heartbeat DATA is {len(cm.msg.data)} bytes; SHALL be empty (0 bytes)",
-                  packet_number=cm.packet_number)
+                  packet_number=cm.packet_number,
+                  requirement=Requirement.HEARTBEAT_EMPTY)
 
     # ------------------------------------------------------------------ §9.11 — USBWakeupControl
     for cm in wol_ctrl_msgs:
@@ -983,7 +1264,8 @@ def _validate_control_channel(
         if wakectrl not in (0, 1):
             s.add(Severity.ERROR, "9.11",
                   f"USBWakeupControl WAKECTRL={wakectrl}; SHALL be 0 or 1",
-                  packet_number=cm.packet_number)
+                  packet_number=cm.packet_number,
+                  requirement=Requirement.WAKECTRL_VALUE)
 
     # ------------------------------------------------------------------ §11 — Heartbeat timing
     ctrl.heartbeat_times = [m.timestamp for m in hbeat_msgs]
@@ -1000,11 +1282,13 @@ def _validate_control_channel(
                         s.add(Severity.ERROR, "11",
                               f"Heartbeat gap {gap:.2f}s exceeds 2× period "
                               f"({deadline:.2f}s); Sender is considered unresponsive",
-                              packet_number=hbeat_msgs[i].packet_number)
+                              packet_number=hbeat_msgs[i].packet_number,
+                              requirement=Requirement.HEARTBEAT_GAP_MAX)
                     elif gap > period * 1.1:
                         s.add(Severity.WARNING, "11",
                               f"Heartbeat gap {gap:.2f}s > 1.1 × period ({period:.2f}s)",
-                              packet_number=hbeat_msgs[i].packet_number)
+                              packet_number=hbeat_msgs[i].packet_number,
+                              requirement=Requirement.HEARTBEAT_GAP_JITTER)
 
     # ------------------------------------------------------------------ §12 — Encryption
     if not encrypted:
@@ -1013,15 +1297,18 @@ def _validate_control_channel(
             if m.ctr != 0:
                 s.add(Severity.ERROR, "12",
                       f"{m.msg_type_name}: CTR=0x{m.ctr:016X} SHALL be 0 when encryption disabled",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CLEAR_CTR_ZERO)
             if m.key_version != 0:
                 s.add(Severity.ERROR, "12",
                       f"{m.msg_type_name}: KEYVERSION=0x{m.key_version:08X} SHALL be 0 when encryption disabled",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CLEAR_KEYVERSION_ZERO)
             if m.mac != b'\x00' * 8:
                 s.add(Severity.ERROR, "12",
                       f"{m.msg_type_name}: MAC SHALL be 0 when encryption disabled",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CLEAR_MAC_ZERO)
     else:
         # ---------------------------------------------------------------- §12 — CTR monotonicity
         _check_ctr_monotonic(s, sender_msgs, "Sender->Receiver (control)")
@@ -1053,7 +1340,8 @@ def _check_keyversion_consistency(
                 s.add(Severity.ERROR, "12",
                       f"{channel_label} {direction_label} {cm.msg.msg_type_name}: "
                       "KEYVERSION=0x00000000 SHALL be non-zero when encryption is used",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.KEYVERSION_NONZERO_CONSISTENT)
             kv_set.add(kv)
         kv_nonzero = {v for v in kv_set if v != 0}
         if len(kv_nonzero) > 1:
@@ -1067,7 +1355,8 @@ def _check_keyversion_consistency(
                 vals = f"{head}, ... ({len(sorted_kvs) - 5} more) ..., {tail}"
             s.add(Severity.ERROR, "12",
                   f"{channel_label} {direction_label}: Multiple KEYVERSION values "
-                  f"({vals}) in a single TCP session; SHALL be consistent")
+                  f"({vals}) in a single TCP session; SHALL be consistent",
+                  requirement=Requirement.KEYVERSION_NONZERO_CONSISTENT)
 
 
 def _check_ctr_monotonic(
@@ -1088,6 +1377,7 @@ def _check_ctr_monotonic(
                 f"is not greater than previous CTR=0x{prev_ctr:016X}; "
                 "SHALL be strictly increasing",
                 packet_number=cm.packet_number,
+                requirement=Requirement.CTR_MONOTONIC,
             )
         prev_ctr = ctr
 
@@ -1112,7 +1402,8 @@ def _validate_data_channel(
     if not encrypted:
         s.add(Severity.WARNING, "9",
               f"Data channel (substreamid={channel.substreamid}): stream is not encrypted; "
-              "messages SHOULD be encrypted and authenticated (TR-10-13)")
+              "messages SHOULD be encrypted and authenticated (TR-10-13)",
+              requirement=Requirement.ENCRYPTED)
 
     # ------------------------------------------------------------------ §12 MAC verification
     if decrypted:
@@ -1120,13 +1411,15 @@ def _validate_data_channel(
             if cm.mac_ok is False:
                 s.add(Severity.ERROR, "12",
                       f"Data channel {cm.msg.msg_type_name}: CMAC-64 verification failed",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CMAC_VERIFIES)
 
     # ------------------------------------------------------------------ §8.3.1.2
     # SHALL: Sender sends USBStreamInformation as first message
     if not sender_msgs:
         s.add(Severity.ERROR, "8.3.1.2",
-              f"Data channel (substreamid={channel.substreamid}): no messages from Sender")
+              f"Data channel (substreamid={channel.substreamid}): no messages from Sender",
+              requirement=Requirement.DATA_FIRST_IS_STREAM_INFO)
         return
 
     first_sender = sender_msgs[0]
@@ -1134,7 +1427,8 @@ def _validate_data_channel(
         s.add(Severity.ERROR, "8.3.1.2",
               f"Data channel first Sender message is {first_sender.msg.msg_type_name}; "
               "expected USBStreamInformation",
-              packet_number=first_sender.packet_number)
+              packet_number=first_sender.packet_number,
+              requirement=Requirement.DATA_FIRST_IS_STREAM_INFO)
 
     channel.stream_info_pkt = first_sender.packet_number
 
@@ -1148,24 +1442,43 @@ def _validate_data_channel(
             s.add(Severity.ERROR, "9.7",
                   f"USBStreamInfo SUBSTREAMID=0x{substreamid:02X}: bit 0 SHALL be 0 "
                   "(Sender-to-Receiver direction)",
-                  packet_number=si.packet_number)
+                  packet_number=si.packet_number,
+                  requirement=Requirement.SSI_SUBSTREAMID_BIT0)
         # SHALL: bits 7:1 SHALL be in [1, 127] for data channels
         channel_id = (substreamid >> 1) & 0x7F
         if channel_id == 0:
             s.add(Severity.ERROR, "9.7",
                   f"USBStreamInfo SUBSTREAMID=0x{substreamid:02X}: channel bits 7:1 = 0 "
                   "is reserved for the Control channel; SHALL be 1-127 on data channels",
-                  packet_number=si.packet_number)
+                  packet_number=si.packet_number,
+                  requirement=Requirement.SSI_SUBSTREAMID_CHANNEL)
 
     # ------------------------------------------------------------------ §8.3.1.2
     # SHALL: Receiver sends USBStreamStatus on reception of USBStreamInformation
     uss = next((m for m in receiver_msgs
                 if m.msg.msg_type_enum == MsgType.USB_STREAM_STATUS), None)
     if not uss:
-        s.add(Severity.ERROR, "8.3.1.2",
-              f"Data channel (substreamid={channel.substreamid}): "
-              "Receiver did not send USBStreamStatus after USBStreamInformation",
-              packet_number=first_sender.packet_number)
+        # "Did not send" is decided once the connection ended without it, or once the capture
+        # ran UNANSWERED_GRACE_S past the USBStreamInformation; a connection still open when
+        # the capture ended sooner is a handshake in flight, not a missing message.
+        lc = channel.connection
+        close = lc.close if lc else None
+        waited = (s.capture_end - first_sender.timestamp
+                  if lc is not None and close is None and s.capture_end is not None else None)
+        if waited is None or waited >= UNANSWERED_GRACE_S:
+            detail = None
+            if close is not None:
+                detail = (f"the {_close_role(close, channel.sender_endpoint).value} closed the "
+                          f"connection ({close.kind.value}, pkt #{close.packet_number}) "
+                          f"{close.timestamp - first_sender.timestamp:.3f} s after "
+                          "USBStreamInformation")
+            elif waited is not None:
+                detail = f"connection still open; none in the {waited:.0f} s before the capture ended"
+            s.add(Severity.ERROR, "8.3.1.2",
+                  f"Data channel (substreamid={channel.substreamid}): "
+                  "Receiver did not send USBStreamStatus after USBStreamInformation",
+                  packet_number=first_sender.packet_number, detail=detail,
+                  requirement=Requirement.DATA_STATUS_RESPONSE)
     else:
         channel.stream_status_pkt = uss.packet_number
         if (not encrypted or decrypted) and not uss.msg.is_encrypted:
@@ -1180,7 +1493,8 @@ def _validate_data_channel(
         if cstatus not in (0, 255):
             s.add(Severity.ERROR, "9.8",
                   f"USBStreamStatus CSTATUS={cstatus} is reserved; SHALL be 0 (OK) or 255 (error)",
-                  packet_number=uss.packet_number)
+                  packet_number=uss.packet_number,
+                  requirement=Requirement.USS_CSTATUS)
 
     # ------------------------------------------------------------------ §8.3.1.2
     # SHALL: Receiver SHALL NOT send USB Submit messages before USBStreamStatus
@@ -1198,7 +1512,8 @@ def _validate_data_channel(
         for em in early_submits:
             s.add(Severity.ERROR, "8.3.1.2",
                   f"Data channel: Receiver sent {em.msg.msg_type_name} before USBStreamStatus",
-                  packet_number=em.packet_number)
+                  packet_number=em.packet_number,
+                  requirement=Requirement.DATA_NO_SUBMIT_BEFORE_STATUS)
 
     if not encrypted or decrypted:
         # -------------------------------------------------------------- 9.14–9.16
@@ -1235,7 +1550,8 @@ def _validate_data_channel(
                         s.add(Severity.ERROR, "9.14",
                               f"Data channel (substreamid={channel.substreamid}): "
                               f"{mt.name} SEQNUM={seqnum}; expected {expected_seqnum}",
-                              packet_number=cm.packet_number)
+                              packet_number=cm.packet_number,
+                              requirement=Requirement.SUBMIT_SEQNUM)
                         seqnum_error_reported = True
                 expected_seqnum = seqnum + 1
             # §9.14 / §9.22: Rsvd 3 bits in endpoint byte SHALL be 0
@@ -1263,7 +1579,8 @@ def _validate_data_channel(
                 if mt != MsgType.USB_CANCEL_SUBMIT_RETURN:
                     s.add(Severity.ERROR, "9.18",
                           f"Data channel: {mt.name} SEQNUM={seqnum} has no matching Submit",
-                          packet_number=cm.packet_number)
+                          packet_number=cm.packet_number,
+                          requirement=Requirement.RETURN_SEQNUM)
                 continue
 
             sub = pending_submits.pop(seqnum)
@@ -1273,14 +1590,16 @@ def _validate_data_channel(
                 s.add(Severity.ERROR, "9.18",
                       f"Data channel: {mt.name} SEQNUM={seqnum} ENDPOINT={p.get('endpoint')} "
                       f"does not match Submit ENDPOINT={sub.get('endpoint')}",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.RETURN_ENDPOINT)
 
             # SHALL: Return D matches Submit D
             if p.get('direction') != sub.get('direction'):
                 s.add(Severity.ERROR, "9.18",
                       f"Data channel: {mt.name} SEQNUM={seqnum} D={p.get('direction')} "
                       f"does not match Submit D={sub.get('direction')}",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.RETURN_DIRECTION)
 
             # ACTUALLENGTH / DIRECTION checks don't apply to ISO returns
             # (ISO uses per-packet descriptors instead).
@@ -1293,7 +1612,8 @@ def _validate_data_channel(
                           f"Data channel: {mt.name} SEQNUM={seqnum} "
                           f"ACTUALLENGTH={actual} "
                           "SHALL be 0 for OUT (D=0) transfers",
-                          packet_number=cm.packet_number)
+                          packet_number=cm.packet_number,
+                          requirement=Requirement.RETURN_OUT_LENGTH)
 
                 # SHALL: ACTUALLENGTH ≤ TRANSFERLENGTH when D = 1 (IN)
                 if direction == 1 and actual > sub.get('transferlength', 0):
@@ -1301,7 +1621,8 @@ def _validate_data_channel(
                           f"Data channel: {mt.name} SEQNUM={seqnum} "
                           f"ACTUALLENGTH={actual} exceeds "
                           f"TRANSFERLENGTH={sub.get('transferlength')}",
-                          packet_number=cm.packet_number)
+                          packet_number=cm.packet_number,
+                          requirement=Requirement.RETURN_IN_LENGTH)
 
             # SHALL: RSTATUS / ISOSTATUS is a known status code
             if mt == MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN:
@@ -1313,7 +1634,8 @@ def _validate_data_channel(
                               f"Data channel: {mt.name} SEQNUM={seqnum} "
                               f"ISOSTATUS[{idx}]=0x{iso_st:08X} "
                               "is not a defined status code",
-                              packet_number=cm.packet_number)
+                              packet_number=cm.packet_number,
+                              requirement=Requirement.STATUS_DEFINED)
             else:
                 rstatus = p.get('rstatus', -1)
                 if rstatus not in _VALID_STATUS_CODES:
@@ -1321,7 +1643,8 @@ def _validate_data_channel(
                           f"Data channel: {mt.name} SEQNUM={seqnum} "
                           f"RSTATUS=0x{rstatus:08X} "
                           "is not a defined status code; SHALL use UNKNOWN_ERROR",
-                          packet_number=cm.packet_number)
+                          packet_number=cm.packet_number,
+                          requirement=Requirement.STATUS_DEFINED)
 
         # -------------------------------------------------------------- §9.18, §9.19
         # SHALL: "USB Control Submit Return message shall be sent by a Sender in response to
@@ -1342,7 +1665,8 @@ def _validate_data_channel(
                       f"{sub['msg_type'].name} SEQNUM={seqnum} got no Submit Return "
                       f"(none in the {last_ts - sub['timestamp']:.0f} s that followed on this "
                       f"channel); a Sender SHALL send one in response",
-                      packet_number=sub['packet_number'])
+                      packet_number=sub['packet_number'],
+                      requirement=Requirement.RETURN_SENT)
 
         # -------------------------------------------------------------- 9.17
         # ISO_SUBMIT: when A=1 (ASAP), STARTFRAME SHALL be 0
@@ -1355,7 +1679,8 @@ def _validate_data_channel(
                       f"Data channel: ISO_SUBMIT ASAP=1 but "
                       f"STARTFRAME={p['startframe']} "
                       "(SHALL be 0 when A=1)",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.ISO_ASAP_STARTFRAME)
 
         # -------------------------------------------------------------- 9.17/9.21
         # STARTFRAME monotonicity: ISO_SUBMIT_RETURN STARTFRAME should be
@@ -1389,10 +1714,12 @@ def _validate_data_channel(
                 (r for r in reset_returns if r.packet_number > reset.packet_number), None
             )
             if next_return is None:
-                s.add(Severity.ERROR, "9.9",
+                # §9.10: "USB Stream Reset Return message shall be sent by the Sender"
+                s.add(Severity.ERROR, "9.10",
                       f"Data channel (substreamid={channel.substreamid}): "
                       "USBStreamReset sent but no USBStreamResetReturn received",
-                      packet_number=reset.packet_number)
+                      packet_number=reset.packet_number,
+                      requirement=Requirement.RESET_RETURN_SENT)
             else:
                 # Any Submit between reset and reset_return?
                 early = [
@@ -1407,7 +1734,8 @@ def _validate_data_channel(
                     s.add(Severity.ERROR, "9.9",
                           f"Data channel: Receiver sent {em.msg.msg_type_name} "
                           "after USBStreamReset and before USBStreamResetReturn",
-                          packet_number=em.packet_number)
+                          packet_number=em.packet_number,
+                          requirement=Requirement.RESET_WAIT)
 
         # -------------------------------------------------------------- §9.10
         for cm in reset_returns:
@@ -1415,7 +1743,8 @@ def _validate_data_channel(
                 s.add(Severity.ERROR, "9.10",
                       f"USBStreamResetReturn DATA is {len(cm.msg.data)} bytes; "
                       "SHALL be empty (0 bytes)",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.RESET_RETURN_EMPTY)
 
         # -------------------------------------------------------------- §9.15
         ctrl_submits = [m for m in receiver_msgs
@@ -1427,7 +1756,8 @@ def _validate_data_channel(
             if len(req_bytes) != 8:
                 s.add(Severity.ERROR, "9.15",
                       f"USB Control Submit USBDEVREQ is {len(req_bytes)} bytes; SHALL be 8",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CONTROL_USBDEVREQ_LENGTH)
 
         # -------------------------------------------------------------- §9.14-9.16, §9.18-9.20
         # SHALL: "Fields of the DATA field shall be as described in Table 10 / 11 / 14".
@@ -1462,7 +1792,8 @@ def _validate_data_channel(
                   f"({m_field}), in {len(bad)} of {size_checked[mt]} messages "
                   f"(first SEQNUM={p.get('seqnum')}); fields of the DATA field SHALL be as "
                   f"described in Table {table}",
-                  packet_number=first.packet_number)
+                  packet_number=first.packet_number,
+                  requirement=Requirement.RETURN_DATA_FIELDS if is_return else Requirement.SUBMIT_DATA_FIELDS)
 
         # -------------------------------------------------------------- §10
         for cm in sender_msgs:
@@ -1471,14 +1802,16 @@ def _validate_data_channel(
                 s.add(Severity.ERROR, "10",
                       f"S2R message {cm.msg.msg_type_name} substreamid=0x{ssid:02X} "
                       "is odd; SHALL be even for Sender-to-Receiver",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.SUBSTREAM_PARITY)
         for cm in receiver_msgs:
             ssid = cm.msg.payload.get('substreamid')
             if ssid is not None and ssid & 1 == 0:
                 s.add(Severity.ERROR, "10",
                       f"R2S message {cm.msg.msg_type_name} substreamid=0x{ssid:02X} "
                       "is even; SHALL be odd for Receiver-to-Sender",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.SUBSTREAM_PARITY)
 
     # ------------------------------------------------------------------ §12
     if not encrypted:
@@ -1487,15 +1820,18 @@ def _validate_data_channel(
             if m.ctr != 0:
                 s.add(Severity.ERROR, "12",
                       f"Data channel {m.msg_type_name}: CTR=0x{m.ctr:016X} SHALL be 0 when encryption disabled",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CLEAR_CTR_ZERO)
             if m.key_version != 0:
                 s.add(Severity.ERROR, "12",
                       f"Data channel {m.msg_type_name}: KEYVERSION=0x{m.key_version:08X} SHALL be 0 when encryption disabled",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CLEAR_KEYVERSION_ZERO)
             if m.mac != b'\x00' * 8:
                 s.add(Severity.ERROR, "12",
                       f"Data channel {m.msg_type_name}: MAC SHALL be 0x0000000000000000 when encryption disabled",
-                      packet_number=cm.packet_number)
+                      packet_number=cm.packet_number,
+                      requirement=Requirement.CLEAR_MAC_ZERO)
     else:
         # ---------------------------------------------------------------- §12 — CTR monotonicity
         _check_ctr_monotonic(s, sender_msgs,
@@ -1578,6 +1914,8 @@ def analyze_pcap(
                 print(f"  Auto-detected Sender port: {sender_port}")
 
     connections = _collect_streams(packets)
+    lifecycles = _collect_lifecycles(packets)
+    capture_end = max((float(p.time) for p in packets if hasattr(p, 'time')), default=None)
 
     if verbose:
         print(f"  Found {len(connections)} TCP stream(s)")
@@ -1624,13 +1962,23 @@ def analyze_pcap(
     # Group channels into sessions.
     # A session = one (Sender IP, Sender port) pair.
     # Multiple reconnects of the same Sender produce separate sessions.
+    # Channels are taken in the order their connections opened, so a SUBSTREAMID's
+    # latest connection is the one left in Session.data_channels.
+    def _opened_at(key: str, msgs: list[ChannelMessage]) -> float:
+        lc = lifecycles.get(key)
+        if lc is not None and lc.opened_at is not None:
+            return lc.opened_at
+        return min((m.timestamp for m in msgs), default=0.0)
+
+    def _in_open_order(ctype_wanted: str) -> list[tuple[str, tuple]]:
+        return sorted(((k, v) for k, v in channel_map.items() if v[0] == ctype_wanted),
+                      key=lambda kv: _opened_at(kv[0], kv[1][1] + kv[1][2]))
+
     sessions: list[Session] = []
     session_by_ctrl_key: dict[str, Session] = {}
 
     # Process control channels first to build sessions.
-    for key, (ctype, sender_msgs, receiver_msgs) in channel_map.items():
-        if ctype != 'control':
-            continue
+    for key, (ctype, sender_msgs, receiver_msgs) in _in_open_order('control'):
         src_ip, src_port = key.split('-')[0].rsplit(':', 1)
         sender_ip = sender_msgs[0].src_ip if sender_msgs else src_ip
 
@@ -1638,31 +1986,38 @@ def analyze_pcap(
             sender_ip=sender_ip,
             sender_port=sender_port or 0,
             receiver_ip='',
+            capture_end=capture_end,
         )
+        sess.control.key = key
+        sess.control.sender_endpoint = (f"{sender_msgs[0].src_ip}:{sender_msgs[0].src_port}"
+                                        if sender_msgs else '')
+        sess.control.connection = lifecycles.get(key)
         if mode_warning:
-            sess.add(Severity.ERROR, "12", mode_warning)
+            sess.add(Severity.ERROR, "12", mode_warning,
+                     requirement=Requirement.MODE_ALLOWED)
         sessions.append(sess)
         session_by_ctrl_key[key] = sess
 
         if verbose:
             print(f"\n  Control channel: {key}")
 
+        first_finding = len(sess.findings)
         _validate_control_channel(
             sess, sender_msgs, receiver_msgs,
             sender_cid, sender_sn, encrypted, decrypted,
         )
+        for f in sess.findings[first_finding:]:
+            f.connection = f.connection or sess.control.label
 
     # If no control channel found, create a default session.
     if not sessions:
-        sessions.append(Session(sender_ip='', sender_port=0, receiver_ip=''))
+        sessions.append(Session(sender_ip='', sender_port=0, receiver_ip='',
+                                capture_end=capture_end))
 
     default_session = sessions[0]
 
     # Process data channels.
-    for key, (ctype, sender_msgs, receiver_msgs) in channel_map.items():
-        if ctype != 'data':
-            continue
-
+    for key, (ctype, sender_msgs, receiver_msgs) in _in_open_order('data'):
         if verbose:
             print(f"\n  Data channel: {key}")
 
@@ -1675,34 +2030,39 @@ def analyze_pcap(
         usbspeed = first_info.msg.payload.get('usbspeed', 0) if first_info else 0
 
         channel = DataChannel(substreamid=substreamid, busid=busid, usbspeed=usbspeed)
+        channel.key = key
+        channel.sender_endpoint = (f"{sender_msgs[0].src_ip}:{sender_msgs[0].src_port}"
+                                   if sender_msgs else '')
+        channel.connection = lifecycles.get(key)
 
-        # Associate with the session whose Sender IP matches this data channel's sender.
-        # If there are multiple sessions (reconnect), pick the one with no existing
-        # data channel for this substreamid yet (FIFO assignment).
-        sender_ip_from_channel = sender_msgs[0].src_ip if sender_msgs else ''
-        sess = default_session
-        for candidate in sessions:
-            if candidate.sender_ip == sender_ip_from_channel and substreamid not in candidate.data_channels:
-                sess = candidate
-                break
+        sess = (_session_for_data_channel(sessions, channel,
+                                          _opened_at(key, sender_msgs + receiver_msgs))
+                or default_session)
+        channel.index = len(sess.data_connections) + 1
+        sess.data_connections.append(channel)
         sess.data_channels[substreamid] = channel
 
+        first_finding = len(sess.findings)
         if key in ssid_findings:
             hs_ssid, _pl_ssid, compliant = ssid_findings[key]
             if not compliant:
                 sess.add(Severity.WARNING, "9.7",
                          f"Data channel: handshake USB_STREAM_INFO encrypted "
                          f"with SSID=0x{hs_ssid:02X}, expected SSID=0x02 "
-                         "(data channels SHOULD use SSID 2/3 for handshake phase)")
+                         "(data channels SHOULD use SSID 2/3 for handshake phase)",
+                         requirement=Requirement.HANDSHAKE_SSID)
 
         _validate_data_channel(sess, channel, sender_msgs, receiver_msgs,
                                encrypted, decrypted)
+        for f in sess.findings[first_finding:]:
+            f.connection = f.connection or channel.label
 
     if mac_failures:
         for sess in sessions:
             sess.add(Severity.ERROR, "12",
                      f"{mac_failures} encrypted message(s) failed CMAC verification "
-                     "— cannot decrypt (wrong PSK or key derivation mismatch)")
+                     "— cannot decrypt (wrong PSK or key derivation mismatch)",
+                     requirement=Requirement.CMAC_VERIFIES)
 
     return sessions
 
@@ -1711,112 +2071,47 @@ def analyze_pcap(
 # Output formatters
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Complete normative requirements table — sourced from VSF TR-10-14 (2024-09-24).
-# Each entry: (section, "SHALL"|"SHOULD", short description)
-# Sections follow the document numbering exactly.
-# ---------------------------------------------------------------------------
-_ALL_REQUIREMENTS: list[tuple[str, str, str]] = [
-    # §8 — Communication channels
-    ("8.3.1.1",  "SHALL",  "Control channel: first Sender message is SenderConnectionInfo"),
-    ("8.3.1.1",  "SHALL",  "Control channel: Receiver sends SenderConnectionStatus in response"),
-    ("8.3.1.2",  "SHALL",  "Data channel: first Sender message is USBStreamInformation"),
-    ("8.3.1.2",  "SHALL",  "Data channel: Receiver sends USBStreamStatus in response"),
-    ("8.3.1.2",  "SHALL",  "Data channel: Receiver does not send USB Submit before USBStreamStatus"),
-    # §9 — Message framing
-    ("9",        "SHALL",  "Header Reserved 7 bits SHALL be 0 before transmission"),
-    ("9",        "SHOULD", "Messages SHOULD be encrypted and authenticated (TR-10-13)"),
-    # §9.1 — SenderConnectionInfo
-    ("9.1",      "SHALL",  "SenderConnectionInfo: MAVER=0 for this version"),
-    ("9.1",      "SHALL",  "SenderConnectionInfo: MIVER=0 for this version"),
-    ("9.1",      "SHALL",  "SenderConnectionInfo: Reserved byte SHALL be 0"),
-    ("9.1",      "SHALL",  "SenderConnectionInfo: CID matches expected value (if supplied)"),
-    ("9.1",      "SHALL",  "SenderConnectionInfo: SN matches expected value (if supplied)"),
-    # §9.2 — SenderConnectionStatus
-    ("9.2",      "SHALL",  "SenderConnectionStatus: Receiver version ≤ Sender version"),
-    ("9.2",      "SHALL",  "SenderConnectionStatus: HBEAT in [5, 30]"),
-    ("9.2",      "SHALL",  "SenderConnectionStatus: Rsvd 3 bits SHALL be 0"),
-    # §9.4 — VendorSpecificInfo
-    ("9.4",      "SHALL",  "VendorSpecificInfo VMTYPE 1-15 are reserved — SHALL NOT be used"),
-    ("9.4",      "SHALL",  "VendorSpecificInfo VMTYPE=0 VMDATA SHALL be ≤ 256 bytes"),
-    # §9.5/9.6 — VendorSpecificQuery/Return
-    ("9.6",      "SHALL",  "VendorSpecificQuery: Receiver SHALL answer every query"),
-    ("9.6",      "SHALL",  "VendorSpecificQuery: VQSTS=255 for unknown/reserved VQTYPE"),
-    ("9.6",      "SHALL",  "VendorSpecificQueryReturn VQDATA (VQTYPE=0) SHALL be ≤ 256 bytes"),
-    ("9.6",      "SHALL",  "VendorSpecificQueryReturn CID SHALL match Query CID for VQTYPE 16-255"),
-    # §9.3 — Heartbeat
-    ("9.3",      "SHALL",  "Heartbeat DATA SHALL be empty (0 bytes)"),
-    # §9.7 — USBStreamInfo
-    ("9.7",      "SHALL",  "USBStreamInfo SUBSTREAMID bit 0 SHALL be 0 (Sender-to-Receiver direction)"),
-    ("9.7",      "SHALL",  "USBStreamInfo SUBSTREAMID bits 7:1 SHALL be in [1, 127] for data channels"),
-    ("9.7",      "SHOULD", "Data-channel handshake (USB_STREAM_INFO/USB_STREAM_STATUS) "
-                            "SHOULD be encrypted with SSID 2 (S2R) / 3 (R2S)"),
-    # §9.8 — USBStreamStatus
-    ("9.8",      "SHALL",  "USBStreamStatus CSTATUS SHALL be 0 (OK) or 255 (error); others are reserved"),
-    # §9.9 — USBStreamReset
-    ("9.9",      "SHALL",  "USBStreamReset: Receiver SHALL wait for ResetReturn before further Submits"),
-    # §9.10 — USBStreamResetReturn
-    ("9.10",     "SHALL",  "USBStreamResetReturn DATA SHALL be empty (0 bytes)"),
-    # §9.11 — USBWakeupControl
-    ("9.11",     "SHALL",  "USBWakeupControl WAKECTRL SHALL be 0 or 1"),
-    # §9.12 — USB Enter Sleep
-    ("9.12",     "SHALL",  "USB Enter Sleep + WoL enabled: Sender SHALL close all connections"),
-    ("9.12",     "SHOULD", "USB Enter Sleep received: Receiver SHOULD NOT reconnect until WoL"),
-    # §9.15 — USB Control Submit
-    ("9.15",     "SHALL",  "USB Control Submit USBDEVREQ SHALL be 8 bytes"),
-    # §10 — Sub-stream multiplexing
-    ("10",       "SHALL",  "S2R substreamid SHALL be even; R2S substreamid SHALL be odd"),
-    # §9.14 — SEQNUM
-    ("9.14",     "SHALL",  "Submit SEQNUM starts at 0 and increments by 1 per Submit"),
-    ("9.14",     "SHALL",  "Submit Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0"),
-    ("9.14-16",  "SHALL",  "Control/Bulk/Interrupt Submit DATA SHALL be exactly its Table 10/11 fields (TRANFERDATA = TRANSFERLENGTH bytes on OUT, none on IN)"),
-    # §9.18 — Submit Return
-    ("9.18",     "SHALL",  "Submit Return SEQNUM SHALL match an outstanding Submit"),
-    ("9.18",     "SHALL",  "Submit Return ENDPOINT SHALL match Submit ENDPOINT"),
-    ("9.18",     "SHALL",  "Submit Return D SHALL match Submit D"),
-    ("9.18",     "SHALL",  "OUT (D=0) Submit Return: ACTUALLENGTH SHALL be 0"),
-    ("9.18",     "SHALL",  "IN (D=1) Submit Return: ACTUALLENGTH SHALL be ≤ TRANSFERLENGTH"),
-    ("9.18",     "SHALL",  "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0"),
-    ("9.18-20",  "SHALL",  "Control/Bulk/Interrupt Submit Return DATA SHALL be exactly its Table 14 fields (TRANFERDATA = ACTUALLENGTH bytes)"),
-    ("9.18-19/ret", "SHALL", "Every Control/Bulk Submit SHALL get its Submit Return (none after 10 s of further traffic = missing)"),
-    # §11 — Heartbeat
-    ("11",       "SHALL",  "Heartbeat gap SHALL be ≤ 2 × Heartbeat_Period (unresponsive threshold)"),
-    ("11",       "SHOULD", "Heartbeat gap SHOULD be ≤ 1.1 × Heartbeat_Period (jitter budget)"),
-    # §12 — Encryption
-    ("12",       "SHALL",  "Unencrypted mode: CTR SHALL be 0 on every message"),
-    ("12",       "SHALL",  "Unencrypted mode: KEYVERSION SHALL be 0 on every message"),
-    ("12",       "SHALL",  "Unencrypted mode: MAC SHALL be 0x0000000000000000 on every message"),
-    ("12",       "SHALL",  "Encrypted mode: CTR SHALL increase monotonically per direction"),
-    ("12",       "SHALL",  "Encrypted mode: KEYVERSION SHALL be non-zero and consistent within a TCP session"),
-    ("12",       "SHALL",  "Encrypted mode: CMAC-64 authentication SHALL verify correctly"),
-    ("12",       "SHALL",  "Mode SHALL be one of the allowed values (AES-128/256-CTR_CMAC-64-AAD, ECDH variants)"),
-    ("12",       "SHALL",  "Senders and Receivers SHALL support AES-128-CTR_CMAC-64-AAD mode"),
-    # §A.1 — Status codes
-    ("A.1",      "SHALL",  "RSTATUS / ISOSTATUS SHALL be a defined status code"),
-]
-
-
 def _print_requirements(sess: Session) -> None:
-    """Print a per-requirement pass/fail checklist for *sess*."""
-    failed_sections: set[str] = {f.section for f in sess.findings}
+    """
+    Print a per-requirement pass/fail checklist for *sess*.
+
+    A row fails on the findings that name it (Finding.requirement); a row no
+    finding names passes, which only means nothing in the capture contradicted
+    it. Findings that name no row are listed after the checklist.
+    """
+    def _finding_line(f: Finding, lead: str = f"    {'':22}") -> str:
+        pkt = f"pkt #{f.packet_number}" if f.packet_number else ""
+        return (f"{lead}↳ {f.severity.value}: {_printable(f.description)}"
+                + (f"  [{pkt}]" if pkt else ""))
 
     print("\n  Requirements checklist:")
     print(f"  {'§Section':<10} {'Level':<8} {'Status':<6}  Description")
     print(f"  {'-'*9:<10} {'-'*7:<8} {'-'*5:<6}  {'-'*50}")
 
-    for section, level, desc in _ALL_REQUIREMENTS:
-        matching = [f for f in sess.findings if f.section == section]
-        if matching:
-            status = "FAIL"
-            marker = "[FAIL]"
-        else:
-            status = "PASS"
-            marker = "[PASS]"
-        print(f"  §{section:<9} {level:<8} {marker:<8} {desc}")
+    for req in Requirement:
+        matching = [f for f in sess.findings if f.requirement is req]
+        marker = "[FAIL]" if matching else "[PASS]"
+        print(f"  §{req.section:<9} {req.level:<8} {marker:<8} {req.text}")
         for f in matching:
-            pkt = f"pkt #{f.packet_number}" if f.packet_number else ""
-            print(f"    {'':22}↳ {f.severity.value}: {f.description}"
-                  + (f"  [{pkt}]" if pkt else ""))
+            print(_finding_line(f))
+
+    unlisted = [f for f in sess.findings if f.requirement is None]
+    if unlisted:
+        print("\n  Findings not on the checklist:")
+        for f in unlisted:
+            print(_finding_line(f, lead=f"  §{f.section:<9} {'':17}"))
+
+
+def _printable(text: str) -> str:
+    """*text* with non-printable characters escaped (\\x00, \\x1b, ...).
+
+    Strings decoded from the wire (vendor strings, SN, BUSID) may carry NUL padding
+    or other control bytes; printed raw they corrupt the console output and make
+    tools such as grep treat the whole report as binary.
+    """
+    return "".join(c if c.isprintable()
+                   else f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}"
+                   for c in text)
 
 
 def _format_payload(payload: dict) -> str:
@@ -1837,7 +2132,7 @@ def _format_payload(payload: dict) -> str:
         elif isinstance(v, int):
             parts.append(f"{k}=0x{v:X}" if v > 9 else f"{k}={v}")
         elif isinstance(v, str) and v:
-            parts.append(f"{k}='{v}'")
+            parts.append(f"{k}='{_printable(v)}'")
         elif v is not None and v != b'' and v != '':
             parts.append(f"{k}={v!r}")
     return "  " + "  ".join(parts) if parts else ""
@@ -1881,6 +2176,82 @@ def _hid_report_lines(data: bytes, ep: Optional[usb_decode.EndpointInfo]) -> lis
         btns = f" buttons=[{', '.join(r.buttons)}]" if r.buttons else ""
         return [f"-> Mouse{btns} dx={r.dx:+d} dy={r.dy:+d} wheel={r.wheel:+d}"]
     return []
+
+
+def _short_endpoint(endpoint: str) -> str:
+    """'25.30.10.166:5802' -> '166:5802', the form the message listing uses."""
+    ip, _, port = endpoint.rpartition(':')
+    return f"{ip.split('.')[-1]}:{port}"
+
+
+def _session_data_connections(sess: Session) -> list[DataChannel]:
+    """Every data-channel connection of *sess*; data_channels for a Session built elsewhere."""
+    return sess.data_connections or list(sess.data_channels.values())
+
+
+def _session_t0(sess: Session) -> float:
+    """Time zero of a session's listings: its earliest message or SYN."""
+    data = _session_data_connections(sess)
+    stamps = [cm.timestamp for cm in sess.control.messages]
+    stamps += [cm.timestamp for ch in data for cm in ch.messages]
+    stamps += [lc.opened_at for lc in [sess.control.connection] + [ch.connection for ch in data]
+               if lc is not None and lc.opened_at is not None]
+    return min(stamps) if stamps else 0.0
+
+
+def _lifecycle_text(lc: Optional[TcpLifecycle], sender_endpoint: str, t0: float) -> str:
+    """One connection's opening and end, times in seconds from *t0*."""
+    if lc is None:
+        return "connection not seen"
+    opened = (f"opened {lc.opened_at - t0:.3f} s" if lc.syn
+              else f"open before the capture started (first segment {lc.first_timestamp - t0:.3f} s)")
+    close = lc.close
+    if close is None:
+        return f"{opened}, still open at end of capture (last segment {lc.last_timestamp - t0:.3f} s)"
+    return (f"{opened}, closed {close.timestamp - t0:.3f} s by the "
+            f"{_close_role(close, sender_endpoint).value} ({close.kind.value}, pkt #{close.packet_number}), "
+            f"lifetime {close.timestamp - lc.opened_at:.3f} s")
+
+
+def _print_reconnects(data: list[DataChannel]) -> None:
+    """One line per USB device whose data channel was opened more than once.
+
+    A device is known by the BUSID of its USBStreamInformation; channels whose
+    USBStreamInformation could not be read (encrypted, no key) are not grouped.
+    """
+    groups: dict[str, list[DataChannel]] = {}
+    for ch in data:
+        if ch.busid:
+            groups.setdefault(f"BusID '{_printable(ch.busid)}'", []).append(ch)
+
+    for name, chs in groups.items():
+        if len(chs) < 2:
+            continue
+        closed = [ch for ch in chs if ch.connection is not None and ch.connection.close is not None]
+        closers = collections.Counter(
+            f"{_close_role(ch.connection.close, ch.sender_endpoint).value} "
+            f"({ch.connection.close.kind.value})" for ch in closed)
+        parts = [f"{len(chs)} connections",
+                 "closed by " + ", ".join(f"{who} x{n}" for who, n in closers.most_common())
+                 if closers else "none closed"]
+        still_open = sum(1 for ch in chs if ch.connection is not None and ch.connection.close is None)
+        if still_open:
+            parts.append(f"{still_open} open at end of capture")
+        lifetimes = [ch.connection.close.timestamp - ch.connection.opened_at for ch in closed
+                     if ch.connection.opened_at is not None]
+        if lifetimes:
+            parts.append(f"lifetimes {min(lifetimes):.3f}-{max(lifetimes):.3f} s "
+                         f"(median {statistics.median(lifetimes):.3f} s)")
+        gaps = [nxt.connection.opened_at - prev.connection.close.timestamp
+                for prev, nxt in zip(chs, chs[1:])
+                if prev.connection is not None and prev.connection.close is not None
+                and nxt.connection is not None and nxt.connection.opened_at is not None]
+        reopened = [g for g in gaps if g >= 0]
+        if reopened:
+            parts.append(f"reopened {min(reopened):.3f}-{max(reopened):.3f} s after the previous close")
+        if len(reopened) < len(gaps):
+            parts.append(f"{len(gaps) - len(reopened)} opened before the previous one closed")
+        print(f"    {name}: " + "; ".join(parts))
 
 
 def _print_messages(sess: Session, decode_usb: bool = False) -> None:
@@ -1938,42 +2309,58 @@ def _print_messages(sess: Session, decode_usb: bool = False) -> None:
                 lines.extend(_hid_report_lines(data, hid_endpoints.get(p.get('endpoint'))))
         return lines
 
-    # Reference time (t0): earliest message timestamp across the whole session,
+    # Reference time (t0): earliest message or SYN across the whole session,
     # so the Time(ms) column is comparable across the control and data channels.
-    all_ts = [cm.timestamp
-              for msgs in ([sess.control.messages]
-                           + [ch.messages for ch in sess.data_channels.values()])
-              for cm in msgs]
-    t0 = min(all_ts) if all_ts else 0.0
+    t0 = _session_t0(sess)
 
-    def _dump(label: str, messages: list[ChannelMessage]) -> None:
+    def _dump(label: str, messages: list[ChannelMessage],
+              lc: Optional[TcpLifecycle] = None, key: str = '', sender_endpoint: str = '') -> None:
         if not messages:
             print(f"\n  {label}: (no messages)")
             return
+        # The connection's SYN, FIN and RST are listed among the messages, in packet order.
+        events = ([lc.syn] if lc and lc.syn else []) + (lc.fins if lc else []) + ([lc.rst] if lc and lc.rst else [])
+        rows: list[tuple[int, int, float, object]] = [
+            (cm.packet_number, 0, cm.timestamp, cm) for cm in messages]
+        rows += [(ev.packet_number, -1 if ev.kind == TcpEventKind.SYN else 1, ev.timestamp, ev)
+                 for ev in events]
+        rows.sort(key=lambda r: (r[0], r[1]))
         print(f"\n  {label}  ({len(messages)} messages)")
         print(f"  {'#Pkt':<6} {'Time(ms)':>11} {'Dir':<30} {'Type':<38} {'Len':>6}  Payload")
         print(f"  {'-'*5:<6} {'-'*11:>11} {'-'*30:<30} {'-'*37:<38} {'-'*6}  {'-'*50}")
         setup_by_seqnum: dict[int, dict] = {}
         hid_endpoints: dict[int, usb_decode.EndpointInfo] = {}
-        for cm in messages:
+        for pkt, _order, ts, item in rows:
+            t_ms = (ts - t0) * 1000.0
+            if isinstance(item, TcpEvent):
+                peer = next((e for e in key.split('-') if e != item.endpoint), '')
+                direction = f"{_short_endpoint(item.endpoint)}->{_short_endpoint(peer)}"
+                kind = f"TCP {item.kind.value}"
+                if item.kind != TcpEventKind.SYN:
+                    kind += f" ({_close_role(item, sender_endpoint).value})"
+                print(f"  {pkt:<6} {t_ms:>11.3f} {direction:<30} {kind:<38} {'':>6}")
+                continue
+            cm = item
             m = cm.msg
             src_short = f"{cm.src_ip.split('.')[-1]}:{cm.src_port}"
             dst_short = f"{cm.dst_ip.split('.')[-1]}:{cm.dst_port}"
             direction = f"{src_short}->{dst_short}"
-            t_ms = (cm.timestamp - t0) * 1000.0
             payload_str = _format_payload(m.payload)
             print(f"  {cm.packet_number:<6} {t_ms:>11.3f} {direction:<30} {m.msg_type_name:<38} {m.length:>6}{payload_str}")
             if decode_usb:
                 for line in _usb_annotations(m, setup_by_seqnum, hid_endpoints):
                     print(f"  {'':6} {'':11} {'':30} {line}")
 
-    _dump("Control channel", sess.control.messages)
-    for substreamid, ch in sess.data_channels.items():
+    ctrl = sess.control
+    _dump("Control channel", ctrl.messages, ctrl.connection, ctrl.key, ctrl.sender_endpoint)
+    for ch in _session_data_connections(sess):
         speed = (usb.UsbSpeed(ch.usbspeed).name
                  if ch.usbspeed in usb.UsbSpeed._value2member_map_ else str(ch.usbspeed))
+        number = f" #{ch.index}" if ch.index else ""
         _dump(
-            f"Data channel  SubstreamID=0x{substreamid:02X}  BusID='{ch.busid}'  Speed={speed}",
-            ch.messages,
+            f"Data channel{number}  SubstreamID=0x{ch.substreamid:02X}  "
+            f"BusID='{_printable(ch.busid)}'  Speed={speed}",
+            ch.messages, ch.connection, ch.key, ch.sender_endpoint,
         )
 
 
@@ -1983,19 +2370,56 @@ def _print_session(sess: Session, verbose: bool, show_messages: bool = False,
     print(f"Session: Sender={sess.sender_ip}:{sess.sender_port}")
     if sess.control.sender_info:
         info = sess.control.sender_info
-        print(f"  Sender  CID={info.get('cid','?')}  SN='{info.get('sn','?')}'")
+        print(f"  Sender  CID={info.get('cid','?')}  SN='{_printable(str(info.get('sn','?')))}'")
     if sess.control.receiver_status:
         sts = sess.control.receiver_status
-        print(f"  Receiver CID={sts.get('cid','?')}  SN='{sts.get('sn','?')}'  "
+        print(f"  Receiver CID={sts.get('cid','?')}  SN='{_printable(str(sts.get('sn','?')))}'  "
               f"HBEAT={sts.get('hbeat','?')}  Port={sts.get('port','?')}")
-    print(f"  Data channels: {len(sess.data_channels)}")
-    for substreamid, ch in sess.data_channels.items():
-        print(f"    SubstreamID=0x{substreamid:02X}  BusID='{ch.busid}'  "
-              f"Speed={usb.UsbSpeed(ch.usbspeed).name if ch.usbspeed in usb.UsbSpeed._value2member_map_ else ch.usbspeed}  "
-              f"Messages={len(ch.messages)}")
+    data = _session_data_connections(sess)
+    t0 = _session_t0(sess)
+    ctrl = sess.control
+    if ctrl.key:
+        print(f"  Control channel: {ctrl.receiver_endpoint} -> {ctrl.sender_endpoint}  "
+              f"{_lifecycle_text(ctrl.connection, ctrl.sender_endpoint, t0)}")
+    identified = [ch for ch in data if ch.busid]
+    unidentified = len(data) - len(identified)
+    print(f"  Data channels: {len(data)} connection(s), "
+          f"{len({ch.substreamid for ch in identified})} SubstreamID(s)"
+          + (f", {unidentified} not identified (USBStreamInformation not readable)"
+             if unidentified else "")
+          + ("  (times in s from the session's first segment)" if data else ""))
+    if data:
+        print(f"    {'#':>3} {'Opened':>9} {'Closed':>9} {'Lifetime':>9}  {'Closed by':<15} "
+              f"{'Status':<6} {'SSID':<5} {'BusID':<12} {'Speed':<11} {'Msgs':>6}  Sender -> Receiver")
+        for ch in data:
+            lc = ch.connection
+            opened = (lc.opened_at if lc is not None
+                      else (ch.messages[0].timestamp if ch.messages else None))
+            close = lc.close if lc is not None else None
+            # '<': the connection opened before the capture started; the time is its first segment.
+            before = '<' if lc is not None and lc.syn is None else ''
+            opened_s = f"{before}{opened - t0:.3f}".rjust(9) if opened is not None else f"{'?':>9}"
+            closed_s = f"{close.timestamp - t0:9.3f}" if close else f"{'-':>9}"
+            life_s = (f"{close.timestamp - opened:9.3f}" if close and opened is not None
+                      else f"{'-':>9}")
+            if close is not None:
+                closed_by = f"{_close_role(close, ch.sender_endpoint).value} ({close.kind.value})"
+            else:
+                closed_by = "open at end" if lc is not None else "not seen"
+            status = ("none" if ch.stream_status_pkt is None
+                      else "OK" if ch.stream_status_ok else "error")
+            speed = (usb.UsbSpeed(ch.usbspeed).name
+                     if ch.usbspeed in usb.UsbSpeed._value2member_map_ else str(ch.usbspeed))
+            busid = f"'{_printable(ch.busid)}'"
+            print(f"    {ch.index:>3} {opened_s} {closed_s} {life_s}  {closed_by:<15} {status:<6} "
+                  f"0x{ch.substreamid:02X}  {busid:<12} {speed:<11} {len(ch.messages):>6}  "
+                  f"{ch.sender_endpoint} -> {ch.receiver_endpoint}")
+        if any(ch.connection is not None and ch.connection.syn is None for ch in data):
+            print("    < opened before the capture started (time of its first segment)")
+        _print_reconnects(data)
 
     ctrl_msgs = len(sess.control.messages)
-    data_msgs = sum(len(ch.messages) for ch in sess.data_channels.values())
+    data_msgs = sum(len(ch.messages) for ch in data)
     print(f"  Control messages: {ctrl_msgs}  Data messages (total): {data_msgs}")
 
     errors   = [f for f in sess.findings if f.severity == Severity.ERROR]
@@ -2016,17 +2440,59 @@ def _print_session(sess: Session, verbose: bool, show_messages: bool = False,
         _print_requirements(sess)
 
 
+def _lifecycle_json(lc: Optional[TcpLifecycle], sender_endpoint: str) -> Optional[dict]:
+    """A connection's opening and end; timestamps are the capture's own clock."""
+    if lc is None:
+        return None
+    close = lc.close
+    return {
+        'opened_at': lc.opened_at,
+        'syn_packet': lc.syn.packet_number if lc.syn else None,
+        'closed_at': close.timestamp if close else None,
+        'close_packet': close.packet_number if close else None,
+        'close_kind': close.kind.value if close else None,
+        'closed_by': _close_role(close, sender_endpoint).value if close else None,
+        'lifetime_s': (close.timestamp - lc.opened_at
+                       if close and lc.opened_at is not None else None),
+        'last_segment_at': lc.last_timestamp,
+    }
+
+
 def _sessions_to_json(sessions: list[Session]) -> dict:
     out = []
     for sess in sessions:
         errors   = [f for f in sess.findings if f.severity == Severity.ERROR]
         warnings = [f for f in sess.findings if f.severity == Severity.WARNING]
+        ctrl = sess.control
 
         out.append({
             'sender_ip': sess.sender_ip,
             'sender_port': sess.sender_port,
             'sender_info': sess.control.sender_info,
             'receiver_status': sess.control.receiver_status,
+            'capture_end': sess.capture_end,
+            'control_connection': ({
+                'receiver': ctrl.receiver_endpoint,
+                'sender': ctrl.sender_endpoint,
+                'lifecycle': _lifecycle_json(ctrl.connection, ctrl.sender_endpoint),
+            } if ctrl.key else None),
+            # Every data-channel TCP connection, in the order they opened.
+            'data_connections': [
+                {
+                    'index': ch.index,
+                    'sender': ch.sender_endpoint,
+                    'receiver': ch.receiver_endpoint,
+                    'substreamid': ch.substreamid,
+                    'busid': ch.busid,
+                    'usbspeed': ch.usbspeed,
+                    'message_count': len(ch.messages),
+                    'stream_status_seen': ch.stream_status_pkt is not None,
+                    'stream_status_ok': ch.stream_status_ok,
+                    'lifecycle': _lifecycle_json(ch.connection, ch.sender_endpoint),
+                }
+                for ch in sess.data_connections
+            ],
+            # The latest data-channel connection per SUBSTREAMID (see data_connections).
             'data_channels': [
                 {
                     'substreamid': ch.substreamid,
@@ -2045,6 +2511,8 @@ def _sessions_to_json(sessions: list[Session]) -> dict:
                     'description': f.description,
                     'packet_number': f.packet_number,
                     'detail': f.detail,
+                    'connection': f.connection,
+                    'requirement': f.requirement.name if f.requirement else None,
                 }
                 for f in sess.findings
             ],
