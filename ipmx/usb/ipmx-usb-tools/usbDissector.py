@@ -33,6 +33,7 @@ import collections
 import json
 import math
 import statistics
+import struct
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -74,6 +75,8 @@ class Severity(str, Enum):
     ERROR   = "ERROR"    # SHALL violation
     WARNING = "WARNING"  # SHOULD violation
     INFO    = "INFO"
+    DIAG    = "DIAG"     # core USB 2.0 rule not met (--diagnose); TR-10-14 does not mandate it,
+                         # so it is never an error, a warning or a reason to stop
 
 
 class Requirement(Enum):
@@ -168,6 +171,45 @@ class Requirement(Enum):
         self.text = text
 
 
+class Diagnostic(Enum):
+    """
+    The USB 2.0 diagnostics (--diagnose): core Chapter 9 rules a data channel's
+    traffic can be checked against. TR-10-14 is based on USB 2.0 (§1) but does not
+    say which of these a Receiver or Sender must honour across IPMX, so a breach
+    is reported as DIAG and never fails a capture.
+
+    Each rule is judged per data-channel connection from what that connection
+    itself shows: a rule that depends on the device's state applies only once the
+    stream has established that state (a USB Stream Reset, a SET_CONFIGURATION),
+    never from what the device behind the Sender might be. Levels follow the USB
+    2.0 wording: SHALL for "must"/"shall", SHOULD for "should", UNSPEC for
+    "behavior … is not specified", IMPLIED where the rule follows from a
+    definition without a keyword.
+    """
+    CONFIGURE_BEFORE_USE  = ("USB2 9.2.3",   "SHALL",   "Interrupt, bulk and isochronous transfers only after a successful "
+                                                        "SET_CONFIGURATION on the connection")
+    CONFIGURATION_VALUE   = ("USB2 9.4.7",   "SHALL",   "SET_CONFIGURATION value is 0 or the bConfigurationValue of a "
+                                                        "configuration descriptor returned on the connection")
+    CONFIGURATION_FIELDS  = ("USB2 9.4.7",   "UNSPEC",  "SET_CONFIGURATION wIndex, wLength and wValue high byte are zero")
+    ADDRESS_WHEN_CONFIGURED = ("USB2 9.4.6", "UNSPEC",  "No SET_ADDRESS once the connection has configured the device")
+    CONFIGURED_ONLY       = ("USB2 9.4",     "SHALL",   "Requests valid only in the Configured state are not sent while "
+                                                        "the connection has left the device unconfigured")
+    OTHER_SPEED_ORDER     = ("USB2 9.6.2",   "SHALL",   "other_speed_configuration requested only after a successful "
+                                                        "device_qualifier")
+    OTHER_SPEED_USB1      = ("USB2 9.2.6.6", "SHOULD",  "No other_speed request to a device whose bcdUSB is below 0x0200")
+    STRING_LANGID         = ("USB2 9.6.7",   "IMPLIED", "String descriptors requested with a LANGID listed by string "
+                                                        "descriptor 0 of the connection")
+    DESCRIPTOR_INDEX      = ("USB2 9.4.3",   "SHALL",   "Descriptor index 0 for standard descriptors other than "
+                                                        "configuration and string; configuration index below "
+                                                        "bNumConfigurations")
+    DESCRIPTOR_WINDEX     = ("USB2 9.4.3",   "SHALL",   "wIndex 0 on standard descriptor requests other than string")
+
+    def __init__(self, section: str, level: str, text: str) -> None:
+        self.section = section
+        self.level = level
+        self.text = text
+
+
 @dataclass
 class Finding:
     severity: Severity
@@ -176,7 +218,7 @@ class Finding:
     packet_number: Optional[int] = None
     detail: Optional[str] = None
     connection: Optional[str] = None   # label of the TCP connection it was found on, if any
-    requirement: Optional[Requirement] = None   # the checklist row its check enforces, if any
+    requirement: Optional[Enum] = None   # the Requirement or Diagnostic row its check enforces
 
     def __str__(self) -> str:
         pkt = f" [pkt #{self.packet_number}]" if self.packet_number else ""
@@ -329,10 +371,11 @@ class Session:
     data_connections: list[DataChannel] = field(default_factory=list)    # in the order they opened
     findings: list[Finding] = field(default_factory=list)
     capture_end: Optional[float] = None       # timestamp of the capture's last packet
+    diagnosed: bool = False                   # the USB 2.0 diagnostics ran (--diagnose)
 
     def add(self, severity: Severity, section: str, description: str,
             packet_number: int = None, detail: str = None,
-            requirement: Optional[Requirement] = None) -> None:
+            requirement: Optional[Enum] = None) -> None:
         self.findings.append(Finding(severity, section, description, packet_number, detail,
                                      requirement=requirement))
 
@@ -1517,11 +1560,9 @@ def _validate_data_channel(
 
     if not encrypted or decrypted:
         # -------------------------------------------------------------- 9.14–9.16
-        # SEQNUM tracking: two-pass approach.
-        # Pass 1: collect all Submits from receiver_msgs (in order).
-        # Pass 2: for each Submit Return from sender_msgs, validate against its Submit.
-        # This avoids ordering ambiguity when messages share the same packet_number
-        # (i.e. all came from a single reassembled block).
+        # SEQNUM tracking: two passes.
+        # Pass 1: the Submits' SEQNUM sequence, in the order the Receiver sent them.
+        # Pass 2: each Submit Return against the Submit it answers, in capture order.
         # Skipped entirely when encrypted (payload is opaque ciphertext).
 
         submit_return_map = {
@@ -1532,10 +1573,9 @@ def _validate_data_channel(
             MsgType.USB_CANCEL_SUBMIT:             MsgType.USB_CANCEL_SUBMIT_RETURN,
         }
 
-        # Pass 1: index all Submits by SEQNUM
+        # Pass 1: the SEQNUM sequence of the Submits.
         # Cancel Submit is excluded from SEQNUM sequence checking because its
         # SEQNUM references an already-issued transfer (not a new one).
-        pending_submits: dict[int, dict] = {}
         expected_seqnum = 0
         seqnum_error_reported = False
         for cm in receiver_msgs:
@@ -1556,26 +1596,40 @@ def _validate_data_channel(
                 expected_seqnum = seqnum + 1
             # §9.14 / §9.22: Rsvd 3 bits in endpoint byte SHALL be 0
             _check_endpoint_rsvd_bits(s, cm, "submit")
-            pending_submits[seqnum] = {
-                'msg_type': mt,
-                'endpoint': p.get('endpoint'),
-                'direction': p.get('direction'),
-                'transferlength': p.get('transferlength') or 0,
-                'packet_number': cm.packet_number,
-                'timestamp': cm.timestamp,
-            }
 
-        # Pass 2: validate Submit Returns from sender_msgs
+        # Pass 2: each Submit Return, in capture order, answers the earliest still-unanswered
+        # Submit of its own type (§9.19-9.20: a Return is sent "in response to" a Submit of that
+        # type; §9.23 for Cancel) and SEQNUM (Table 14) sent before it on this channel - once.
+        # A Return of a Submit made on another connection, or one arriving before its Submit,
+        # answers none. Where capture order cannot tell (same packet and timestamp), a Submit is
+        # taken as sent first, so an unknown order never makes a Return unmatched.
         return_types = set(submit_return_map.values())
-        for cm in sender_msgs:
+        receiver_ids = {id(cm) for cm in receiver_msgs}
+        outstanding: dict[tuple, list[dict]] = {}    # (Return type, SEQNUM) -> Submits, oldest first
+        for cm in sorted(all_msgs, key=lambda m: (m.packet_number, m.timestamp,
+                                                   0 if id(m) in receiver_ids else 1)):
             mt = cm.msg.msg_type_enum
             p = cm.msg.payload
-            if not p or mt not in return_types:
+            if not p:
+                continue
+            seqnum = p.get('seqnum', -1)
+            if id(cm) in receiver_ids:
+                if mt in submit_return_map:
+                    outstanding.setdefault((submit_return_map[mt], seqnum), []).append({
+                        'msg_type': mt,
+                        'endpoint': p.get('endpoint'),
+                        'direction': p.get('direction'),
+                        'transferlength': p.get('transferlength') or 0,
+                        'packet_number': cm.packet_number,
+                        'timestamp': cm.timestamp,
+                    })
+                continue
+            if mt not in return_types:
                 continue
             # §9.18/§9.23: Rsvd 3 bits in endpoint byte SHALL be 0
             _check_endpoint_rsvd_bits(s, cm, "return")
-            seqnum = p.get('seqnum', -1)
-            if seqnum not in pending_submits:
+            waiting = outstanding.get((mt, seqnum))
+            if not waiting:
                 if mt != MsgType.USB_CANCEL_SUBMIT_RETURN:
                     s.add(Severity.ERROR, "9.18",
                           f"Data channel: {mt.name} SEQNUM={seqnum} has no matching Submit",
@@ -1583,7 +1637,7 @@ def _validate_data_channel(
                           requirement=Requirement.RETURN_SEQNUM)
                 continue
 
-            sub = pending_submits.pop(seqnum)
+            sub = waiting.pop(0)
 
             # SHALL: Return ENDPOINT matches Submit ENDPOINT
             if p.get('endpoint') != sub.get('endpoint'):
@@ -1655,7 +1709,9 @@ def _validate_data_channel(
         # stays pending until the device has data.
         if all_msgs:
             last_ts = max(m.timestamp for m in all_msgs)
-            for seqnum, sub in sorted(pending_submits.items()):
+            unanswered = sorted(((seq, sub) for (_rt, seq), subs in outstanding.items() for sub in subs),
+                                key=lambda e: e[1]['packet_number'])
+            for seqnum, sub in unanswered:
                 if sub['msg_type'] not in (MsgType.USB_CONTROL_SUBMIT, MsgType.USB_BULK_SUBMIT):
                     continue
                 if last_ts - sub['timestamp'] < UNANSWERED_GRACE_S:
@@ -1845,6 +1901,201 @@ def _validate_data_channel(
 
 
 # ---------------------------------------------------------------------------
+# USB 2.0 diagnostics (--diagnose)
+# ---------------------------------------------------------------------------
+
+class DeviceState(str, Enum):
+    """A data channel's device state as the connection's own traffic establishes it (USB 2.0 §9.1.1)."""
+    UNKNOWN    = "unknown"      # nothing on the connection has set it: the device behind the
+                                # Sender may already be addressed and configured by its own host
+    DEFAULT    = "default"      # after a USB Stream Reset and its Return (TR-10-14 §9.9 → USB 2.0 reset)
+    ADDRESS    = "address"
+    CONFIGURED = "configured"
+
+
+#: Data transfers that use a device's function rather than its default control pipe.
+_FUNCTION_SUBMITS = {MsgType.USB_INTERRUPT_SUBMIT, MsgType.USB_BULK_SUBMIT,
+                     MsgType.USB_ISOCHRONOUS_SUBMIT}
+
+
+def _diagnose_data_channel(
+    session: Session,
+    channel: DataChannel,
+    sender_msgs: list[ChannelMessage],
+    receiver_msgs: list[ChannelMessage],
+) -> None:
+    """
+    Check one data-channel connection against the core USB 2.0 rules of Diagnostic and
+    add a DIAG finding per rule breached, with its occurrences and first packet.
+
+    The Receiver side plays the USB host and the Sender side the device. Requests are
+    judged in packet order against the device state the connection has established so
+    far; a Submit Return applies its request's effect (SET_CONFIGURATION, SET_ADDRESS,
+    the descriptors learnt) where it arrives. A connection whose payloads cannot be
+    read (encrypted without a key) is not diagnosed.
+    """
+    rows = sorted([(cm.packet_number, 0, cm) for cm in receiver_msgs]
+                  + [(cm.packet_number, 1, cm) for cm in sender_msgs],
+                  key=lambda r: (r[0], r[1]))
+    if any(cm.msg.payload.get('_encrypted') for _p, _o, cm in rows):
+        return
+    # The rules weigh a request against what came before it on the connection, so a
+    # connection is judged only when the capture holds its start (USB Stream Information).
+    first = min(sender_msgs, key=lambda cm: cm.packet_number, default=None)
+    if first is None or first.msg.msg_type_enum != MsgType.USB_STREAM_INFO:
+        return
+
+    state = DeviceState.UNKNOWN
+    configured = False                 # a SET_CONFIGURATION(non-zero) succeeded on the connection
+    config_values: set[int] = set()    # bConfigurationValue of each configuration descriptor returned
+    num_configurations: Optional[int] = None
+    bcd_usb: Optional[int] = None
+    langids: Optional[set[int]] = None  # None until string descriptor 0 was answered
+    qualifier_ok = False
+    pending: dict[int, tuple] = {}     # SEQNUM -> (bmRequestType, bRequest, wValue, wIndex, wLength)
+    breaches: dict[Diagnostic, list] = {}
+
+    def breach(rule: Diagnostic, cm: ChannelMessage, what: str) -> None:
+        breaches.setdefault(rule, []).append((cm.packet_number, what))
+
+    def returned_bytes(cm: ChannelMessage) -> bytes:
+        # The bytes the Sender returned. ACTUALLENGTH is checked by the validators; using
+        # what is present keeps a wrong ACTUALLENGTH from hiding the descriptor here.
+        p = cm.msg.payload
+        if p.get('transferdata'):
+            return bytes.fromhex(p['transferdata'])
+        return bytes(cm.msg.data[12:])
+
+    for _pkt, _order, cm in rows:
+        mt = cm.msg.msg_type_enum
+        p = cm.msg.payload
+
+        if mt == MsgType.USB_STREAM_RESET_RETURN:
+            state, configured = DeviceState.DEFAULT, False
+            continue
+        if mt in _FUNCTION_SUBMITS:
+            if not configured:
+                breach(Diagnostic.CONFIGURE_BEFORE_USE, cm,
+                       f"{mt.name} on endpoint {p.get('endpoint')} with no successful "
+                       "SET_CONFIGURATION before it on this connection")
+            continue
+
+        if mt == MsgType.USB_CONTROL_SUBMIT and p.get('usbdevreq'):
+            req = bytes.fromhex(p['usbdevreq'])
+            if len(req) < 8:
+                continue
+            bm, breq = req[0], req[1]
+            wvalue, windex, wlength = struct.unpack_from('<HHH', req, 2)
+            pending[p.get('seqnum')] = (bm, breq, wvalue, windex, wlength)
+            if (bm >> 5) & 0x03 != usb_decode.RequestType.STANDARD:
+                continue
+            recipient = bm & 0x1F
+            std = usb_decode.UsbStandardRequest
+
+            if breq == std.SET_CONFIGURATION and bm == 0x00:
+                value = wvalue & 0xFF
+                if wvalue >> 8 or windex or wlength:
+                    breach(Diagnostic.CONFIGURATION_FIELDS, cm,
+                           f"wValue=0x{wvalue:04X} wIndex=0x{windex:04X} wLength={wlength}")
+                if value and value not in config_values:
+                    known = (f"descriptors returned value(s) {sorted(config_values)}" if config_values
+                             else "no configuration descriptor was returned on this connection")
+                    breach(Diagnostic.CONFIGURATION_VALUE, cm, f"value {value}; {known}")
+            elif breq == std.SET_ADDRESS and bm == 0x00:
+                if state == DeviceState.CONFIGURED:
+                    breach(Diagnostic.ADDRESS_WHEN_CONFIGURED, cm,
+                           f"SET_ADDRESS({wvalue & 0x7F}) after SET_CONFIGURATION")
+
+            if state in (DeviceState.DEFAULT, DeviceState.ADDRESS):
+                configured_only = (
+                    (breq == std.GET_INTERFACE and bm == 0x81)
+                    or (breq == std.SET_INTERFACE and bm == 0x01)
+                    or (breq == std.SYNCH_FRAME and bm == 0x82)
+                    or (breq in (std.CLEAR_FEATURE, std.SET_FEATURE, std.GET_STATUS)
+                        and (recipient == usb_decode.Recipient.INTERFACE
+                             or (recipient == usb_decode.Recipient.ENDPOINT and windex & 0x0F))))
+                if configured_only:
+                    name = std(breq).name if breq in std._value2member_map_ else f"bRequest 0x{breq:02X}"
+                    breach(Diagnostic.CONFIGURED_ONLY, cm,
+                           f"{name} (bmRequestType 0x{bm:02X}) in the {state.value} state")
+
+            if breq == std.GET_DESCRIPTOR and bm == 0x80:
+                dtype, index = wvalue >> 8, wvalue & 0xFF
+                dt = usb_decode.DescriptorType
+                if dtype == dt.OTHER_SPEED_CONFIG and not qualifier_ok:
+                    breach(Diagnostic.OTHER_SPEED_ORDER, cm,
+                           "other_speed_configuration with no successful device_qualifier before it")
+                if dtype in (dt.DEVICE_QUALIFIER, dt.OTHER_SPEED_CONFIG) and bcd_usb is not None \
+                        and bcd_usb < 0x0200:
+                    breach(Diagnostic.OTHER_SPEED_USB1, cm,
+                           f"descriptor type 0x{dtype:02X} to a device with bcdUSB 0x{bcd_usb:04X}")
+                if dtype == dt.STRING:
+                    if index and langids is None:
+                        breach(Diagnostic.STRING_LANGID, cm,
+                               f"string {index} with LANGID 0x{windex:04X}; string descriptor 0 "
+                               "was not read before it on this connection")
+                    elif index and windex not in langids:
+                        listed = (", ".join(f"0x{l:04X}" for l in sorted(langids)) if langids
+                                  else "none (the device returned no LANGID array)")
+                        breach(Diagnostic.STRING_LANGID, cm,
+                               f"string {index} with LANGID 0x{windex:04X}; listed: {listed}")
+                else:
+                    if windex:
+                        breach(Diagnostic.DESCRIPTOR_WINDEX, cm,
+                               f"descriptor type 0x{dtype:02X} with wIndex 0x{windex:04X}")
+                    if dtype == dt.CONFIGURATION:
+                        if num_configurations is not None and index >= num_configurations:
+                            breach(Diagnostic.DESCRIPTOR_INDEX, cm,
+                                   f"configuration index {index} with bNumConfigurations "
+                                   f"{num_configurations}")
+                    elif index:
+                        breach(Diagnostic.DESCRIPTOR_INDEX, cm,
+                               f"descriptor type 0x{dtype:02X} with index {index}")
+            continue
+
+        if mt == MsgType.USB_CONTROL_SUBMIT_RETURN:
+            req = pending.pop(p.get('seqnum'), None)
+            if req is None:
+                continue
+            bm, breq, wvalue, windex, wlength = req
+            ok = p.get('rstatus') == StatusCode.SUCCESS
+            std = usb_decode.UsbStandardRequest
+            if bm == 0x80 and breq == std.GET_DESCRIPTOR:
+                dtype, index = wvalue >> 8, wvalue & 0xFF
+                dt = usb_decode.DescriptorType
+                data = returned_bytes(cm) if ok else b''
+                if dtype == dt.DEVICE and len(data) >= 4:
+                    bcd_usb = struct.unpack_from('<H', data, 2)[0]
+                    if len(data) >= 18:
+                        num_configurations = data[17]
+                elif dtype == dt.CONFIGURATION and len(data) >= 6 and data[1] == dt.CONFIGURATION:
+                    config_values.add(data[5])
+                elif dtype == dt.STRING and index == 0:
+                    # A device without strings must not return a LANGID array (§9.6.7).
+                    langids = ({int.from_bytes(data[i:i + 2], 'little')
+                                for i in range(2, min(len(data), data[0]) - 1, 2)}
+                               if len(data) >= 4 and data[1] == dt.STRING else set())
+                elif dtype == dt.DEVICE_QUALIFIER and ok:
+                    qualifier_ok = True
+            elif ok and bm == 0x00 and breq == std.SET_CONFIGURATION:
+                if wvalue & 0xFF:
+                    state, configured = DeviceState.CONFIGURED, True
+                elif state != DeviceState.UNKNOWN:
+                    state, configured = DeviceState.ADDRESS, False
+            elif ok and bm == 0x00 and breq == std.SET_ADDRESS:
+                if state == DeviceState.DEFAULT and wvalue & 0x7F:
+                    state = DeviceState.ADDRESS
+                elif state == DeviceState.ADDRESS and not wvalue & 0x7F:
+                    state = DeviceState.DEFAULT
+
+    for rule, hits in breaches.items():
+        first_pkt, first_what = hits[0]
+        session.add(Severity.DIAG, rule.section, rule.text, packet_number=first_pkt,
+                    detail=f"{len(hits)} occurrence(s) on this connection; first: {first_what}",
+                    requirement=rule)
+
+
+# ---------------------------------------------------------------------------
 # Main analysis entry point
 # ---------------------------------------------------------------------------
 
@@ -1860,6 +2111,7 @@ def analyze_pcap(
     pep_params: Optional[pepmod.PepParams] = None,
     iv_mode_s2r: pepmod.IvMode = pepmod.IvMode.SPEC,
     iv_mode_r2s: pepmod.IvMode = pepmod.IvMode.SPEC,
+    diagnose: bool = False,
 ) -> list[Session]:
     """
     Analyze a PCAP file and return a list of :class:`Session` objects,
@@ -1868,6 +2120,9 @@ def analyze_pcap(
     When *pep_params* is provided with a PSK, encrypted messages are
     decrypted transparently and field-level validation is applied to
     the decrypted content.
+
+    With *diagnose*, each data channel is also checked against the core USB 2.0
+    rules of :class:`Diagnostic`; breaches are DIAG findings, never errors.
     """
     _reset_framing_stats()
 
@@ -2054,6 +2309,8 @@ def analyze_pcap(
 
         _validate_data_channel(sess, channel, sender_msgs, receiver_msgs,
                                encrypted, decrypted)
+        if diagnose:
+            _diagnose_data_channel(sess, channel, sender_msgs, receiver_msgs)
         for f in sess.findings[first_finding:]:
             f.connection = f.connection or channel.label
 
@@ -2063,6 +2320,9 @@ def analyze_pcap(
                      f"{mac_failures} encrypted message(s) failed CMAC verification "
                      "— cannot decrypt (wrong PSK or key derivation mismatch)",
                      requirement=Requirement.CMAC_VERIFIES)
+
+    for sess in sessions:
+        sess.diagnosed = diagnose
 
     return sessions
 
@@ -2100,6 +2360,17 @@ def _print_requirements(sess: Session) -> None:
         print("\n  Findings not on the checklist:")
         for f in unlisted:
             print(_finding_line(f, lead=f"  §{f.section:<9} {'':17}"))
+
+    if sess.diagnosed:
+        print("\n  USB 2.0 diagnostics (--diagnose; DIAG is never a failure):")
+        print(f"  {'§Section':<14} {'Level':<8} {'Status':<6}  Description")
+        print(f"  {'-'*13:<14} {'-'*7:<8} {'-'*5:<6}  {'-'*50}")
+        for rule in Diagnostic:
+            matching = [f for f in sess.findings if f.requirement is rule]
+            marker = "[DIAG]" if matching else "[ ok ]"
+            print(f"  §{rule.section:<13} {rule.level:<8} {marker:<8} {rule.text}")
+            for f in matching:
+                print(_finding_line(f, lead=f"    {'':26}") + (f"  [{f.connection}]" if f.connection else ""))
 
 
 def _printable(text: str) -> str:
@@ -2425,8 +2696,10 @@ def _print_session(sess: Session, verbose: bool, show_messages: bool = False,
     errors   = [f for f in sess.findings if f.severity == Severity.ERROR]
     warnings = [f for f in sess.findings if f.severity == Severity.WARNING]
     infos    = [f for f in sess.findings if f.severity == Severity.INFO]
+    diags    = [f for f in sess.findings if f.severity == Severity.DIAG]
 
-    print(f"\n  Findings: {len(errors)} error(s), {len(warnings)} warning(s), {len(infos)} info(s)")
+    print(f"\n  Findings: {len(errors)} error(s), {len(warnings)} warning(s), {len(infos)} info(s)"
+          + (f", {len(diags)} diag(s)" if sess.diagnosed else ""))
     for finding in sess.findings:
         print(str(finding))
 
@@ -2518,6 +2791,8 @@ def _sessions_to_json(sessions: list[Session]) -> dict:
             ],
             'error_count': len(errors),
             'warning_count': len(warnings),
+            'diagnosed': sess.diagnosed,
+            'diag_count': sum(1 for f in sess.findings if f.severity == Severity.DIAG),
         })
     return {'sessions': out}
 
@@ -2558,6 +2833,11 @@ def main() -> int:
                         help="Write results to JSON file")
     parser.add_argument('--quiet', '-q', action='store_true',
                         help="Suppress console output")
+    parser.add_argument('--diagnose', action='store_true',
+                        help="Also check each data channel against core USB 2.0 Chapter 9 rules "
+                             "(configure before use, SET_CONFIGURATION/SET_ADDRESS, descriptor "
+                             "and LANGID requests). Breaches are reported as DIAG: TR-10-14 does "
+                             "not mandate them, so they never count as errors or change the exit code")
 
     pepmod.add_pep_args(parser)
 
@@ -2609,6 +2889,7 @@ def main() -> int:
         pep_params=pep_params,
         iv_mode_s2r=iv_s2r_mode,
         iv_mode_r2s=iv_r2s_mode,
+        diagnose=args.diagnose,
     )
 
     if not args.quiet:
@@ -2624,8 +2905,10 @@ def main() -> int:
 
         total_errors   = sum(len([f for f in s.findings if f.severity == Severity.ERROR]) for s in sessions)
         total_warnings = sum(len([f for f in s.findings if f.severity == Severity.WARNING]) for s in sessions)
+        total_diags    = sum(len([f for f in s.findings if f.severity == Severity.DIAG]) for s in sessions)
         print(f"\n{'='*72}")
-        print(f"Total: {len(sessions)} session(s), {total_errors} error(s), {total_warnings} warning(s)")
+        print(f"Total: {len(sessions)} session(s), {total_errors} error(s), {total_warnings} warning(s)"
+              + (f", {total_diags} diag(s)" if args.diagnose else ""))
 
     if args.output:
         result = _sessions_to_json(sessions)

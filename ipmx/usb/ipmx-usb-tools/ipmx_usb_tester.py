@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import collections
 import enum
 import logging
 import os
@@ -67,14 +68,14 @@ import ipmx_pep as pepmod
 # The byte-level parsing lives here so usbDissector.py decodes captured reports
 # the same way this live harness decodes them; this tool only formats the result.
 from usb_decode import (
-    HidBootProtocol, EndpointInfo, parse_config_descriptor, classify_hid,
+    HidBootProtocol, EndpointInfo, TransferType, parse_config_descriptor, classify_hid,
     decode_keyboard_report, decode_mouse_report,
 )
 
 # Import validation infrastructure from the dissector
 from usbDissector import (
     Severity, Finding, ChannelMessage, DataChannel, ControlChannel, Session,
-    _validate_control_channel, _validate_data_channel, _heartbeat_period,
+    _validate_control_channel, _validate_data_channel, _diagnose_data_channel, _heartbeat_period,
 )
 
 
@@ -93,6 +94,10 @@ DEFAULT_HBEAT_INDEX = 10          # period ≈ 47 s
 DEFAULT_OUR_CID = bytes.fromhex("0050C2")
 DEFAULT_OUR_SN = "IPMX-USB-Tester-v1"
 DEFAULT_POLL_INTERVAL_MS = 8      # 1 ms USB frame = 8 polls/frame for HID
+
+#: The messages that answer one Submit each, identified by its SEQNUM (Table 14).
+_SUBMIT_RETURNS = {MsgType.USB_CONTROL_SUBMIT_RETURN, MsgType.USB_BULK_SUBMIT_RETURN,
+                   MsgType.USB_INTERRUPT_SUBMIT_RETURN, MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN}
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +120,13 @@ USB_DT_HID       = 0x21
 USB_DT_REPORT    = 0x22
 
 USB_CLASS_HID  = 0x03
+USB_HID_SUBCLASS_BOOT = 0x01   # bInterfaceSubClass: Boot Interface Subclass (HID 1.11 §4.2)
+
+
+class HidProtocol(enum.IntEnum):
+    """SET_PROTOCOL wValue (HID 1.11 §7.2.6)."""
+    BOOT   = 0
+    REPORT = 1
 
 
 # HidBootProtocol is imported from usb_decode (shared with usbDissector.py).
@@ -135,12 +147,22 @@ def _set_configuration_req(cfg: int) -> bytes:
     return struct.pack('<BBHHH', 0x00, USB_REQ_SET_CONFIGURATION, cfg, 0, 0)
 
 
-def _set_idle_req() -> bytes:
-    return struct.pack('<BBHHH', 0x21, USB_REQ_SET_IDLE, 0x0000, 0, 0)
+def _set_idle_req(interface: int) -> bytes:
+    """SET_IDLE(indefinite, all reports) to a HID interface (HID 1.11 §7.2.4: wIndex Interface)."""
+    return struct.pack('<BBHHH', 0x21, USB_REQ_SET_IDLE, 0x0000, interface, 0)
 
 
-def _set_protocol_req(protocol: int) -> bytes:
-    return struct.pack('<BBHHH', 0x21, USB_REQ_SET_PROTOCOL, protocol, 0, 0)
+def _set_protocol_req(protocol: HidProtocol, interface: int) -> bytes:
+    """SET_PROTOCOL to a HID interface (HID 1.11 §7.2.6: wIndex Interface)."""
+    return struct.pack('<BBHHH', 0x21, USB_REQ_SET_PROTOCOL, protocol, interface, 0)
+
+
+def _langids(string0: bytes) -> list[int]:
+    """The LANGIDs string descriptor 0 lists, in order (USB 2.0 §9.6.7, Table 9-15)."""
+    if len(string0) < 4 or string0[1] != USB_DT_STRING:
+        return []
+    end = min(len(string0), string0[0])
+    return [int.from_bytes(string0[i:i + 2], 'little') for i in range(2, end - 1, 2)]
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +174,26 @@ def _set_protocol_req(protocol: int) -> bytes:
 
 
 def _hid_interrupt_in(endpoints: list[EndpointInfo]) -> Optional[EndpointInfo]:
-    """Return the first interrupt IN endpoint, or None."""
+    """The interrupt IN endpoint to poll: a HID interface's when there is one, else the first
+    one, or None. Only alternate setting 0 counts: the tester sends no SET_INTERFACE, and
+    setting 0 is the one a device is in once configured (USB 2.0 §9.2.3)."""
+    candidates = [ep for ep in endpoints
+                  if ep.transfer_type == TransferType.INTERRUPT and ep.direction == 1
+                  and ep.iface_alt == 0]
+    hid = [ep for ep in candidates if ep.iface_class == USB_CLASS_HID]
+    return (hid or candidates or [None])[0]
+
+
+def _hid_interfaces(endpoints: list[EndpointInfo]) -> list[EndpointInfo]:
+    """One endpoint per HID interface of alternate setting 0, carrying that interface's
+    number, subclass and protocol (a HID interface always has an interrupt IN, HID 1.11 §4.4)."""
+    seen: set[int] = set()
+    interfaces: list[EndpointInfo] = []
     for ep in endpoints:
-        if ep.transfer_type == 3 and ep.direction == 1:
-            return ep
-    return None
+        if ep.iface_class == USB_CLASS_HID and ep.iface_alt == 0 and ep.iface_number not in seen:
+            seen.add(ep.iface_number)
+            interfaces.append(ep)
+    return interfaces
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +271,10 @@ class IpmxChannel:
                  capture: Optional[PcapCapture] = None):
         self._sock        = sock
         self._buf         = bytearray()
+        # [byte count, PCAP packet number] of each received chunk still in _buf (0: not in
+        # the capture), so a message is numbered by the packet that carried its first byte,
+        # as usbDissector.py numbers it when it reads the capture.
+        self._buf_pkts: collections.deque = collections.deque()
         self.local_ip     = local_ip
         self.local_port   = local_port
         self.remote_ip    = remote_ip
@@ -253,6 +294,7 @@ class IpmxChannel:
         self._kv_send: int = 0
         self.last_mac_ok: Optional[bool] = None
         self.last_recv_raw: Optional[bytes] = None
+        self.last_recv_pkt_num: int = 0     # PCAP packet number of the last message received
         self._mac_fail_count: int = 0
         self.closed: bool = False
 
@@ -361,6 +403,20 @@ class IpmxChannel:
         msg.key_version = kv
         return msg
 
+    def _take(self, length: int) -> tuple[bytes, int]:
+        """Remove the first *length* bytes of the buffer; return them and the PCAP packet
+        number of the chunk that carried the first of them."""
+        raw = bytes(self._buf[:length])
+        del self._buf[:length]
+        pkt_num = self._buf_pkts[0][1] if self._buf_pkts else 0
+        while length and self._buf_pkts:
+            n = min(length, self._buf_pkts[0][0])
+            self._buf_pkts[0][0] -= n
+            length -= n
+            if not self._buf_pkts[0][0]:
+                self._buf_pkts.popleft()
+        return raw, pkt_num
+
     def recv_msg(self, timeout: float = 30.0) -> Optional[IpmxUsbMessage]:
         """
         Block until one complete IPMX USB message is available and return it.
@@ -373,8 +429,7 @@ class IpmxChannel:
             if len(self._buf) >= usb.HEADER_SIZE:
                 length = usb.peek_length(bytes(self._buf))
                 if length is not None and len(self._buf) >= length:
-                    raw = bytes(self._buf[:length])
-                    del self._buf[:length]
+                    raw, self.last_recv_pkt_num = self._take(length)
 
                     ctr = struct.unpack_from('>Q', raw, 0)[0]
                     kv = struct.unpack_from('>I', raw, 8)[0]
@@ -402,12 +457,14 @@ class IpmxChannel:
                 self.closed = True
                 return None
 
+            pkt_num = 0
             if self._capture:
-                self._capture.record(
+                pkt_num = self._capture.record(
                     chunk, self.remote_ip, self.remote_port,
                     self.local_ip, self.local_port,
                 )
             self._buf.extend(chunk)
+            self._buf_pkts.append([len(chunk), pkt_num])
 
     def recv_raw(self, timeout: float = 30.0) -> Optional[bytes]:
         """Block until one complete raw IPMX message is available (no parsing/decryption)."""
@@ -416,10 +473,10 @@ class IpmxChannel:
             if len(self._buf) >= usb.HEADER_SIZE:
                 length = usb.peek_length(bytes(self._buf))
                 if length is not None and len(self._buf) >= length:
-                    raw = bytes(self._buf[:length])
-                    del self._buf[:length]
+                    raw, _ = self._take(length)
+                    self.last_recv_pkt_num = 0
                     if self._capture:
-                        self._capture.record(
+                        self.last_recv_pkt_num = self._capture.record(
                             raw, self.remote_ip, self.remote_port,
                             self.local_ip, self.local_port,
                         )
@@ -440,6 +497,7 @@ class IpmxChannel:
                 self.closed = True
                 return None
             self._buf.extend(chunk)
+            self._buf_pkts.append([len(chunk), 0])      # recorded message by message, above
 
     def close(self) -> None:
         try:
@@ -498,10 +556,11 @@ class IpmxReceiverSession:
         self.echo_version    = echo_version
         self.iv_swapn        = iv_swapn
         # Test options set by run_test() (see --strict-actuallength,
-        # --enumerate-in-sequence, --device-qualifier).
+        # --enumerate-in-sequence, --device-qualifier, --diagnose).
         self.strict_actuallength   = False
         self.enumerate_in_sequence = False
         self.device_qualifier      = False
+        self.diagnose              = False
         self.set_address           = SetAddressMode.UNIQUE
         self._next_address         = 1      # USB addresses 1..127, allocated per device
         self.enum_lock = threading.Lock()   # one channel enumerates at a time when in sequence
@@ -674,6 +733,9 @@ class IpmxReceiverSession:
                 encrypted=self.encrypted,
                 decrypted=decrypted,
             )
+            if self.diagnose:
+                _diagnose_data_channel(sess, channel, s_msgs, r_msgs)
+        sess.diagnosed = self.diagnose
         with self._lock:
             sess.findings.extend(self.tester_findings)
 
@@ -727,6 +789,7 @@ class IpmxReceiverSession:
         sess = self.session
         errors   = sum(1 for f in sess.findings if f.severity == Severity.ERROR)
         warnings = sum(1 for f in sess.findings if f.severity == Severity.WARNING)
+        diags    = sum(1 for f in sess.findings if f.severity == Severity.DIAG)
         print("\n" + "=" * 68)
         print("Final Validation Report")
         print("=" * 68)
@@ -734,7 +797,8 @@ class IpmxReceiverSession:
             print(str(f))
         if not sess.findings:
             print("  [OK] No violations found")
-        print(f"\nTotal: {errors} error(s), {warnings} warning(s)")
+        print(f"\nTotal: {errors} error(s), {warnings} warning(s)"
+              + (f", {diags} diag(s)" if self.diagnose else ""))
         # Any ERROR is a failed requirement; continuing past a non-fatal one never changes that.
         print(f"Result: {'FAIL' if errors else 'PASS'}")
 
@@ -960,7 +1024,8 @@ class ControlChannelClient:
 
         sess.record_ctrl_msg(msg, 'sender',
                              self._addr[0], self._addr[1],
-                             local_ip, local_port)
+                             local_ip, local_port,
+                             pkt_num=ch.last_recv_pkt_num)
         sender_maver = 0
         sender_miver = 0
         if not msg.payload.get('_encrypted'):
@@ -1075,7 +1140,8 @@ class ControlChannelClient:
 
             sess.record_ctrl_msg(msg, 'sender',
                                  self._addr[0], self._addr[1],
-                                 local_ip, local_port)
+                                 local_ip, local_port,
+                                 pkt_num=ch.last_recv_pkt_num)
 
             if mt == MsgType.HEARTBEAT:
                 last_hbeat = time.monotonic()
@@ -1223,6 +1289,7 @@ class DataChannelHandler:
         self._usbspeed: Optional[int] = None   # USBSPEED of the channel's USB Stream Information
         self._prev_hid: bytes = b''   # last HID report; used to suppress repeated reports
         self._warned_excess = False   # bytes past ACTUALLENGTH already reported on this channel
+        self._warned_stray = False    # a Return of no outstanding Submit already reported
         self._address: Optional[int] = None   # USB address given by SET_ADDRESS (unique mode)
 
     def shutdown(self) -> None:
@@ -1280,6 +1347,7 @@ class DataChannelHandler:
                     msg, self._substreamid, 'sender',
                     ch.remote_ip, ch.remote_port,
                     ch.local_ip, ch.local_port,
+                    pkt_num=ch.last_recv_pkt_num,
                 )
         return msg
 
@@ -1306,7 +1374,18 @@ class DataChannelHandler:
             # Table 10: every Submit sent takes the next SEQNUM, whether or not it is
             # answered - a timed-out Submit must not lend its number to the next one.
             self._seqnum += 1
-            ret = self._recv(timeout=10.0)
+            # The Return of this Submit, within 10 s; a Return of another SEQNUM is not it.
+            ret = None
+            deadline = time.monotonic() + 10.0
+            while ret is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                msg = self._recv(timeout=remaining)
+                if msg is None:
+                    break
+                if not self._answers_other_submit(msg, seq):
+                    ret = msg
             if ret is None:
                 if self._ch.closed:
                     self._session.warn(
@@ -1534,6 +1613,7 @@ class DataChannelHandler:
         sess.record_data_msg(
             msg, substreamid, 'sender',
             rip, rport, ch.local_ip, ch.local_port,
+            pkt_num=ch.last_recv_pkt_num,
         )
 
         # Step 2 — send USBStreamStatus with the handshake PEP (base=2,
@@ -1586,6 +1666,24 @@ class DataChannelHandler:
 
     def _sid(self) -> str:
         return f"0x{self._substreamid:02X}" if self._substreamid is not None else "?"
+
+    def _answers_other_submit(self, msg: IpmxUsbMessage, seq: int) -> bool:
+        """True for a Submit Return whose SEQNUM is not *seq*, the Submit this channel waits
+        on. A Submit Return answers the Submit whose SEQNUM it carries (§9.18), so such a
+        Return answers none of this channel's: it is not taken as the awaited one, and the
+        wait goes on. It is recorded like every message, so the validators report it."""
+        if msg.msg_type_enum not in _SUBMIT_RETURNS or msg.payload.get('_encrypted'):
+            return False
+        got = msg.payload.get('seqnum')
+        if got is None or got == seq:
+            return False
+        if not self._warned_stray:
+            self._warned_stray = True
+            self._session.warn(
+                f"Data channel {self._sid()}: {msg.msg_type_name} SEQNUM={got} answers no "
+                f"Submit outstanding on this channel (waiting on SEQNUM={seq}): ignored. A "
+                f"§9.18 violation the validators report; further ones are not printed")
+        return True
 
     def _return_data(self, ret: Optional[IpmxUsbMessage]) -> bytes:
         """The data a Submit Return carries: per Table 14, the ACTUALLENGTH bytes of
@@ -1712,9 +1810,11 @@ class DataChannelHandler:
 
         max_pkt0     = 8
         device_class = 0
-        num_strings  = 0
+        str_indexes: list[int] = []        # iManufacturer, iProduct, iSerialNumber that are set
         bcd_usb: Optional[int] = None
+        cfg_value: Optional[int] = None    # bConfigurationValue of the configuration descriptor
         int_ep: Optional[EndpointInfo] = None
+        hid_ifaces: list[EndpointInfo] = []
         fatal = False   # only set when Sender closes the connection
 
         # 1. GET_DESCRIPTOR(Device, 8) — learn bMaxPacketSize0
@@ -1754,7 +1854,8 @@ class DataChannelHandler:
             if _ok(ret):
                 raw_dev = _xfr(ret)
                 device_class = raw_dev[4]  if len(raw_dev) >= 5  else 0
-                num_strings  = raw_dev[14] if len(raw_dev) >= 15 else 0
+                # Table 9-8 offsets 14-16 are string indexes, 0 when the string is absent.
+                str_indexes  = list(dict.fromkeys(i for i in raw_dev[14:17] if i))
                 bcd_usb = struct.unpack_from('<H', raw_dev, 2)[0] if len(raw_dev) >= 4 else None
                 sess.log(f"    Device class=0x{device_class:02X}  "
                          f"data={raw_dev.hex() or '(empty)'}")
@@ -1777,6 +1878,8 @@ class DataChannelHandler:
                 if len(raw_cfg9) >= 4:
                     total_len = max(
                         struct.unpack_from('<H', raw_cfg9, 2)[0], 9)
+                if len(raw_cfg9) >= 6 and raw_cfg9[1] == USB_DT_CONFIG:
+                    cfg_value = raw_cfg9[5]
                 sess.log(f"    Config wTotalLength={total_len}  "
                          f"data={raw_cfg9.hex() or '(empty)'}")
             elif not fatal:
@@ -1792,32 +1895,70 @@ class DataChannelHandler:
                 raw_cfg = _xfr(ret)
                 endpoints = parse_config_descriptor(raw_cfg)
                 int_ep = _hid_interrupt_in(endpoints)
+                hid_ifaces = _hid_interfaces(endpoints)
+                if len(raw_cfg) >= 6 and raw_cfg[1] == USB_DT_CONFIG:
+                    cfg_value = raw_cfg[5]
                 sess.log(f"    Config descriptor: {len(endpoints)} endpoint(s)  "
                          f"interrupt_in={'yes' if int_ep else 'no'}  "
                          f"data={raw_cfg.hex() or '(empty)'}")
             elif not fatal:
                 sess.warn(f"GET_DESCRIPTOR(Config,{total_len}): {_status(ret)}")
 
-        # 6–8. String descriptors (best-effort)
-        if not fatal:
-            for idx in range(1, min(num_strings + 1, 4)):
-                self._ctrl_transfer(
-                    _get_descriptor_req(USB_DT_STRING, idx, 255, 0x0409), 255)
+        # 6–8. String descriptors (best-effort): string 0 lists the LANGIDs the device supports
+        #      (USB 2.0 §9.6.7); its iManufacturer, iProduct and iSerialNumber are read in one of
+        #      them, 0x0409 when listed. A device without strings has no index set and no list.
+        if not fatal and str_indexes:
+            ret = self._ctrl_transfer(_get_descriptor_req(USB_DT_STRING, 0, 255, 0), 255)
+            if ret is None and self._ch.closed:
+                fatal = True
+            langids = _langids(_xfr(ret)) if _ok(ret) else []
+            langid = 0x0409 if 0x0409 in langids else (langids[0] if langids else None)
+            if not fatal and langid is None:
+                sess.warn(f"String descriptor 0: {_status(ret) if not _ok(ret) else 'no LANGID'} "
+                          f"— strings {str_indexes} not read")
+            for idx in str_indexes if langid is not None else []:
+                if fatal:
+                    break
+                ret = self._ctrl_transfer(
+                    _get_descriptor_req(USB_DT_STRING, idx, 255, langid), 255)
+                if ret is None and self._ch.closed:
+                    fatal = True
 
-        # 9. SET_CONFIGURATION(1) — always attempt, even if descriptors failed
+        # 9. SET_CONFIGURATION — with the configuration descriptor's bConfigurationValue
+        #    (USB 2.0 §9.4.7). Always attempted, even if descriptors failed: then with 1.
+        configured = False
         if not fatal:
-            ret = self._ctrl_transfer(_set_configuration_req(1), 0)
+            value = cfg_value if cfg_value else 1
+            if not cfg_value:
+                sess.warn("SET_CONFIGURATION: no bConfigurationValue known — trying 1")
+            ret = self._ctrl_transfer(_set_configuration_req(value), 0)
             if ret is None and self._ch.closed:
                 fatal = True
             elif _ok(ret):
-                sess.log("    SET_CONFIGURATION(1): OK")
+                configured = True
+                sess.log(f"    SET_CONFIGURATION({value}): OK")
             elif ret is not None:
-                sess.warn(f"SET_CONFIGURATION(1): {_status(ret)}")
+                sess.warn(f"SET_CONFIGURATION({value}): {_status(ret)}")
+            if not fatal and not configured and int_ep is not None:
+                # Testing continues: USB 2.0 is not a TR-10-14 requirement (--diagnose: DIAG).
+                sess.warn("SET_CONFIGURATION did not succeed: the device is polled although "
+                          "it may not be configured (USB 2.0 §9.2.3)")
 
-        # 10–11. HID-specific: SET_IDLE + SET_PROTOCOL (boot protocol)
-        if not fatal and (device_class == USB_CLASS_HID or int_ep is not None):
-            self._ctrl_transfer(_set_idle_req(), 0)
-            self._ctrl_transfer(_set_protocol_req(0), 0)  # 0 = boot protocol
+        # 10–11. HID class requests, to each HID interface by its number (HID 1.11 §7.2):
+        #        SET_IDLE to all of them; SET_PROTOCOL(boot) only to the boot subclass, where
+        #        it is supported (§7.2.6) and where the poll decodes boot reports.
+        for iface in hid_ifaces:
+            if fatal:
+                break
+            ret = self._ctrl_transfer(_set_idle_req(iface.iface_number), 0)
+            if ret is None and self._ch.closed:
+                fatal = True
+                break
+            if iface.iface_subclass == USB_HID_SUBCLASS_BOOT:
+                ret = self._ctrl_transfer(
+                    _set_protocol_req(HidProtocol.BOOT, iface.iface_number), 0)
+                if ret is None and self._ch.closed:
+                    fatal = True
 
         if fatal:
             sess.warn("Enumeration aborted — Sender closed data channel")
@@ -1841,32 +1982,42 @@ class DataChannelHandler:
 
         while not self._stop.is_set():
             # Send INTERRUPT_SUBMIT
+            seq = self._seqnum
             self._send(usb.build_usb_interrupt_submit(
-                self._seqnum, ep.endpoint_num, ep.direction,
+                seq, ep.endpoint_num, ep.direction,
                 ep.interval, max_pkt,
             ))
             # Table 11: the next Submit takes the next SEQNUM whatever this one gets back.
             self._seqnum += 1
 
-            # Wait for INTERRUPT_SUBMIT_RETURN. An interrupt IN transfer completes only when
-            # the device has data, so a quiet endpoint (an absolute mouse that does not move)
-            # is normal: keep waiting while the test runs instead of abandoning the channel.
+            # Wait for this Submit's INTERRUPT_SUBMIT_RETURN. An interrupt IN transfer
+            # completes only when the device has data, so a quiet endpoint (an absolute mouse
+            # that does not move) is normal: keep waiting while the test runs instead of
+            # abandoning the channel. A Return of another SEQNUM, or a Cancel Submit Return
+            # (this tester sends no Cancel Submit), answers nothing outstanding here: the wait
+            # goes on, so the channel never has more than this one Submit outstanding.
             ret = None
             while ret is None and not self._stop.is_set() and not self._ch.closed:
-                ret = self._ch.recv_msg(timeout=1.0)
+                msg = self._ch.recv_msg(timeout=1.0)
+                if msg is None:
+                    continue
+                self._record_sender_msg(msg)
+                if self._answers_other_submit(msg, seq):
+                    continue
+                if msg.msg_type_enum == MsgType.USB_CANCEL_SUBMIT_RETURN:
+                    sess.log(f"  USB_CANCEL_SUBMIT_RETURN (seqnum="
+                             f"{msg.payload.get('seqnum', '?')}) for no Cancel Submit: ignored")
+                    continue
+                ret = msg
             if ret is None:
                 if self._ch.closed:
                     sess.warn("Sender closed the data channel with an INTERRUPT_SUBMIT pending")
                 break
 
-            self._record_sender_msg(ret)
             mt = ret.msg_type_enum
 
             if mt == MsgType.USB_STREAM_RESET:
                 return self._handle_stream_reset(ret)
-            if mt == MsgType.USB_CANCEL_SUBMIT_RETURN:
-                sess.log(f"  USB_CANCEL_SUBMIT_RETURN (seqnum={ret.payload.get('seqnum','?')})")
-                continue
             if mt == MsgType.USB_ENTER_SLEEP:
                 sess.log("  USB Enter Sleep on data channel — stopping")
                 self._stop.set()
@@ -1898,6 +2049,7 @@ class DataChannelHandler:
                 msg, self._substreamid, 'sender',
                 self._ch.remote_ip, self._ch.remote_port,
                 self._ch.local_ip, self._ch.local_port,
+                pkt_num=self._ch.last_recv_pkt_num,
             )
 
     def _handle_stream_reset(self, msg: 'IpmxUsbMessage') -> Optional[EndpointInfo]:
@@ -2146,6 +2298,7 @@ def run_test(
     device_qualifier: bool = False,
     set_address: SetAddressMode = SetAddressMode.UNIQUE,
     first_address: int = 1,
+    diagnose: bool = False,
 ) -> int:
     """
     Run the live Receiver test.  Blocks until duration expires or Ctrl-C.
@@ -2185,6 +2338,7 @@ def run_test(
     session.device_qualifier = device_qualifier
     session.set_address = set_address
     session._next_address = first_address
+    session.diagnose = diagnose
 
     stop_event = threading.Event()
 
@@ -2362,6 +2516,12 @@ Examples:
              "bytes past a non-zero ACTUALLENGTH continues with ACTUALLENGTH bytes.",
     )
     parser.add_argument(
+        '--diagnose', action='store_true', default=False,
+        help="Also check each data channel against core USB 2.0 Chapter 9 rules, as "
+             "usbDissector.py --diagnose does. Breaches are DIAG findings: TR-10-14 does not "
+             "mandate them, so they never fail the run or stop it.",
+    )
+    parser.add_argument(
         '--enumerate-in-sequence', action='store_true', default=False,
         help="Enumerate the data channels one at a time instead of all at once. "
              "TR-10-14 requires neither; use it to test further a Sender that fails "
@@ -2521,6 +2681,7 @@ Examples:
         device_qualifier      = args.device_qualifier,
         set_address           = args.set_address,
         first_address         = args.first_address,
+        diagnose              = args.diagnose,
         iv_swapn         = iv_swapn,
     ))
 

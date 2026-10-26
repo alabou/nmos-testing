@@ -471,6 +471,8 @@ class EndpointInfo:
     iface_class: int    = 0   # bInterfaceClass
     iface_subclass: int = 0   # bInterfaceSubClass (1 = Boot)
     iface_protocol: int = 0   # bInterfaceProtocol (see HidBootProtocol)
+    iface_number: int   = 0   # bInterfaceNumber: wIndex of requests to the interface
+    iface_alt: int      = 0   # bAlternateSetting; 0 is the setting a configured device starts in
 
 
 def parse_config_descriptor(data: bytes) -> list[EndpointInfo]:
@@ -481,7 +483,7 @@ def parse_config_descriptor(data: bytes) -> list[EndpointInfo]:
     GET_DESCRIPTOR response) simply yields no endpoints.
     """
     endpoints: list[EndpointInfo] = []
-    cur_class = cur_subclass = cur_protocol = 0
+    cur_class = cur_subclass = cur_protocol = cur_number = cur_alt = 0
     i = 0
     n = len(data)
     while i + 2 <= n:
@@ -490,6 +492,8 @@ def parse_config_descriptor(data: bytes) -> list[EndpointInfo]:
         if blength < 2 or i + blength > n:
             break
         if btype == DescriptorType.INTERFACE and blength >= 9:
+            cur_number   = data[i + 2]
+            cur_alt      = data[i + 3]
             cur_class    = data[i + 5]
             cur_subclass = data[i + 6]
             cur_protocol = data[i + 7]
@@ -508,6 +512,8 @@ def parse_config_descriptor(data: bytes) -> list[EndpointInfo]:
                 iface_class    = cur_class,
                 iface_subclass = cur_subclass,
                 iface_protocol = cur_protocol,
+                iface_number   = cur_number,
+                iface_alt      = cur_alt,
             ))
         i += blength
     return endpoints
