@@ -52,7 +52,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Collection, Optional
 
 try:
     from scapy.all import Ether, IP, TCP, PcapWriter
@@ -74,7 +74,8 @@ from usb_decode import (
 
 # Import validation infrastructure from the dissector
 from usbDissector import (
-    Severity, Finding, ChannelMessage, DataChannel, ControlChannel, Session,
+    Severity, Finding, ChannelMessage, DataChannel, ControlChannel, Session, ChannelRole,
+    sent_by_other_side,
     _validate_control_channel, _validate_data_channel, _diagnose_data_channel, _heartbeat_period,
 )
 
@@ -123,6 +124,13 @@ USB_CLASS_HID  = 0x03
 USB_HID_SUBCLASS_BOOT = 0x01   # bInterfaceSubClass: Boot Interface Subclass (HID 1.11 §4.2)
 
 
+class Verdict(enum.IntEnum):
+    """The run's result; its value is the process exit code."""
+    PASS       = 0
+    FAIL       = 1   # an ERROR: a requirement failed
+    NOT_TESTED = 2   # no session with the Sender (no SenderConnectionInfo), so nothing was tested
+
+
 class HidProtocol(enum.IntEnum):
     """SET_PROTOCOL wValue (HID 1.11 §7.2.6)."""
     BOOT   = 0
@@ -157,6 +165,23 @@ def _set_protocol_req(protocol: HidProtocol, interface: int) -> bytes:
     return struct.pack('<BBHHH', 0x21, USB_REQ_SET_PROTOCOL, protocol, interface, 0)
 
 
+def _ignore_receiver_message(sess: 'IpmxReceiverSession', msg: IpmxUsbMessage, where: str,
+                             warned: set[MsgType]) -> bool:
+    """True for a message the Sender sent although TR-10-14 assigns its type to the Receiver (a
+    USB Stream Reset, a Submit, ...): the tester takes no action on it and goes on. It is
+    recorded like every message, so the validators report it (MESSAGE_DIRECTION) and the run
+    FAILS. The first one of each type in *where* is printed; *warned* holds the types printed."""
+    other = sent_by_other_side(msg.msg_type_enum, ChannelRole.SENDER)
+    if other is None:
+        return False
+    if msg.msg_type_enum not in warned:
+        warned.add(msg.msg_type_enum)
+        sess.error(f"{where}: the Sender sent {msg.msg_type_name}, which §{other[1]} assigns to "
+                   f"the Receiver: ignored. A violation the validators report; further "
+                   f"{msg.msg_type_name} from the Sender are not printed")
+    return True
+
+
 def _langids(string0: bytes) -> list[int]:
     """The LANGIDs string descriptor 0 lists, in order (USB 2.0 §9.6.7, Table 9-15)."""
     if len(string0) < 4 or string0[1] != USB_DT_STRING:
@@ -173,15 +198,16 @@ def _langids(string0: bytes) -> list[int]:
 # (shared with usbDissector.py).
 
 
-def _hid_interrupt_in(endpoints: list[EndpointInfo]) -> Optional[EndpointInfo]:
-    """The interrupt IN endpoint to poll: a HID interface's when there is one, else the first
-    one, or None. Only alternate setting 0 counts: the tester sends no SET_INTERFACE, and
-    setting 0 is the one a device is in once configured (USB 2.0 §9.2.3)."""
+def _interrupt_in_endpoints(endpoints: list[EndpointInfo]) -> list[EndpointInfo]:
+    """The interrupt IN endpoints to poll: every HID interface's when there is one (a
+    composite device, such as a keyboard and a mouse in one device, has one per HID
+    interface), else the first one, or none. Only alternate setting 0 counts: the tester sends
+    no SET_INTERFACE, and setting 0 is the one a device is in once configured (USB 2.0 §9.2.3)."""
     candidates = [ep for ep in endpoints
                   if ep.transfer_type == TransferType.INTERRUPT and ep.direction == 1
                   and ep.iface_alt == 0]
     hid = [ep for ep in candidates if ep.iface_class == USB_CLASS_HID]
-    return (hid or candidates or [None])[0]
+    return hid or candidates[:1]
 
 
 def _hid_interfaces(endpoints: list[EndpointInfo]) -> list[EndpointInfo]:
@@ -773,23 +799,22 @@ class IpmxReceiverSession:
         if self.live_validate:
             self._validate_and_report()
 
-    def final_report(self) -> None:
-        """Run a final validation pass and print the findings summary."""
-        if self.hid_only:
-            return   # --hid mode: skip report entirely, keep output clean
+    def final_report(self) -> Verdict:
+        """Run a final validation pass, print the findings summary and return the verdict."""
         with self._lock:
             no_session = not self.ctrl_sender_msgs
-        if no_session and not any(f.section == "8.3.1.1" for f in self.tester_findings):
-            # Nothing was tested: a run without a Sender session must not PASS.
-            self.add_tester_finding(
-                Severity.ERROR, "8.3.1.1",
-                f"No session with the Sender at {self.sender_ip}:{self.sender_ctrl_port}: "
-                f"no Sender Connection Information was received, so nothing was tested")
+        # The test has ended: messages still outstanding are reported against this time.
+        self.session.capture_end = time.time()
         self._validate_and_report()
         sess = self.session
         errors   = sum(1 for f in sess.findings if f.severity == Severity.ERROR)
         warnings = sum(1 for f in sess.findings if f.severity == Severity.WARNING)
         diags    = sum(1 for f in sess.findings if f.severity == Severity.DIAG)
+        # Any ERROR is a failed requirement; continuing past a non-fatal one never changes that.
+        # Without a session with the Sender nothing was tested, which is no PASS either.
+        verdict = (Verdict.FAIL if errors else Verdict.NOT_TESTED if no_session else Verdict.PASS)
+        if self.hid_only:
+            return verdict   # --hid mode: skip report entirely, keep output clean
         print("\n" + "=" * 68)
         print("Final Validation Report")
         print("=" * 68)
@@ -798,9 +823,13 @@ class IpmxReceiverSession:
         if not sess.findings:
             print("  [OK] No violations found")
         print(f"\nTotal: {errors} error(s), {warnings} warning(s)"
-              + (f", {diags} diag(s)" if self.diagnose else ""))
-        # Any ERROR is a failed requirement; continuing past a non-fatal one never changes that.
-        print(f"Result: {'FAIL' if errors else 'PASS'}")
+              + (f", {diags} diag(s)" if self.diagnose or diags else ""))
+        if verdict is Verdict.NOT_TESTED:
+            print(f"Result: NOT TESTED: no session with the Sender at "
+                  f"{self.sender_ip}:{self.sender_ctrl_port} (no SenderConnectionInfo received)")
+        else:
+            print(f"Result: {verdict.name}")
+        return verdict
 
     # ------------------------------------------------------------------
     # Console output
@@ -874,6 +903,8 @@ class ControlChannelClient:
         self._vq_counts: dict[int, int] = {}
         self._vq_first_time: float = 0.0
         self._vq_logged_first: set[int] = set()
+
+        self._warned_wrong_side: set[MsgType] = set()   # Receiver message types the Sender sent
 
     def _flush_vq_repeat(self, sess: IpmxReceiverSession) -> None:
         """Print a summary line for suppressed VendorSpecificQuery bursts."""
@@ -960,10 +991,18 @@ class ControlChannelClient:
         #   configured, so we can read the actual KEYVERSION and derive
         #   the correct key for _KV protocols).
         sess.log("Waiting for SenderConnectionInfo …")
-        raw = ch.recv_raw(timeout=30.0)
+        # §8.3.1.1 sets no time for it: wait as long as the test runs.
+        connected_at = time.monotonic()
+        raw = None
+        while raw is None and not self._stop.is_set() and not ch.closed:
+            raw = ch.recv_raw(timeout=1.0)
         if raw is None:
-            sess.error("Timeout waiting for SenderConnectionInfo")
-            self._stop.set()
+            ended = "the test ended" if self._stop.is_set() else "the Sender closed the connection"
+            sess.add_tester_finding(
+                Severity.DIAG, "8.3.1.1",
+                f"Control channel: no SenderConnectionInfo in the "
+                f"{time.monotonic() - connected_at:.1f} s until {ended}. TR-10-14 sets no time "
+                f"for it")
             return
 
         # Configure PEP on control channel (substreamid=0).
@@ -1143,6 +1182,9 @@ class ControlChannelClient:
                                  local_ip, local_port,
                                  pkt_num=ch.last_recv_pkt_num)
 
+            if _ignore_receiver_message(sess, msg, "Control channel", self._warned_wrong_side):
+                continue
+
             if mt == MsgType.HEARTBEAT:
                 last_hbeat = time.monotonic()
                 if sess.verbose:
@@ -1267,7 +1309,7 @@ class DataChannelHandler:
     Handles one accepted data channel connection from the Sender:
       1. Receive USBStreamInfo, send USBStreamStatus
       2. Run USB enumeration (as USB host)
-      3. Poll interrupt IN endpoint for HID events
+      3. Poll its interrupt IN endpoints for HID events
     """
 
     def __init__(self, session: IpmxReceiverSession,
@@ -1287,9 +1329,11 @@ class DataChannelHandler:
         self._seqnum    = 0
         self._substreamid: Optional[int] = None
         self._usbspeed: Optional[int] = None   # USBSPEED of the channel's USB Stream Information
-        self._prev_hid: bytes = b''   # last HID report; used to suppress repeated reports
+        # last HID report of each endpoint (by bEndpointAddress); used to suppress repeated reports
+        self._prev_hid: dict[int, bytes] = {}
         self._warned_excess = False   # bytes past ACTUALLENGTH already reported on this channel
         self._warned_stray = False    # a Return of no outstanding Submit already reported
+        self._warned_wrong_side: set[MsgType] = set()   # Receiver message types the Sender sent
         self._address: Optional[int] = None   # USB address given by SET_ADDRESS (unique mode)
 
     def shutdown(self) -> None:
@@ -1384,7 +1428,7 @@ class DataChannelHandler:
                 msg = self._recv(timeout=remaining)
                 if msg is None:
                     break
-                if not self._answers_other_submit(msg, seq):
+                if not (self._from_wrong_side(msg) or self._answers_other_submit(msg, (seq,))):
                     ret = msg
             if ret is None:
                 if self._ch.closed:
@@ -1393,8 +1437,8 @@ class DataChannelHandler:
                         f"CONTROL_SUBMIT seq={seq}")
                 else:
                     self._session.warn(
-                        f"Timeout (10 s) on CONTROL_SUBMIT_RETURN "
-                        f"seq={seq}")
+                        f"No CONTROL_SUBMIT_RETURN seq={seq} in 10 s: the tester stops "
+                        f"waiting for it, as a host does (its own limit; TR-10-14 sets none)")
                 return None
 
             is_submit_return = (ret.msg_type_name
@@ -1562,9 +1606,18 @@ class DataChannelHandler:
 
         # Step 1 — receive USBStreamInfo
         # Read raw first so we can brute-force substreamid before configuring PEP.
-        raw = ch.recv_raw(timeout=15.0)
+        # §8.3.1.2 sets no time for it: wait as long as the test runs.
+        accepted_at = time.monotonic()
+        raw = None
+        while raw is None and not self._stop.is_set() and not ch.closed:
+            raw = ch.recv_raw(timeout=1.0)
         if raw is None:
-            sess.error("Timeout waiting for USBStreamInfo")
+            ended = "the test ended" if self._stop.is_set() else "the Sender closed the connection"
+            sess.add_tester_finding(
+                Severity.DIAG, "8.3.1.2",
+                f"Data channel from {rip}:{rport}: no USBStreamInfo in the "
+                f"{time.monotonic() - accepted_at:.1f} s until {ended}. TR-10-14 sets no time "
+                f"for it")
             ch.close()
             return
 
@@ -1631,26 +1684,22 @@ class DataChannelHandler:
         time.sleep(1.0)
 
         # Step 3 — USB enumeration
-        interrupt_ep = self._run_enumeration()
+        interrupt_eps = self._run_enumeration()
 
-        if interrupt_ep is None:
+        if not interrupt_eps:
             sess.warn("No HID interrupt IN endpoint found — skipping polling")
             self._idle_loop()
             return
 
-        # Step 4 — HID interrupt polling loop (re-enters after USB_STREAM_RESET)
-        while interrupt_ep is not None and not self._stop.is_set():
-            sess.log(f"  Polling interrupt endpoint 0x{interrupt_ep.address:02X}  "
-                     f"interval={interrupt_ep.interval} ms  "
-                     f"maxpkt={interrupt_ep.max_packet} B")
-            interrupt_ep = self._poll_loop(interrupt_ep)
+        # Step 4 — HID interrupt polling loop
+        self._poll_loop(interrupt_eps)
 
         ch.close()
         sess.log(f"Data channel 0x{substreamid:02X} closed")
 
     # ------------------------------------------------------------------
 
-    def _run_enumeration(self) -> Optional[EndpointInfo]:
+    def _run_enumeration(self) -> list[EndpointInfo]:
         """Enumerate this channel's device; with --enumerate-in-sequence, one channel at a
         time across the session. TR-10-14 requires neither order: once a Sender has the USB
         Stream Status it "shall be ready to receive USB Submit messages" on that channel."""
@@ -1662,26 +1711,27 @@ class DataChannelHandler:
         except ReturnDataUnusable as e:
             self._session.error(f"Data channel {self._sid()}: cannot continue: {e}. "
                                 f"Enumeration of this channel stops; the run FAILS")
-            return None
+            return []
 
     def _sid(self) -> str:
         return f"0x{self._substreamid:02X}" if self._substreamid is not None else "?"
 
-    def _answers_other_submit(self, msg: IpmxUsbMessage, seq: int) -> bool:
-        """True for a Submit Return whose SEQNUM is not *seq*, the Submit this channel waits
-        on. A Submit Return answers the Submit whose SEQNUM it carries (§9.18), so such a
-        Return answers none of this channel's: it is not taken as the awaited one, and the
+    def _answers_other_submit(self, msg: IpmxUsbMessage, awaited: Collection[int]) -> bool:
+        """True for a Submit Return whose SEQNUM is none of *awaited*, the Submits this channel
+        waits on. A Submit Return answers the Submit whose SEQNUM it carries (§9.18), so such a
+        Return answers none of this channel's: it is not taken as an awaited one, and the
         wait goes on. It is recorded like every message, so the validators report it."""
         if msg.msg_type_enum not in _SUBMIT_RETURNS or msg.payload.get('_encrypted'):
             return False
         got = msg.payload.get('seqnum')
-        if got is None or got == seq:
+        if got is None or got in awaited:
             return False
         if not self._warned_stray:
             self._warned_stray = True
+            waiting = ', '.join(str(s) for s in sorted(awaited)) or 'none'
             self._session.warn(
                 f"Data channel {self._sid()}: {msg.msg_type_name} SEQNUM={got} answers no "
-                f"Submit outstanding on this channel (waiting on SEQNUM={seq}): ignored. A "
+                f"Submit outstanding on this channel (waiting on SEQNUM {waiting}): ignored. A "
                 f"§9.18 violation the validators report; further ones are not printed")
         return True
 
@@ -1783,11 +1833,11 @@ class DataChannelHandler:
             sess.add_tester_finding(Severity.ERROR, "USB2-9.6.2", desc)
         return False
 
-    def _enumerate(self) -> Optional[EndpointInfo]:
+    def _enumerate(self) -> list[EndpointInfo]:
         """
         Drive the USB host enumeration sequence against the real device.
 
-        Returns the interrupt IN endpoint if found, None otherwise.
+        Returns the interrupt IN endpoints to poll (see _interrupt_in_endpoints), [] if none.
         """
         sess = self._session
         sess.log("  Starting USB enumeration …")
@@ -1813,7 +1863,7 @@ class DataChannelHandler:
         str_indexes: list[int] = []        # iManufacturer, iProduct, iSerialNumber that are set
         bcd_usb: Optional[int] = None
         cfg_value: Optional[int] = None    # bConfigurationValue of the configuration descriptor
-        int_ep: Optional[EndpointInfo] = None
+        int_eps: list[EndpointInfo] = []
         hid_ifaces: list[EndpointInfo] = []
         fatal = False   # only set when Sender closes the connection
 
@@ -1834,7 +1884,7 @@ class DataChannelHandler:
 
         # 2. SET_ADDRESS — --set-address: "unique" (default) gives each device its own
         #    address, as a USB host does; "none" sends none. TR-10-14 says nothing of
-        #    SET_ADDRESS. A channel keeps its address when it re-enumerates.
+        #    SET_ADDRESS.
         if not fatal and sess.set_address == SetAddressMode.UNIQUE:
             if self._address is None:
                 self._address = sess.allocate_address()
@@ -1894,12 +1944,13 @@ class DataChannelHandler:
             if _ok(ret):
                 raw_cfg = _xfr(ret)
                 endpoints = parse_config_descriptor(raw_cfg)
-                int_ep = _hid_interrupt_in(endpoints)
+                int_eps = _interrupt_in_endpoints(endpoints)
                 hid_ifaces = _hid_interfaces(endpoints)
                 if len(raw_cfg) >= 6 and raw_cfg[1] == USB_DT_CONFIG:
                     cfg_value = raw_cfg[5]
+                polled = ' '.join(f"0x{ep.address:02X}" for ep in int_eps) or 'none'
                 sess.log(f"    Config descriptor: {len(endpoints)} endpoint(s)  "
-                         f"interrupt_in={'yes' if int_ep else 'no'}  "
+                         f"interrupt_in={polled}  "
                          f"data={raw_cfg.hex() or '(empty)'}")
             elif not fatal:
                 sess.warn(f"GET_DESCRIPTOR(Config,{total_len}): {_status(ret)}")
@@ -1939,7 +1990,7 @@ class DataChannelHandler:
                 sess.log(f"    SET_CONFIGURATION({value}): OK")
             elif ret is not None:
                 sess.warn(f"SET_CONFIGURATION({value}): {_status(ret)}")
-            if not fatal and not configured and int_ep is not None:
+            if not fatal and not configured and int_eps:
                 # Testing continues: USB 2.0 is not a TR-10-14 requirement (--diagnose: DIAG).
                 sess.warn("SET_CONFIGURATION did not succeed: the device is polled although "
                           "it may not be configured (USB 2.0 §9.2.3)")
@@ -1962,85 +2013,97 @@ class DataChannelHandler:
 
         if fatal:
             sess.warn("Enumeration aborted — Sender closed data channel")
-            return None
+            return []
 
         sess.log(f"  USB enumeration complete (seqnum now={self._seqnum})")
-        return int_ep
+        return int_eps
 
     # ------------------------------------------------------------------
 
-    def _poll_loop(self, ep: EndpointInfo) -> Optional[EndpointInfo]:
-        """Periodically poll the interrupt IN endpoint for HID events.
+    def _poll_loop(self, eps: list[EndpointInfo]) -> None:
+        """Periodically poll the interrupt IN endpoints for HID events, until the test stops,
+        the Sender closes the channel, or the channel cannot go on.
 
-        Returns an :class:`EndpointInfo` if a USB_STREAM_RESET was received
-        and re-enumeration discovered a new interrupt endpoint (caller should
-        re-enter the poll loop).  Returns ``None`` on normal exit or error.
+        Each endpoint has one INTERRUPT_SUBMIT outstanding at a time, and the endpoints are
+        polled together: an interrupt IN transfer completes only when the device has data, so
+        a quiet endpoint (a keyboard nobody types on, an absolute mouse that does not move) is
+        normal and must not hold back another (the mouse of a composite keyboard+mouse). A
+        Return answers the Submit whose SEQNUM it carries (§9.18); its endpoint is submitted
+        again one poll interval after it.
         """
         sess      = self._session
         interval  = self._poll_ms / 1000.0   # seconds
-        max_pkt   = ep.max_packet or 8
+        for ep in eps:
+            sess.log(f"  Polling interrupt endpoint 0x{ep.address:02X}  "
+                     f"interval={ep.interval} ms  "
+                     f"maxpkt={ep.max_packet} B")
 
-        while not self._stop.is_set():
-            # Send INTERRUPT_SUBMIT
-            seq = self._seqnum
-            self._send(usb.build_usb_interrupt_submit(
-                seq, ep.endpoint_num, ep.direction,
-                ep.interval, max_pkt,
-            ))
-            # Table 11: the next Submit takes the next SEQNUM whatever this one gets back.
-            self._seqnum += 1
+        outstanding: dict[int, EndpointInfo] = {}           # SEQNUM -> endpoint, not yet returned
+        due: dict[int, float] = {ep.address: 0.0 for ep in eps}   # endpoint -> next Submit time
 
-            # Wait for this Submit's INTERRUPT_SUBMIT_RETURN. An interrupt IN transfer
-            # completes only when the device has data, so a quiet endpoint (an absolute mouse
-            # that does not move) is normal: keep waiting while the test runs instead of
-            # abandoning the channel. A Return of another SEQNUM, or a Cancel Submit Return
-            # (this tester sends no Cancel Submit), answers nothing outstanding here: the wait
-            # goes on, so the channel never has more than this one Submit outstanding.
-            ret = None
-            while ret is None and not self._stop.is_set() and not self._ch.closed:
-                msg = self._ch.recv_msg(timeout=1.0)
-                if msg is None:
-                    continue
-                self._record_sender_msg(msg)
-                if self._answers_other_submit(msg, seq):
-                    continue
-                if msg.msg_type_enum == MsgType.USB_CANCEL_SUBMIT_RETURN:
-                    sess.log(f"  USB_CANCEL_SUBMIT_RETURN (seqnum="
-                             f"{msg.payload.get('seqnum', '?')}) for no Cancel Submit: ignored")
-                    continue
-                ret = msg
-            if ret is None:
-                if self._ch.closed:
-                    sess.warn("Sender closed the data channel with an INTERRUPT_SUBMIT pending")
-                break
+        while not self._stop.is_set() and not self._ch.closed:
+            # Send the INTERRUPT_SUBMIT of each endpoint that is due
+            for ep in eps:
+                if due.get(ep.address, float('inf')) <= time.monotonic():
+                    del due[ep.address]
+                    seq = self._seqnum
+                    self._send(usb.build_usb_interrupt_submit(
+                        seq, ep.endpoint_num, ep.direction,
+                        ep.interval, ep.max_packet or 8,
+                    ))
+                    # Table 11: the next Submit takes the next SEQNUM whatever this one gets back.
+                    self._seqnum += 1
+                    outstanding[seq] = ep
 
-            mt = ret.msg_type_enum
+            # Wait for a Return until the next endpoint is due, at most 1 s. A message the
+            # Sender may not send (a USB Stream Reset, …), a Return of no outstanding Submit,
+            # or a Cancel Submit Return (this tester sends no Cancel Submit) answers nothing
+            # outstanding here: the wait goes on.
+            wait = min([1.0] + [t - time.monotonic() for t in due.values()])
+            msg = self._ch.recv_msg(timeout=max(wait, 0.0))
+            if msg is None:
+                continue
+            self._record_sender_msg(msg)
+            if self._from_wrong_side(msg) or self._answers_other_submit(msg, outstanding):
+                continue
+            mt = msg.msg_type_enum
+            if mt == MsgType.USB_CANCEL_SUBMIT_RETURN:
+                sess.log(f"  USB_CANCEL_SUBMIT_RETURN (seqnum="
+                         f"{msg.payload.get('seqnum', '?')}) for no Cancel Submit: ignored")
+                continue
 
-            if mt == MsgType.USB_STREAM_RESET:
-                return self._handle_stream_reset(ret)
             if mt == MsgType.USB_ENTER_SLEEP:
                 sess.log("  USB Enter Sleep on data channel — stopping")
                 self._stop.set()
                 break
             if mt != MsgType.USB_INTERRUPT_SUBMIT_RETURN:
-                sess.warn(f"Expected INTERRUPT_SUBMIT_RETURN, got {ret.msg_type_name}")
+                sess.warn(f"Expected INTERRUPT_SUBMIT_RETURN, got {msg.msg_type_name}")
                 break
 
+            # A Return that could not be decrypted has no readable SEQNUM: it is taken as the
+            # answer of the oldest Submit outstanding, so that polling goes on.
+            seq = msg.payload.get('seqnum')
+            if seq not in outstanding:
+                if not outstanding:
+                    continue
+                seq = min(outstanding)
+            ep = outstanding.pop(seq)
+            due[ep.address] = time.monotonic() + interval
+
             try:
-                td = self._return_data(ret)
+                td = self._return_data(msg)
             except ReturnDataUnusable as e:
                 sess.error(f"Data channel {self._sid()}: cannot continue: {e}. Polling of "
                            f"this channel stops; the run FAILS")
                 break
-            if (sess.verbose or sess.hid_only) and not ret.payload.get('_encrypted'):
-                if td != self._prev_hid:
-                    self._prev_hid = td
+            if (sess.verbose or sess.hid_only) and not msg.payload.get('_encrypted'):
+                if td != self._prev_hid.get(ep.address, b''):
+                    self._prev_hid[ep.address] = td
                     if any(td):
                         self._decode_hid(td, ep)
 
-            # Pace polling
-            time.sleep(interval)
-        return None
+        if self._ch.closed and outstanding:
+            sess.warn("Sender closed the data channel with an INTERRUPT_SUBMIT pending")
 
     def _record_sender_msg(self, msg: 'IpmxUsbMessage') -> None:
         """Record a Sender-originated data-channel message."""
@@ -2052,14 +2115,11 @@ class DataChannelHandler:
                 pkt_num=self._ch.last_recv_pkt_num,
             )
 
-    def _handle_stream_reset(self, msg: 'IpmxUsbMessage') -> Optional[EndpointInfo]:
-        """Respond to USB_STREAM_RESET, re-enumerate, return new endpoint."""
-        sess = self._session
-        sess.log("  USB_STREAM_RESET received — sending return and re-enumerating")
-        self._send(usb.build_usb_stream_reset_return())
-        self._seqnum = 0
-        self._prev_hid = b''
-        return self._run_enumeration()
+    def _from_wrong_side(self, msg: IpmxUsbMessage) -> bool:
+        """True for a message type TR-10-14 assigns to the Receiver, sent by the Sender: flagged
+        and ignored (see _ignore_receiver_message)."""
+        return _ignore_receiver_message(self._session, msg, f"Data channel {self._sid()}",
+                                        self._warned_wrong_side)
 
     # ------------------------------------------------------------------
 
@@ -2151,16 +2211,9 @@ class DataChannelHandler:
             msg_count += 1
             mt = msg.msg_type_enum
 
-            if mt == MsgType.USB_STREAM_RESET:
-                new_ep = self._handle_stream_reset(msg)
-                if new_ep is not None:
-                    while new_ep is not None and not self._stop.is_set():
-                        sess.log(f"  Polling interrupt endpoint 0x{new_ep.address:02X}  "
-                                 f"interval={new_ep.interval} ms  "
-                                 f"maxpkt={new_ep.max_packet} B")
-                        new_ep = self._poll_loop(new_ep)
-                    return
-            elif mt == MsgType.USB_CANCEL_SUBMIT_RETURN:
+            if self._from_wrong_side(msg):
+                continue
+            if mt == MsgType.USB_CANCEL_SUBMIT_RETURN:
                 sess.log(f"  USB_CANCEL_SUBMIT_RETURN (seqnum={msg.payload.get('seqnum','?')})")
             elif mt == MsgType.USB_ENTER_SLEEP:
                 sess.log("  USB Enter Sleep on data channel — stopping")
@@ -2399,10 +2452,7 @@ def run_test(
         session.log(f"PCAP written to {capture_file}")
         session.log(f"  → Analyse with: python3 usbDissector.py {capture_file} --messages")
 
-    session.final_report()
-
-    errors = sum(1 for f in session.session.findings if f.severity == Severity.ERROR)
-    return 1 if errors else 0
+    return session.final_report().value
 
 
 # ---------------------------------------------------------------------------
@@ -2484,7 +2534,7 @@ Examples:
     parser.add_argument(
         '--poll-interval', type=float, default=DEFAULT_POLL_INTERVAL_MS,
         metavar='MS',
-        help=f"HID interrupt poll interval in ms (default: {DEFAULT_POLL_INTERVAL_MS})",
+        help=f"HID interrupt poll interval in ms, per endpoint (default: {DEFAULT_POLL_INTERVAL_MS})",
     )
     parser.add_argument(
         '--verbose', action='store_true',
