@@ -32,6 +32,8 @@ If testing a Sender
 
 ## Test Execution Overview
 
+- During the IPMX Certification Test Event, the testing authorities may use dedicated test equipment that they have qualified to perform these measurements.
+
 ### GUID Configuration
 
 A DuT may be tested against a video Profile and an audio Profile simultaneously or in sequence. In this document we use as an example the testing of a device against both a video Profile (uncompressed or JPEG XS) and an audio Profile (PCM or AM824). As such the `ipmx-test-senders.guid` file contains the GUID of the video Sender of the DuT and the GUID of the audio Sender of the DuT. The `ipmx-test-receivers.guid` file contains the GUID of the video Receiver of the DuT and the GUID of the audio Receiver of the DuT.
@@ -208,6 +210,11 @@ Python scripts are used to verify conformance to TP-1 section 13. For a given fo
    **Section 13.3b Tests**
 
    #### Verifying the PCAP file
+
+    The measurement of the following parameters from section 13.5 takes precedence over the PCAP analysis:
+    - Timing of the RTCP and First packet arrival time of TR-10-9 section 11.2
+    - CINST of the network compatibility model of TR-10-1
+    - VRX of the virtual receive buffer model of TR-10-1
 
    Select the script based on the format of the streams: raw, jxsv, h264 or h265 for video, pcm or am824 for audio. The list of requirements verified by a given script can be obtained by running a script ipmx_*_validate_pcap.py with the --list-requirements command line option.
 
