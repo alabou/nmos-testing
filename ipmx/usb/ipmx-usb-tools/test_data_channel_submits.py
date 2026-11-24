@@ -231,6 +231,142 @@ class CancelSubmit(unittest.TestCase):
         self.assertIn('expected 3', seq.description)
 
 
+class CancelSubmitReturn(unittest.TestCase):
+    """§9.23, Table 18: a Cancel Submit Return has no ACTUALLENGTH, so the ACTUALLENGTH rules of
+    Table 14 have nothing to check in it."""
+
+    _BULK_OUT = staticmethod(lambda seqnum: usb.build_usb_bulk_submit(seqnum, 2, 0, 0, 4, b'\x01\x02\x03\x04'))
+
+    def test_an_out_cancel_return_gets_no_actuallength_finding(self):
+        ch = _Channel()
+        ch.from_receiver(self._BULK_OUT(0))
+        ch.from_receiver(_cancel(0, 2, 0))
+        ch.from_sender(_cancel_return(0, 2, 0))
+        self.assertEqual(_findings(ch.validate(), Requirement.RETURN_OUT_LENGTH,
+                                   Requirement.RETURN_IN_LENGTH), [])
+
+    def test_an_in_cancel_return_gets_no_actuallength_finding(self):
+        ch = _Channel()
+        ch.from_receiver(_interrupt_in(0, 1))
+        ch.from_receiver(_cancel(0, 1, 1))
+        ch.from_sender(_cancel_return(0, 1, 1))
+        self.assertEqual(_findings(ch.validate(), Requirement.RETURN_OUT_LENGTH,
+                                   Requirement.RETURN_IN_LENGTH), [])
+
+    def test_an_out_submit_return_still_needs_actuallength_0(self):
+        ch = _Channel()
+        ch.from_receiver(self._BULK_OUT(0))
+        pkt = ch.from_sender(usb.build_usb_bulk_submit_return(0, 2, 0, 4, StatusCode.SUCCESS))
+        [f] = _findings(ch.validate(), Requirement.RETURN_OUT_LENGTH)
+        self.assertEqual((f.severity, f.packet_number), (Severity.ERROR, pkt))
+
+
+def _with_rsvd(raw: bytes, rsvd: int = 0b101) -> bytes:
+    """*raw*, unencrypted, with the 3 Rsvd bits of its endpoint byte (DATA offset 3) set to *rsvd*."""
+    msg = bytearray(raw)
+    msg[usb.HEADER_SIZE + 3] |= (rsvd & 0x07) << 1
+    return bytes(msg)
+
+
+class FieldCitations(unittest.TestCase):
+    """A finding on the fields of a Submit or a Return cites the message's own section and the
+    table of DATA fields that section refers to (§9.14-9.23)."""
+
+    SUBMITS = (
+        ('9.14', 'Table 10', _control_in(0)),
+        ('9.15', 'Table 11', usb.build_usb_bulk_submit(0, 2, 1, 0, 64)),
+        ('9.16', 'Table 11', _interrupt_in(0, 1)),
+        ('9.17', 'Table 12', usb.build_usb_isochronous_submit(0, 3, 1, 1, 1, 0, 1, [192])),
+        ('9.22', 'Table 17', _cancel(0, 1, 1)),
+    )
+    RETURNS = (
+        ('9.18', 'Table 14', _control_in_return(0)),
+        ('9.19', 'Table 14', usb.build_usb_bulk_submit_return(0, 2, 1, 0, StatusCode.SUCCESS)),
+        ('9.20', 'Table 14', usb.build_usb_interrupt_submit_return(0, 1, 1, 0, StatusCode.SUCCESS)),
+        ('9.21', 'Table 15', usb.build_usb_isochronous_submit_return(0, 3, 1, 0, 0, 1, [(0, 0)])),
+        ('9.23', 'Table 18', _cancel_return(0, 1, 1)),
+    )
+
+    def _assert_cites(self, finding, section: str, table: str, pkt: int) -> None:
+        self.assertEqual((finding.severity, finding.section, finding.packet_number),
+                         (Severity.ERROR, section, pkt))
+        self.assertIn(table, finding.description)
+
+    def test_reserved_bits_of_a_submit(self):
+        for section, table, raw in self.SUBMITS:
+            with self.subTest(section=section):
+                ch = _Channel()
+                pkt = ch.from_receiver(_with_rsvd(raw))
+                [f] = _findings(ch.validate(), Requirement.SUBMIT_RSVD)
+                self._assert_cites(f, section, table, pkt)
+
+    def test_reserved_bits_of_a_return(self):
+        for section, table, raw in self.RETURNS:
+            with self.subTest(section=section):
+                ch = _Channel()
+                pkt = ch.from_sender(_with_rsvd(raw))
+                [f] = _findings(ch.validate(), Requirement.RETURN_RSVD)
+                self._assert_cites(f, section, table, pkt)
+
+    def test_a_return_answering_no_submit(self):
+        for section, table, raw in self.RETURNS[:4]:     # not checked on a Cancel Submit Return
+            with self.subTest(section=section):
+                ch = _Channel()
+                pkt = ch.from_sender(raw)
+                [f] = _findings(ch.validate(), Requirement.RETURN_SEQNUM)
+                self._assert_cites(f, section, table, pkt)
+
+    def test_endpoint_and_direction_of_a_return(self):
+        # Each Return answers a Submit to ENDPOINT 1 with D 1, and carries ENDPOINT 2 and D 0.
+        cases = (
+            ('9.19', 'Table 14', [usb.build_usb_bulk_submit(0, 1, 1, 0, 64)],
+             usb.build_usb_bulk_submit_return(0, 2, 0, 0, StatusCode.SUCCESS)),
+            ('9.21', 'Table 15', [usb.build_usb_isochronous_submit(0, 1, 1, 1, 1, 0, 1, [192])],
+             usb.build_usb_isochronous_submit_return(0, 2, 0, 0, 0, 1, [(0, 0)])),
+            ('9.23', 'Table 18', [_interrupt_in(0, 1), _cancel(0, 1, 1)], _cancel_return(0, 2, 0)),
+        )
+        for section, table, submits, answer in cases:
+            with self.subTest(section=section):
+                ch = _Channel()
+                for submit in submits:
+                    ch.from_receiver(submit)
+                pkt = ch.from_sender(answer)
+                s = ch.validate()
+                for requirement in (Requirement.RETURN_ENDPOINT, Requirement.RETURN_DIRECTION):
+                    [f] = _findings(s, requirement)
+                    self._assert_cites(f, section, table, pkt)
+
+    def test_actuallength_of_a_return(self):
+        out = _Channel()
+        out.from_receiver(usb.build_usb_interrupt_submit(0, 2, 0, 8, 4, b'\x01\x02\x03\x04'))
+        pkt = out.from_sender(usb.build_usb_interrupt_submit_return(0, 2, 0, 4, StatusCode.SUCCESS))
+        [f] = _findings(out.validate(), Requirement.RETURN_OUT_LENGTH)
+        self._assert_cites(f, '9.20', 'Table 14', pkt)
+
+        into = _Channel()
+        into.from_receiver(usb.build_usb_bulk_submit(0, 1, 1, 0, 8))
+        pkt = into.from_sender(usb.build_usb_bulk_submit_return(0, 1, 1, 16, StatusCode.SUCCESS, b'\x00' * 16))
+        [f] = _findings(into.validate(), Requirement.RETURN_IN_LENGTH)
+        self._assert_cites(f, '9.19', 'Table 14', pkt)
+
+    def test_usbdevreq_of_a_control_submit(self):
+        data = usb.parse_one(_control_in(0)).data[:17]      # USBDEVREQ cut to 5 bytes
+        ch = _Channel()
+        pkt = ch.from_receiver(usb.build_message(MsgType.USB_CONTROL_SUBMIT, data))
+        [f] = _findings(ch.validate(), Requirement.CONTROL_USBDEVREQ_LENGTH)
+        self._assert_cites(f, '9.14', 'Table 10', pkt)
+
+    def test_the_checklist_rows(self):
+        rows = (Requirement.CONTROL_USBDEVREQ_LENGTH, Requirement.SUBMIT_RSVD,
+                Requirement.RETURN_SEQNUM, Requirement.RETURN_ENDPOINT, Requirement.RETURN_DIRECTION,
+                Requirement.RETURN_OUT_LENGTH, Requirement.RETURN_IN_LENGTH, Requirement.RETURN_RSVD)
+        self.assertEqual({r.name: r.section for r in rows},
+                         {'CONTROL_USBDEVREQ_LENGTH': '9.14', 'SUBMIT_RSVD': '9.14-17/22',
+                          'RETURN_SEQNUM': '9.18-21', 'RETURN_ENDPOINT': '9.18-21/23',
+                          'RETURN_DIRECTION': '9.18-21/23', 'RETURN_OUT_LENGTH': '9.18-20',
+                          'RETURN_IN_LENGTH': '9.18-20', 'RETURN_RSVD': '9.18-21/23'})
+
+
 class SubmitSeqnumCitation(unittest.TestCase):
     """A SEQNUM finding cites the section of its Submit's type and the table holding the rule."""
 

@@ -139,23 +139,23 @@ class Requirement(Enum):
     # §9.12 — USB Enter Sleep
     SLEEP_CLOSE                 = ("9.12",     "SHALL",  "USB Enter Sleep + WoL enabled: Sender SHALL close all connections")
     SLEEP_NO_RECONNECT          = ("9.12",     "SHOULD", "USB Enter Sleep received: Receiver SHOULD NOT reconnect until WoL")
-    # §9.15 — USB Control Submit
-    CONTROL_USBDEVREQ_LENGTH    = ("9.15",     "SHALL",  "USB Control Submit USBDEVREQ SHALL be 8 bytes")
+    # §9.14 — USB Control Submit
+    CONTROL_USBDEVREQ_LENGTH    = ("9.14",     "SHALL",  "USB Control Submit USBDEVREQ SHALL be 8 bytes (Table 10)")
     # §9.17 — USB Isochronous Submit
     ISO_ASAP_STARTFRAME         = ("9.17",     "SHALL",  "USB Isochronous Submit: STARTFRAME SHALL be 0 when A (ASAP) is 1")
     # §10 — Sub-stream multiplexing
     SUBSTREAM_PARITY            = ("10",       "SHALL",  "S2R substreamid SHALL be even; R2S substreamid SHALL be odd")
     # §9.14-9.17 — USB Submits
     SUBMIT_SEQNUM               = ("9.14-17",  "SHALL",  "Submit SEQNUM starts at 0 and increments by 1 per Submit (Tables 10-12)")
-    SUBMIT_RSVD                 = ("9.14",     "SHALL",  "Submit Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0")
+    SUBMIT_RSVD                 = ("9.14-17/22", "SHALL", "Submit Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0 (Tables 10-12, 17)")
     SUBMIT_DATA_FIELDS          = ("9.14-16",  "SHALL",  "Control/Bulk/Interrupt Submit DATA SHALL be exactly its Table 10/11 fields (TRANFERDATA = TRANSFERLENGTH bytes on OUT, none on IN)")
     # §9.18 — Submit Return
-    RETURN_SEQNUM               = ("9.18",     "SHALL",  "Submit Return SEQNUM SHALL match an outstanding Submit")
-    RETURN_ENDPOINT             = ("9.18",     "SHALL",  "Submit Return ENDPOINT SHALL match Submit ENDPOINT")
-    RETURN_DIRECTION            = ("9.18",     "SHALL",  "Submit Return D SHALL match Submit D")
-    RETURN_OUT_LENGTH           = ("9.18",     "SHALL",  "OUT (D=0) Submit Return: ACTUALLENGTH SHALL be 0")
-    RETURN_IN_LENGTH            = ("9.18",     "SHALL",  "IN (D=1) Submit Return: ACTUALLENGTH SHALL be ≤ TRANSFERLENGTH")
-    RETURN_RSVD                 = ("9.18",     "SHALL",  "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0")
+    RETURN_SEQNUM               = ("9.18-21",  "SHALL",  "Submit Return SEQNUM SHALL match an outstanding Submit (Tables 14, 15)")
+    RETURN_ENDPOINT             = ("9.18-21/23", "SHALL", "Submit Return ENDPOINT SHALL match Submit ENDPOINT (Tables 14, 15, 18)")
+    RETURN_DIRECTION            = ("9.18-21/23", "SHALL", "Submit Return D SHALL match Submit D (Tables 14, 15, 18)")
+    RETURN_OUT_LENGTH           = ("9.18-20",  "SHALL",  "OUT (D=0) Submit Return: ACTUALLENGTH SHALL be 0 (Table 14)")
+    RETURN_IN_LENGTH            = ("9.18-20",  "SHALL",  "IN (D=1) Submit Return: ACTUALLENGTH SHALL be ≤ TRANSFERLENGTH (Table 14)")
+    RETURN_RSVD                 = ("9.18-21/23", "SHALL", "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0 (Tables 14, 15, 18)")
     RETURN_DATA_FIELDS          = ("9.18-20",  "SHALL",  "Control/Bulk/Interrupt Submit Return DATA SHALL be exactly its Table 14 fields (TRANFERDATA = ACTUALLENGTH bytes)")
     RETURN_SENT                 = ("9.18/19/23", "SHALL", "Every Control, Bulk and Cancel Submit SHALL get its Submit Return")
     # §9.22 — USB Cancel Submit (Table 17)
@@ -316,14 +316,26 @@ MESSAGE_SENDER: dict[MsgType, tuple[ChannelRole, str]] = {
     MsgType.USB_CANCEL_SUBMIT_RETURN:      (ChannelRole.SENDER,   "9.23"),
 }
 
-#: The table of DATA fields the section of each USB Submit type refers to (§9.14-9.17), which
-#: holds the rules of its fields, SEQNUM's among them.
-_SUBMIT_FIELDS_TABLE: dict[MsgType, str] = {
-    MsgType.USB_CONTROL_SUBMIT:     "10",
-    MsgType.USB_BULK_SUBMIT:        "11",
-    MsgType.USB_INTERRUPT_SUBMIT:   "11",
-    MsgType.USB_ISOCHRONOUS_SUBMIT: "12",
+#: The table of DATA fields the section of each USB Submit and Return type refers to
+#: (§9.14-9.23), which holds the rules of its fields.
+_DATA_FIELDS_TABLE: dict[MsgType, str] = {
+    MsgType.USB_CONTROL_SUBMIT:            "10",
+    MsgType.USB_BULK_SUBMIT:               "11",
+    MsgType.USB_INTERRUPT_SUBMIT:          "11",
+    MsgType.USB_ISOCHRONOUS_SUBMIT:        "12",
+    MsgType.USB_CONTROL_SUBMIT_RETURN:     "14",
+    MsgType.USB_BULK_SUBMIT_RETURN:        "14",
+    MsgType.USB_INTERRUPT_SUBMIT_RETURN:   "14",
+    MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN: "15",
+    MsgType.USB_CANCEL_SUBMIT:             "17",
+    MsgType.USB_CANCEL_SUBMIT_RETURN:      "18",
 }
+
+
+def _fields_citation(mt: MsgType) -> tuple[str, str]:
+    """The section of USB Submit or Return type *mt*, and the table of DATA fields it refers to."""
+    return MESSAGE_SENDER[mt][1], _DATA_FIELDS_TABLE[mt]
+
 
 #: The USB Return a Sender sends in response to each USB Submit type (§9.18-9.21).
 _RETURN_OF_SUBMIT: dict[MsgType, MsgType] = {
@@ -1187,7 +1199,8 @@ def _report_outstanding(
 def _check_endpoint_rsvd_bits(
     session: Session, cm: ChannelMessage, role: str
 ) -> None:
-    """§9.14/9.18 Table 10-14: Rsvd 3 bits in endpoint byte SHALL be 0."""
+    """Tables 10-12, 14, 15, 17 and 18: Rsvd 3 bits in endpoint byte SHALL be 0, cited to the
+    message's own section (§9.14-9.23) and table."""
     p = cm.msg.payload
     if not p:
         return
@@ -1198,10 +1211,10 @@ def _check_endpoint_rsvd_bits(
     ep_byte = raw[16 + 3]
     rsvd = (ep_byte >> 1) & 0x07   # bits 3:1
     if rsvd != 0:
-        section = "9.14" if role == "submit" else "9.18"
+        section, table = _fields_citation(cm.msg.msg_type_enum)
         session.add(Severity.ERROR, section,
                     f"{cm.msg.msg_type_name}: Reserved bits in endpoint byte are 0x{rsvd:X}; "
-                    "SHALL be 0",
+                    f"SHALL be 0 (Table {table})",
                     packet_number=cm.packet_number,
                     requirement=Requirement.SUBMIT_RSVD if role == "submit" else Requirement.RETURN_RSVD)
 
@@ -1916,13 +1929,13 @@ def _validate_data_channel(
                         s.add(Severity.ERROR, MESSAGE_SENDER[mt][1],
                               f"Data channel (substreamid={channel.substreamid}): "
                               f"{mt.name} SEQNUM={seqnum}; expected {expected_seqnum}{after_reset} "
-                              f"(Table {_SUBMIT_FIELDS_TABLE[mt]})",
+                              f"(Table {_DATA_FIELDS_TABLE[mt]})",
                               packet_number=cm.packet_number,
                               requirement=Requirement.SUBMIT_SEQNUM)
                         seqnum_error_reported = True
                 expected_seqnum = seqnum + 1
                 previous_submit_pkt = cm.packet_number
-            # §9.14 / §9.22: Rsvd 3 bits in endpoint byte SHALL be 0
+            # Tables 10-12, 17: Rsvd 3 bits in endpoint byte SHALL be 0
             _check_endpoint_rsvd_bits(s, cm, "submit")
 
         # Pass 2: each Submit Return, in capture order, answers the earliest still-unanswered
@@ -1954,13 +1967,16 @@ def _validate_data_channel(
                 continue
             if mt not in return_types:
                 continue
-            # §9.18/§9.23: Rsvd 3 bits in endpoint byte SHALL be 0
+            # Tables 14, 15, 18: Rsvd 3 bits in endpoint byte SHALL be 0
             _check_endpoint_rsvd_bits(s, cm, "return")
+            # Each finding below cites the Return's own section and the table it refers to.
+            ret_section, ret_table = _fields_citation(mt)
             waiting = outstanding.get((mt, seqnum))
             if not waiting:
                 if mt != MsgType.USB_CANCEL_SUBMIT_RETURN:
-                    s.add(Severity.ERROR, "9.18",
-                          f"Data channel: {mt.name} SEQNUM={seqnum} has no matching Submit",
+                    s.add(Severity.ERROR, ret_section,
+                          f"Data channel: {mt.name} SEQNUM={seqnum} has no matching Submit "
+                          f"(Table {ret_table})",
                           packet_number=cm.packet_number,
                           requirement=Requirement.RETURN_SEQNUM)
                 continue
@@ -1969,40 +1985,41 @@ def _validate_data_channel(
 
             # SHALL: Return ENDPOINT matches Submit ENDPOINT
             if p.get('endpoint') != sub.get('endpoint'):
-                s.add(Severity.ERROR, "9.18",
+                s.add(Severity.ERROR, ret_section,
                       f"Data channel: {mt.name} SEQNUM={seqnum} ENDPOINT={p.get('endpoint')} "
-                      f"does not match Submit ENDPOINT={sub.get('endpoint')}",
+                      f"does not match Submit ENDPOINT={sub.get('endpoint')} (Table {ret_table})",
                       packet_number=cm.packet_number,
                       requirement=Requirement.RETURN_ENDPOINT)
 
             # SHALL: Return D matches Submit D
             if p.get('direction') != sub.get('direction'):
-                s.add(Severity.ERROR, "9.18",
+                s.add(Severity.ERROR, ret_section,
                       f"Data channel: {mt.name} SEQNUM={seqnum} D={p.get('direction')} "
-                      f"does not match Submit D={sub.get('direction')}",
+                      f"does not match Submit D={sub.get('direction')} (Table {ret_table})",
                       packet_number=cm.packet_number,
                       requirement=Requirement.RETURN_DIRECTION)
 
-            # ACTUALLENGTH / DIRECTION checks don't apply to ISO returns
-            # (ISO uses per-packet descriptors instead).
-            if mt != MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN:
+            # The ACTUALLENGTH rules of Table 14 apply only to the Returns it describes: an
+            # Isochronous Submit Return carries per-packet lengths instead (Table 15), and a
+            # Cancel Submit Return has no ACTUALLENGTH at all (Table 18).
+            if mt not in (MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN, MsgType.USB_CANCEL_SUBMIT_RETURN):
                 # SHALL: ACTUALLENGTH = 0 when D = 0 (OUT transfer)
                 actual = p.get('actuallength', -1)
                 direction = p.get('direction', -1)
                 if direction == 0 and actual != 0:
-                    s.add(Severity.ERROR, "9.18",
+                    s.add(Severity.ERROR, ret_section,
                           f"Data channel: {mt.name} SEQNUM={seqnum} "
                           f"ACTUALLENGTH={actual} "
-                          "SHALL be 0 for OUT (D=0) transfers",
+                          f"SHALL be 0 for OUT (D=0) transfers (Table {ret_table})",
                           packet_number=cm.packet_number,
                           requirement=Requirement.RETURN_OUT_LENGTH)
 
                 # SHALL: ACTUALLENGTH ≤ TRANSFERLENGTH when D = 1 (IN)
                 if direction == 1 and actual > sub.get('transferlength', 0):
-                    s.add(Severity.ERROR, "9.18",
+                    s.add(Severity.ERROR, ret_section,
                           f"Data channel: {mt.name} SEQNUM={seqnum} "
                           f"ACTUALLENGTH={actual} exceeds "
-                          f"TRANSFERLENGTH={sub.get('transferlength')}",
+                          f"TRANSFERLENGTH={sub.get('transferlength')} (Table {ret_table})",
                           packet_number=cm.packet_number,
                           requirement=Requirement.RETURN_IN_LENGTH)
 
@@ -2137,7 +2154,7 @@ def _validate_data_channel(
                       packet_number=cm.packet_number,
                       requirement=Requirement.RESET_RETURN_EMPTY)
 
-        # -------------------------------------------------------------- §9.15
+        # -------------------------------------------------------------- §9.14
         ctrl_submits = [m for m in receiver_msgs
                         if m.msg.msg_type_enum == MsgType.USB_CONTROL_SUBMIT
                         and not m.msg.payload.get('_encrypted')]
@@ -2145,8 +2162,8 @@ def _validate_data_channel(
             usbdevreq = cm.msg.payload.get('usbdevreq', '')
             req_bytes = bytes.fromhex(usbdevreq) if isinstance(usbdevreq, str) else usbdevreq
             if len(req_bytes) != 8:
-                s.add(Severity.ERROR, "9.15",
-                      f"USB Control Submit USBDEVREQ is {len(req_bytes)} bytes; SHALL be 8",
+                s.add(Severity.ERROR, "9.14",
+                      f"USB Control Submit USBDEVREQ is {len(req_bytes)} bytes; SHALL be 8 (Table 10)",
                       packet_number=cm.packet_number,
                       requirement=Requirement.CONTROL_USBDEVREQ_LENGTH)
 

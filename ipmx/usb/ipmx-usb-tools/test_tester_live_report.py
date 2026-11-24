@@ -107,6 +107,7 @@ class CloseAttribution(unittest.TestCase):
     def _channel(self):
         ours, peer = socket.socketpair()
         self.addCleanup(peer.close)
+        self.addCleanup(ours.close)     # also when the test never closes the channel
         return IpmxChannel(ours, RECEIVER, 40000, SENDER, 50001), peer
 
     def test_the_sender_closing(self):
