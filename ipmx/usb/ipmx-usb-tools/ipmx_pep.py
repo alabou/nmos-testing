@@ -204,18 +204,36 @@ class IvMode(Enum):
 
 
 class KvMode(Enum):
-    """R2S key_version selection strategy.
+    """How the Receiver chooses the key_version (KEYVERSION) of its R2S messages on each TCP
+    connection.
 
-    RANDOM (default): TR-10-13 compliant — Receiver selects an initial
-        random key_version at activation.
-    S2R: Use the Sender's current key_version (from S2R messages).
-        Workaround for devices whose InitPrivateKey() has side-effects
-        when it sees a previously-unknown key_version.
-    SDP: Use the key_version from the SDP transport file.
+    RANDOM (default, the only mode for a secure run): a random key_version for the first TCP
+        connection of the run, then one more for each next connection (modulo 2^32, skipping 0),
+        so that every connection has a key of its own. Each data channel sends its USB Stream
+        Status on sub-stream 3 (TR-10-14 Table 19): only a key_version of its own makes its
+        quartet (iv', key_generator, key_version, key_id) unique (TR-10-13 §14) and lets its CTR
+        start at 0 without re-using an iv'_ctr value (TR-10-13 §15).
+    S2R (debugging): the Sender's current key_version (from its S2R messages). For devices whose
+        InitPrivateKey() has side effects when it sees a key_version it does not know. Only as
+        safe as the Sender (see debug_risk).
+    SDP (debugging): the key_version of the SDP transport file, on every connection (see
+        debug_risk).
     """
     RANDOM = "random"
     S2R = "s2r"
     SDP = "sdp"
+
+    @property
+    def debug_risk(self) -> Optional[str]:
+        """Why this debugging mode is unsafe for a run; None for RANDOM, the default."""
+        if self is KvMode.S2R:
+            return ("the tester's key follows the Sender's KEYVERSION, so a Sender that keeps its "
+                    "KEYVERSION from one TCP connection to the next (TR-10-14 §12 says to increment "
+                    "it) makes the tester re-use keystream (TR-10-13 §15)")
+        if self is KvMode.SDP:
+            return ("every TCP connection uses the SDP key_version, so one key encrypts each "
+                    "connection from CTR 0 and the tester re-uses keystream (TR-10-13 §15)")
+        return None
 
 
 def compute_iv_prime(base_iv: int, substreamid: int = 0,
@@ -845,11 +863,15 @@ def add_pep_args(parser: argparse.ArgumentParser) -> None:
                         help="Start CTR at 1 instead of 0 (workaround for "
                              "devices that reject CTR=0)")
     iv_grp.add_argument("--kv-s2r", action="store_true", default=False,
-                        help="R2S key_version: echo the Sender's current "
-                             "key_version (workaround for certain devices)")
+                        help="Debugging only: R2S key_version echoes the Sender's current "
+                             "key_version (workaround for certain devices); the tester then "
+                             "re-uses keystream whenever the Sender keeps its KEYVERSION from "
+                             "one TCP connection to the next. Default: a random key_version, "
+                             "one more for each TCP connection")
     iv_grp.add_argument("--kv-sdp", action="store_true", default=False,
-                        help="R2S key_version: use the SDP key_version "
-                             "instead of a random one")
+                        help="Debugging only: R2S key_version is the SDP key_version on every "
+                             "TCP connection, which re-uses keystream. Default: a random "
+                             "key_version, one more for each TCP connection")
 
 
 # ---------------------------------------------------------------------------

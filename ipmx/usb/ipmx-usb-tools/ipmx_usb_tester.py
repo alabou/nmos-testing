@@ -323,6 +323,9 @@ class IpmxChannel:
         self.last_recv_pkt_num: int = 0     # PCAP packet number of the last message received
         self._mac_fail_count: int = 0
         self.closed: bool = False
+        # The side that ended the connection, once ended: the tester, by close(), or the
+        # Sender, seen by a receive as the end of the stream or a reset. The first one counts.
+        self.closed_by: Optional[ChannelRole] = None
 
     def configure_pep(self, mode: pepmod.PepMode,
                       key_send: bytes, iv_send: int, kv_send: int,
@@ -476,11 +479,11 @@ class IpmxChannel:
             except socket.timeout:
                 continue
             except OSError:
-                self.closed = True
+                self._mark_closed(ChannelRole.SENDER)
                 return None
 
             if not chunk:
-                self.closed = True
+                self._mark_closed(ChannelRole.SENDER)
                 return None
 
             pkt_num = 0
@@ -517,15 +520,32 @@ class IpmxChannel:
             except socket.timeout:
                 continue
             except OSError:
-                self.closed = True
+                self._mark_closed(ChannelRole.SENDER)
                 return None
             if not chunk:
-                self.closed = True
+                self._mark_closed(ChannelRole.SENDER)
                 return None
             self._buf.extend(chunk)
             self._buf_pkts.append([len(chunk), 0])      # recorded message by message, above
 
+    def _mark_closed(self, by: ChannelRole) -> None:
+        """A receive found the connection ended. Unless the tester closed it first (close()),
+        the Sender ended it: the end of the stream, or a reset."""
+        self.closed = True
+        if self.closed_by is None:
+            self.closed_by = by
+
+    @property
+    def closed_by_tester(self) -> bool:
+        """True when the tester ended the connection itself, before the Sender did: at the end
+        of the test, or by its own decision. A log then names the tester, not the Sender."""
+        return self.closed_by is ChannelRole.RECEIVER
+
     def close(self) -> None:
+        """End the connection from the tester's side (the Receiver's), unless the Sender has
+        already ended it."""
+        if self.closed_by is None:
+            self.closed_by = ChannelRole.RECEIVER
         try:
             self._sock.close()
         except Exception:
@@ -573,7 +593,10 @@ class IpmxReceiverSession:
         self.pep_params      = pep_params
         self.pep_key         = pep_key
         self.kv_mode         = kv_mode
-        self.random_kv       = int.from_bytes(os.urandom(4), 'big') or 1
+        # KvMode.RANDOM: our KEYVERSION for the next TCP connection (resolve_r2s_kv()). Its own
+        # lock: the control channel and each data channel resolve theirs on their own thread.
+        self._next_r2s_kv    = int.from_bytes(os.urandom(4), 'big') or 1
+        self._r2s_kv_lock    = threading.Lock()
         self.iv_mode_s2r     = iv_mode_s2r
         self.iv_mode_r2s     = iv_mode_r2s
         self.r2s_substreamid = r2s_substreamid
@@ -607,47 +630,64 @@ class IpmxReceiverSession:
         self.data_sender_msgs:   dict[int, list[ChannelMessage]] = {}
         self.data_receiver_msgs: dict[int, list[ChannelMessage]] = {}
 
-        # Track findings already reported (avoid duplicates during incremental re-runs)
+        # The finding occurrences already printed live (_validate_and_report), for the whole run:
+        # a reconnect does not print the earlier findings again. _report_lock runs one
+        # validation pass at a time: each channel validates from its own thread.
         self._reported_findings: set[tuple] = set()
+        self._report_lock = threading.Lock()
 
         self._lock      = threading.Lock()
         self._pkt_counter = 0
         self.suppress_vq_log = False
 
     def resolve_r2s_kv(self, sender_kv: int, sdp_kv: int) -> int:
-        """Determine the key_version to use for R2S messages."""
+        """The KEYVERSION of our Receiver-to-Sender messages on a new TCP connection.
+
+        Called once for each TCP connection: the control channel's and each data channel's.
+        KvMode.RANDOM, the default, gives every connection a key of its own: a random KEYVERSION
+        for the first connection of the run, then one more for each next one, modulo 2^32 and
+        skipping 0 (TR-10-14 Table 1 gives KEYVERSION 0 to unencrypted messages). Each data
+        channel sends its USB Stream Status on sub-stream 3 (TR-10-14 Table 19), so only a
+        KEYVERSION of its own makes its quartet (iv', key_generator, key_version, key_id) unique
+        (TR-10-13 §14) and lets its CTR start at 0 without re-using an iv'_ctr value (TR-10-13
+        §15); counting up keeps every value of the run unique.
+
+        KvMode.S2R and KvMode.SDP are for debugging (pepmod.KvMode.debug_risk).
+        """
         if self.kv_mode == pepmod.KvMode.S2R:
             return sender_kv if sender_kv != 0 else (sdp_kv if sdp_kv != 0 else 1)
         if self.kv_mode == pepmod.KvMode.SDP:
             return sdp_kv if sdp_kv != 0 else 1
-        return self.random_kv
+        with self._r2s_kv_lock:
+            kv = self._next_r2s_kv
+            self._next_r2s_kv = (kv + 1) % (1 << 32) or 1
+        return kv
 
     # ------------------------------------------------------------------
     # Reconnect: reset per-TCP-session state
 
     def reset_ctrl_for_reconnect(self) -> None:
-        """Clear control-channel message lists and stale findings on reconnect.
+        """Clear the control-channel message lists on reconnect.
 
-        Each TCP connection is a separate session for validation purposes
-        (e.g. KEYVERSION consistency is per-TCP-session).
+        Each TCP connection is validated on its own (e.g. the forward progress of KEYVERSION
+        and CTR, TR-10-13 §18, whose subscription is the TCP connection). The findings already
+        printed stay printed: the new connection's own are new occurrences.
         """
         with self._lock:
             self.ctrl_sender_msgs.clear()
             self.ctrl_receiver_msgs.clear()
-            self._reported_findings.clear()
 
     def reset_data_for_reconnect(self, substreamid: int) -> None:
-        """Clear data-channel message lists for *substreamid* on reconnect.
+        """Clear the data-channel message lists of *substreamid* on reconnect.
 
-        Called when the Sender opens a new TCP connection for the same
-        substreamid; ensures KEYVERSION consistency is checked per TCP session.
+        Called when the Sender opens a new TCP connection for the same substreamid, which is
+        validated on its own, as the control channel's (reset_ctrl_for_reconnect).
         """
         with self._lock:
             if substreamid in self.data_sender_msgs:
                 self.data_sender_msgs[substreamid].clear()
             if substreamid in self.data_receiver_msgs:
                 self.data_receiver_msgs[substreamid].clear()
-            self._reported_findings.clear()
 
     # ------------------------------------------------------------------
     # Packet number allocation (shared across all channels)
@@ -715,70 +755,94 @@ class IpmxReceiverSession:
     # ------------------------------------------------------------------
     # Live validation
 
+    @staticmethod
+    def _connection_of(msgs: list[ChannelMessage]) -> tuple:
+        """The TCP connection *msgs* were exchanged on: its two endpoints, in a fixed order."""
+        cm = msgs[0]
+        return tuple(sorted(((cm.src_ip, cm.src_port), (cm.dst_ip, cm.dst_port))))
+
     def _validate_and_report(self) -> None:
-        with self._lock:
-            ctrl_s = list(self.ctrl_sender_msgs)
-            ctrl_r = list(self.ctrl_receiver_msgs)
-            data_s = {k: list(v) for k, v in self.data_sender_msgs.items()}
-            data_r = {k: list(v) for k, v in self.data_receiver_msgs.items()}
-            sess   = self.session
+        """Re-run the validators on the messages recorded so far and print the findings not
+        printed yet.
 
-        # Clear findings and re-run all validators
-        sess.findings.clear()
-        # Reset mutable channel states (validators repopulate them)
-        sess.control = ControlChannel()
-        sess.data_channels = {}
+        Each finding is printed once. It is one occurrence: its text on its message (packet
+        number) on its TCP connection; a tester finding is its own entry. Validation re-runs on
+        every message, so a finding comes back on every pass, and a reconnect leaves the other
+        connections' findings in place; neither prints a finding again.
+        """
+        with self._report_lock:
+            with self._lock:
+                ctrl_s = list(self.ctrl_sender_msgs)
+                ctrl_r = list(self.ctrl_receiver_msgs)
+                data_s = {k: list(v) for k, v in self.data_sender_msgs.items()}
+                data_r = {k: list(v) for k, v in self.data_receiver_msgs.items()}
+                sess   = self.session
 
-        # The recorded messages are already decrypted whenever a PEP key was derived. Without
-        # `decrypted`, an encrypted session skips every payload check of the validators
-        # (SEQNUM, Submit/Return matching, ACTUALLENGTH, RSTATUS, DATA sizes).
-        decrypted = self.pep_key is not None
+            # Clear findings and re-run all validators
+            sess.findings.clear()
+            # Reset mutable channel states (validators repopulate them)
+            sess.control = ControlChannel()
+            sess.data_channels = {}
+            # Each finding with the identity of its occurrence (see the docstring)
+            occurrences: list[tuple[Finding, tuple]] = []
 
-        # Only validate the control channel once both sides have spoken
-        # (avoids transient false positives when SCI arrives before SCS is sent).
-        if ctrl_s and ctrl_r:
-            _validate_control_channel(
-                sess, ctrl_s, ctrl_r,
-                expected_cid=None, expected_sn=None,
-                encrypted=self.encrypted,
-                decrypted=decrypted,
-            )
+            # The recorded messages are already decrypted whenever a PEP key was derived. Without
+            # `decrypted`, an encrypted session skips every payload check of the validators
+            # (SEQNUM, Submit/Return matching, ACTUALLENGTH, RSTATUS, DATA sizes).
+            decrypted = self.pep_key is not None
 
-        for substreamid in set(data_s) | set(data_r):
-            s_msgs = data_s.get(substreamid, [])
-            r_msgs = data_r.get(substreamid, [])
-            # Only validate once both sides have sent at least one message
-            # to avoid transient false positives during stream setup.
-            if not (s_msgs and r_msgs):
-                continue
-            channel = DataChannel(substreamid=substreamid, busid='', usbspeed=0)
-            sess.data_channels[substreamid] = channel
-            _validate_data_channel(
-                sess, channel,
-                s_msgs, r_msgs,
-                encrypted=self.encrypted,
-                decrypted=decrypted,
-            )
-            if self.diagnose:
-                _diagnose_data_channel(sess, channel, s_msgs, r_msgs)
-        sess.diagnosed = self.diagnose
-        with self._lock:
-            sess.findings.extend(self.tester_findings)
+            # Only validate the control channel once both sides have spoken
+            # (avoids transient false positives when SCI arrives before SCS is sent).
+            if ctrl_s and ctrl_r:
+                first = len(sess.findings)
+                _validate_control_channel(
+                    sess, ctrl_s, ctrl_r,
+                    expected_cid=None, expected_sn=None,
+                    encrypted=self.encrypted,
+                    decrypted=decrypted,
+                )
+                conn = self._connection_of(ctrl_r)
+                occurrences += [(f, (f.severity, f.section, f.description, f.packet_number, conn))
+                                for f in sess.findings[first:]]
 
-        # Report only new findings
-        current_keys = {
-            (f.severity, f.section, f.description)
-            for f in sess.findings
-        }
-        new_keys = current_keys - self._reported_findings
-        self._reported_findings = current_keys
+            for substreamid in set(data_s) | set(data_r):
+                s_msgs = data_s.get(substreamid, [])
+                r_msgs = data_r.get(substreamid, [])
+                # Only validate once both sides have sent at least one message
+                # to avoid transient false positives during stream setup.
+                if not (s_msgs and r_msgs):
+                    continue
+                channel = DataChannel(substreamid=substreamid, busid='', usbspeed=0)
+                sess.data_channels[substreamid] = channel
+                first = len(sess.findings)
+                _validate_data_channel(
+                    sess, channel,
+                    s_msgs, r_msgs,
+                    encrypted=self.encrypted,
+                    decrypted=decrypted,
+                )
+                if self.diagnose:
+                    _diagnose_data_channel(sess, channel, s_msgs, r_msgs)
+                conn = self._connection_of(s_msgs)
+                occurrences += [(f, (f.severity, f.section, f.description, f.packet_number, conn))
+                                for f in sess.findings[first:]]
+            sess.diagnosed = self.diagnose
+            with self._lock:
+                tester = list(self.tester_findings)      # append-only: the index is the entry
+            sess.findings.extend(tester)
+            occurrences += [(f, ('tester', i)) for i, f in enumerate(tester)]
 
-        if self.hid_only:
-            return   # suppress all validation noise in --hid mode
+            # Report only the occurrences not reported yet
+            new: list[Finding] = []
+            for f, key in occurrences:
+                if key not in self._reported_findings:
+                    self._reported_findings.add(key)
+                    new.append(f)
 
-        for f in sess.findings:
-            key = (f.severity, f.section, f.description)
-            if key in new_keys:
+            if self.hid_only:
+                return   # suppress all validation noise in --hid mode
+
+            for f in new:
                 color = "\033[91m" if f.severity == Severity.ERROR else "\033[93m"
                 reset = "\033[0m"
                 print(f"{color}  [LIVE {f.severity.value}] §{f.section}: {f.description}{reset}",
@@ -1135,7 +1199,11 @@ class ControlChannelClient:
 
             if msg is None:
                 if ch.closed:
-                    sess.warn("Sender closed the TCP connection")
+                    if ch.closed_by_tester:
+                        sess.log("Control channel closed by the tester"
+                                 + (" (the test ended)" if self._stop.is_set() else ""))
+                    else:
+                        sess.warn("Sender closed the TCP connection")
                     break
                 # Section 11 SHALL: disconnect non-responsive Sender
                 elapsed = time.monotonic() - last_hbeat
@@ -1431,7 +1499,12 @@ class DataChannelHandler:
                 if not (self._from_wrong_side(msg) or self._answers_other_submit(msg, (seq,))):
                     ret = msg
             if ret is None:
-                if self._ch.closed:
+                if self._ch.closed and self._ch.closed_by_tester:
+                    self._session.log(
+                        f"Data channel {self._sid()} closed by the tester before CONTROL_SUBMIT "
+                        f"seq={seq} was answered"
+                        + (" (the test ended)" if self._stop.is_set() else ""))
+                elif self._ch.closed:
                     self._session.warn(
                         f"Sender closed data channel before replying to "
                         f"CONTROL_SUBMIT seq={seq}")
@@ -2012,7 +2085,11 @@ class DataChannelHandler:
                     fatal = True
 
         if fatal:
-            sess.warn("Enumeration aborted — Sender closed data channel")
+            if self._ch.closed_by_tester:
+                sess.log(f"Enumeration aborted: data channel {self._sid()} closed by the tester"
+                         + (" (the test ended)" if self._stop.is_set() else ""))
+            else:
+                sess.warn("Enumeration aborted — Sender closed data channel")
             return []
 
         sess.log(f"  USB enumeration complete (seqnum now={self._seqnum})")
@@ -2103,7 +2180,12 @@ class DataChannelHandler:
                         self._decode_hid(td, ep)
 
         if self._ch.closed and outstanding:
-            sess.warn("Sender closed the data channel with an INTERRUPT_SUBMIT pending")
+            if self._ch.closed_by_tester:
+                sess.log(f"Data channel {self._sid()} closed by the tester with an "
+                         f"INTERRUPT_SUBMIT pending"
+                         + (" (the test ended)" if self._stop.is_set() else ""))
+            else:
+                sess.warn("Sender closed the data channel with an INTERRUPT_SUBMIT pending")
 
     def _record_sender_msg(self, msg: 'IpmxUsbMessage') -> None:
         """Record a Sender-originated data-channel message."""
@@ -2204,7 +2286,8 @@ class DataChannelHandler:
             msg = self._recv(timeout=5.0)
             if msg is None:
                 if self._ch.closed:
-                    sess.log(f"  Data channel 0x{ssid:02X} closed by Sender")
+                    sess.log(f"  Data channel 0x{ssid:02X} closed by "
+                             + ("the tester" if self._ch.closed_by_tester else "Sender"))
                     break
                 continue
 
@@ -2679,6 +2762,12 @@ Examples:
         kv_mode = pepmod.KvMode.SDP
     else:
         kv_mode = pepmod.KvMode.RANDOM
+    if kv_mode.debug_risk:
+        print(f"Warning: --kv-{kv_mode.value} is for debugging only: {kv_mode.debug_risk}")
+    if pep_params is not None and not pep_params.is_kv:
+        print(f"Warning: PEP protocol {pep_params.protocol.value} carries no in-band key_version, "
+              "so the tester's key is the same on every TCP connection and each connection "
+              "starting at CTR 0 re-uses keystream (TR-10-13 §15). TR-10-14 §14 requires USB_KV")
 
     iv_swapn = args.iv_swapn
 

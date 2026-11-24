@@ -73,8 +73,10 @@ class Severity(str, Enum):
     INFO    = "INFO"
     DIAG    = "DIAG"     # for the operator to judge; never an error, a warning or a reason to stop:
                          # a core USB 2.0 rule not met (--diagnose), which TR-10-14 does not mandate,
-                         # or a message TR-10-14 requires but sets no time for, not sent by the time
-                         # the observation of it ended (always reported)
+                         # a message TR-10-14 requires but sets no time for, not sent by the time
+                         # the observation of it ended (always reported), or an in-band KEYVERSION
+                         # or CTR that does not make forward progress, which TR-10-13 §18 asks the
+                         # peer to verify (always reported)
 
 
 class Verdict(IntEnum):
@@ -143,8 +145,8 @@ class Requirement(Enum):
     ISO_ASAP_STARTFRAME         = ("9.17",     "SHALL",  "USB Isochronous Submit: STARTFRAME SHALL be 0 when A (ASAP) is 1")
     # §10 — Sub-stream multiplexing
     SUBSTREAM_PARITY            = ("10",       "SHALL",  "S2R substreamid SHALL be even; R2S substreamid SHALL be odd")
-    # §9.14 — SEQNUM
-    SUBMIT_SEQNUM               = ("9.14",     "SHALL",  "Submit SEQNUM starts at 0 and increments by 1 per Submit")
+    # §9.14-9.17 — USB Submits
+    SUBMIT_SEQNUM               = ("9.14-17",  "SHALL",  "Submit SEQNUM starts at 0 and increments by 1 per Submit (Tables 10-12)")
     SUBMIT_RSVD                 = ("9.14",     "SHALL",  "Submit Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0")
     SUBMIT_DATA_FIELDS          = ("9.14-16",  "SHALL",  "Control/Bulk/Interrupt Submit DATA SHALL be exactly its Table 10/11 fields (TRANFERDATA = TRANSFERLENGTH bytes on OUT, none on IN)")
     # §9.18 — Submit Return
@@ -156,17 +158,30 @@ class Requirement(Enum):
     RETURN_RSVD                 = ("9.18",     "SHALL",  "Submit Return Reserved bits (Rsvd 3 in endpoint byte) SHALL be 0")
     RETURN_DATA_FIELDS          = ("9.18-20",  "SHALL",  "Control/Bulk/Interrupt Submit Return DATA SHALL be exactly its Table 14 fields (TRANFERDATA = ACTUALLENGTH bytes)")
     RETURN_SENT                 = ("9.18/19/23", "SHALL", "Every Control, Bulk and Cancel Submit SHALL get its Submit Return")
+    # §9.22 — USB Cancel Submit (Table 17)
+    CANCEL_SEQNUM               = ("9.22",     "SHALL",  "Cancel Submit SEQNUM SHALL match the SEQNUM of the USB Submit to cancel")
+    CANCEL_ENDPOINT             = ("9.22",     "SHALL",  "Cancel Submit ENDPOINT SHALL match the ENDPOINT of the USB Submit to cancel")
+    CANCEL_DIRECTION            = ("9.22",     "SHALL",  "Cancel Submit D SHALL match the D of the USB Submit to cancel")
+    CANCEL_DATA_FIELDS          = ("9.22",     "SHALL",  "Cancel Submit DATA SHALL be exactly its Table 17 fields (4 bytes)")
     # §11 — Heartbeat
     HEARTBEAT_GAP_MAX           = ("11",       "SHALL",  "Heartbeat gap SHALL be ≤ 2 × Heartbeat_Period (unresponsive threshold)")
     # §12 — Encryption
     CLEAR_CTR_ZERO              = ("12",       "SHALL",  "Unencrypted mode: CTR SHALL be 0 on every message")
     CLEAR_KEYVERSION_ZERO       = ("12",       "SHALL",  "Unencrypted mode: KEYVERSION SHALL be 0 on every message")
     CLEAR_MAC_ZERO              = ("12",       "SHALL",  "Unencrypted mode: MAC SHALL be 0x0000000000000000 on every message")
-    CTR_MONOTONIC               = ("12",       "SHALL",  "Encrypted mode: CTR SHALL increase monotonically per direction")
-    KEYVERSION_NONZERO_CONSISTENT = ("12",     "SHALL",  "Encrypted mode: KEYVERSION SHALL be non-zero and consistent within a TCP session")
+    KEYVERSION_NONZERO          = ("12",       "SHALL",  "Encrypted mode: KEYVERSION SHALL be non-zero")
     CMAC_VERIFIES               = ("12",       "SHALL",  "Encrypted mode: CMAC-64 authentication SHALL verify correctly")
     MODE_ALLOWED                = ("12",       "SHALL",  "Mode SHALL be one of the allowed values (AES-128/256-CTR_CMAC-64-AAD, ECDH variants)")
     MODE_AES128_SUPPORTED       = ("12",       "SHALL",  "Senders and Receivers SHALL support AES-128-CTR_CMAC-64-AAD mode")
+    # TR-10-13 §18 — Safety: forward progress of the in-band KEYVERSION and CTR, which §18 asks the
+    # peer to verify. The TCP connection is the subscription: the first message each side sends on
+    # it is not verified. A breach is DIAG, never a failure.
+    PEP_KEYVERSION_FORWARD      = ("TR-10-13 18", "SHOULD", "Encrypted mode: each KEYVERSION is larger than or equal to the "
+                                                            "one before it on its TCP connection and direction (modulo 2^32, "
+                                                            "at most 2^31 ahead)")
+    PEP_CTR_FORWARD             = ("TR-10-13 18", "SHOULD", "Encrypted mode: under one KEYVERSION, each CTR starts past every "
+                                                            "16-byte slice already encrypted on its TCP connection and "
+                                                            "direction (no iv'_ctr reuse, TR-10-13 §15)")
     # §A.1 — Status codes
     STATUS_DEFINED              = ("A.1",      "SHALL",  "RSTATUS / ISOSTATUS SHALL be a defined status code")
 
@@ -300,6 +315,26 @@ MESSAGE_SENDER: dict[MsgType, tuple[ChannelRole, str]] = {
     MsgType.USB_CANCEL_SUBMIT:             (ChannelRole.RECEIVER, "9.22"),
     MsgType.USB_CANCEL_SUBMIT_RETURN:      (ChannelRole.SENDER,   "9.23"),
 }
+
+#: The table of DATA fields the section of each USB Submit type refers to (§9.14-9.17), which
+#: holds the rules of its fields, SEQNUM's among them.
+_SUBMIT_FIELDS_TABLE: dict[MsgType, str] = {
+    MsgType.USB_CONTROL_SUBMIT:     "10",
+    MsgType.USB_BULK_SUBMIT:        "11",
+    MsgType.USB_INTERRUPT_SUBMIT:   "11",
+    MsgType.USB_ISOCHRONOUS_SUBMIT: "12",
+}
+
+#: The USB Return a Sender sends in response to each USB Submit type (§9.18-9.21).
+_RETURN_OF_SUBMIT: dict[MsgType, MsgType] = {
+    MsgType.USB_CONTROL_SUBMIT:     MsgType.USB_CONTROL_SUBMIT_RETURN,
+    MsgType.USB_BULK_SUBMIT:        MsgType.USB_BULK_SUBMIT_RETURN,
+    MsgType.USB_INTERRUPT_SUBMIT:   MsgType.USB_INTERRUPT_SUBMIT_RETURN,
+    MsgType.USB_ISOCHRONOUS_SUBMIT: MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN,
+}
+
+#: Table 17's fields: SEQNUM (3 bytes), then ENDPOINT, Rsvd and D (1 byte).
+_CANCEL_SUBMIT_DATA_BYTES = 4
 
 
 def sent_by_other_side(mt: Optional[MsgType], sent_by: ChannelRole) -> Optional[tuple[ChannelRole, str]]:
@@ -1171,6 +1206,107 @@ def _check_endpoint_rsvd_bits(
                     requirement=Requirement.SUBMIT_RSVD if role == "submit" else Requirement.RETURN_RSVD)
 
 
+def _check_cancel_submits(
+    session: Session,
+    channel: DataChannel,
+    sender_msgs: list[ChannelMessage],
+    receiver_msgs: list[ChannelMessage],
+) -> None:
+    """§9.22: "Fields of DATA field shall be as described in Table 17", whose SEQNUM, ENDPOINT
+    and D each "shall match" those of "the USB Submit to Cancel": 4 bytes in all.
+
+    A Cancel Submit names the Submit it cancels by its SEQNUM: that Submit is the last one the
+    Receiver sent on this data channel before the Cancel Submit with that SEQNUM (SEQNUM is 3
+    bytes and wraps). It may have been answered already, its Submit Return crossing the Cancel
+    Submit on the wire. A SEQNUM no Submit sent before carries identifies none, so its ENDPOINT and
+    D have nothing to match, and the finding lists the Submits then still waiting for their Return
+    instead. That finding needs every Submit sent before the Cancel Submit in the capture: the
+    Receiver's USB Stream Status, before which it sends none (§8.3.1.2), is in it, and no earlier
+    Submit is unreadable (ciphertext whose CMAC failed, or DATA too short for its fields). A wrong
+    DATA size is one finding for the channel, with the count, as for the other Submits."""
+    where = f"Data channel (substreamid=0x{channel.substreamid:02X})"
+    receiver_ids = {id(cm) for cm in receiver_msgs}
+    last_with_seqnum: dict[int, ChannelMessage] = {}    # SEQNUM -> last Submit sent with it
+    waiting: dict[tuple, ChannelMessage] = {}           # (Return type, SEQNUM) -> Submit, no Return yet
+    stream_status_seen = False
+    unreadable_submit = False
+    cancels: list[ChannelMessage] = []
+    wrong_size: list[ChannelMessage] = []
+    returns = set(_RETURN_OF_SUBMIT.values())
+    # Capture order, a Submit taken as sent first where it cannot tell (as Pass 2 of the
+    # data-channel validation does).
+    for cm in sorted(sender_msgs + receiver_msgs,
+                     key=lambda m: (m.packet_number, m.timestamp, 0 if id(m) in receiver_ids else 1)):
+        mt, p = cm.msg.msg_type_enum, cm.msg.payload
+        readable = bool(p) and not p.get('_encrypted')
+        if id(cm) not in receiver_ids:
+            if mt in returns and readable:
+                waiting.pop((mt, p.get('seqnum')), None)
+            continue
+        if mt == MsgType.USB_STREAM_STATUS:
+            stream_status_seen = True
+            continue
+        if mt in _RETURN_OF_SUBMIT:
+            if readable and 'seqnum' in p:
+                last_with_seqnum[p['seqnum']] = cm
+                waiting[(_RETURN_OF_SUBMIT[mt], p['seqnum'])] = cm
+            else:
+                unreadable_submit = True
+            continue
+        if mt != MsgType.USB_CANCEL_SUBMIT or p.get('_encrypted'):
+            continue
+        cancels.append(cm)
+        if len(cm.msg.data) != _CANCEL_SUBMIT_DATA_BYTES:
+            wrong_size.append(cm)
+        if not readable:
+            continue                       # DATA too short to hold Table 17's fields
+        seqnum = p['seqnum']
+        submit = last_with_seqnum.get(seqnum)
+        if submit is None:
+            if unreadable_submit or not stream_status_seen:
+                continue                   # the Submit it names may be one the capture lacks
+            still_waiting = sorted(waiting.values(), key=lambda m: m.packet_number)
+            listed = ("; Submits then waiting for their Return: " + ", ".join(
+                f"SEQNUM {w.msg.payload['seqnum']} ({w.msg.msg_type_name}, "
+                f"ENDPOINT={w.msg.payload.get('endpoint')}, D={w.msg.payload.get('direction')}, "
+                f"pkt #{w.packet_number})" for w in still_waiting)
+                if still_waiting else "; no Submit was waiting for its Return")
+            session.add(Severity.ERROR, "9.22",
+                        f"{where}: USB_CANCEL_SUBMIT SEQNUM={seqnum} is the SEQNUM of no USB Submit "
+                        f"sent before it on this data channel; it SHALL match the SEQNUM of the USB "
+                        f"Submit to cancel (Table 17){listed}",
+                        packet_number=cm.packet_number,
+                        requirement=Requirement.CANCEL_SEQNUM)
+            continue
+        sp = submit.msg.payload
+        for field, name, requirement in (('endpoint', 'ENDPOINT', Requirement.CANCEL_ENDPOINT),
+                                         ('direction', 'D', Requirement.CANCEL_DIRECTION)):
+            if p.get(field) != sp.get(field):
+                session.add(Severity.ERROR, "9.22",
+                            f"{where}: USB_CANCEL_SUBMIT SEQNUM={seqnum} {name}={p.get(field)} "
+                            f"does not match {name}={sp.get(field)} of the {submit.msg.msg_type_name} "
+                            f"it cancels (pkt #{submit.packet_number}); it SHALL match (Table 17)",
+                            packet_number=cm.packet_number,
+                            requirement=requirement)
+
+    if wrong_size:
+        first = wrong_size[0]
+        size = len(first.msg.data)
+        detail = []
+        if first.msg.payload.get('seqnum') is not None:
+            detail.append(f"first SEQNUM={first.msg.payload['seqnum']}")
+        past = first.msg.data[_CANCEL_SUBMIT_DATA_BYTES:]
+        if past:
+            detail.append("bytes past the fields: " + past[:16].hex(' ') + (" ..." if len(past) > 16 else ""))
+        session.add(Severity.ERROR, "9.22",
+                    f"{where}: USB_CANCEL_SUBMIT DATA is {size} bytes but its Table 17 fields total "
+                    f"{_CANCEL_SUBMIT_DATA_BYTES}, in {len(wrong_size)} of {len(cancels)} messages"
+                    + (f" ({'; '.join(detail)})" if detail else "")
+                    + "; fields of the DATA field SHALL be as described in Table 17",
+                    packet_number=first.packet_number,
+                    requirement=Requirement.CANCEL_DATA_FIELDS)
+
+
 def _validate_control_channel(
     session: Session,
     sender_msgs: list[ChannelMessage],
@@ -1501,11 +1637,11 @@ def _validate_control_channel(
                       packet_number=cm.packet_number,
                       requirement=Requirement.CLEAR_MAC_ZERO)
     else:
-        # ---------------------------------------------------------------- §12 — CTR monotonicity
-        _check_ctr_monotonic(s, sender_msgs, "Sender->Receiver (control)")
-        _check_ctr_monotonic(s, receiver_msgs, "Receiver->Sender (control)")
-        # ---------------------------------------------------------------- §12 — KEYVERSION consistency
-        _check_keyversion_consistency(s, sender_msgs, receiver_msgs, "control")
+        # ---------------------------------------------------------------- §12 — KEYVERSION non-zero
+        _check_keyversion_nonzero(s, sender_msgs, receiver_msgs, "control")
+        # ---------------------------------------------------------------- TR-10-13 §18 — forward progress
+        _check_pep_forward_progress(s, sender_msgs, "Sender->Receiver (control)")
+        _check_pep_forward_progress(s, receiver_msgs, "Receiver->Sender (control)")
 
     # ------------------------------------------------------------------ §8.3.1.1, §9.6
     for since, what, requirement, packet_number in outstanding:
@@ -1513,69 +1649,98 @@ def _validate_control_channel(
                             requirement, packet_number)
 
 
-def _check_keyversion_consistency(
+def _check_keyversion_nonzero(
     session: Session,
     sender_msgs: list[ChannelMessage],
     receiver_msgs: list[ChannelMessage],
     channel_label: str,
 ) -> None:
-    """§12: KEYVERSION SHALL be consistent and non-zero within each direction.
+    """§12: an encrypted message's KEYVERSION is non-zero (Requirement.KEYVERSION_NONZERO).
 
-    Per TR-10-13 §19.2, Sender and Receiver each independently manage
-    their own key_version.  Consistency is checked per-direction: all
-    S2R messages must share one KEYVERSION and all R2S messages must
-    share one (possibly different) KEYVERSION.
+    TR-10-14 Table 1 gives KEYVERSION 0 to unencrypted messages; a zero on an encrypted one
+    reads as that. How the KEYVERSION may change on a TCP connection is a forward-progress
+    question (TR-10-13 §18), judged by _check_pep_forward_progress().
     """
-    s = session
     for direction_label, msgs in (("Sender->Receiver", sender_msgs),
                                   ("Receiver->Sender", receiver_msgs)):
-        kv_set: set[int] = set()
         for cm in msgs:
-            kv = cm.msg.key_version
-            if kv == 0:
-                s.add(Severity.ERROR, "12",
-                      f"{channel_label} {direction_label} {cm.msg.msg_type_name}: "
-                      "KEYVERSION=0x00000000 SHALL be non-zero when encryption is used",
-                      packet_number=cm.packet_number,
-                      requirement=Requirement.KEYVERSION_NONZERO_CONSISTENT)
-            kv_set.add(kv)
-        kv_nonzero = {v for v in kv_set if v != 0}
-        if len(kv_nonzero) > 1:
-            sorted_kvs = sorted(kv_nonzero)
-            _MAX_KV_SHOWN = 6
-            if len(sorted_kvs) <= _MAX_KV_SHOWN:
-                vals = ", ".join(f"0x{v:08X}" for v in sorted_kvs)
-            else:
-                head = ", ".join(f"0x{v:08X}" for v in sorted_kvs[:3])
-                tail = ", ".join(f"0x{v:08X}" for v in sorted_kvs[-2:])
-                vals = f"{head}, ... ({len(sorted_kvs) - 5} more) ..., {tail}"
-            s.add(Severity.ERROR, "12",
-                  f"{channel_label} {direction_label}: Multiple KEYVERSION values "
-                  f"({vals}) in a single TCP session; SHALL be consistent",
-                  requirement=Requirement.KEYVERSION_NONZERO_CONSISTENT)
+            if cm.msg.key_version == 0:
+                session.add(Severity.ERROR, "12",
+                            f"{channel_label} {direction_label} {cm.msg.msg_type_name}: "
+                            "KEYVERSION=0x00000000 SHALL be non-zero when encryption is used",
+                            packet_number=cm.packet_number,
+                            requirement=Requirement.KEYVERSION_NONZERO)
 
 
-def _check_ctr_monotonic(
+#: The in-band KEYVERSION is 32 bits and the CTR 64 bits (TR-10-14 Table 1); both wrap around.
+_KEYVERSION_MODULUS = 1 << 32
+_CTR_MODULUS = 1 << 64
+
+
+def _is_forward(previous: int, current: int, modulus: int) -> bool:
+    """TR-10-13 §18 forward progress of a value that wraps around at *modulus*: *current* equals
+    *previous* or comes after it by less than half the range (§18: the key_version "cannot be
+    farther than 2^31 units from the initial or previous one")."""
+    return (current - previous) % modulus < modulus // 2
+
+
+def _check_pep_forward_progress(
     session: Session,
     msgs: list[ChannelMessage],
     direction_label: str,
 ) -> None:
-    """Verify that CTR values are strictly increasing in *msgs* (per §12)."""
-    prev_ctr: Optional[int] = None
+    """TR-10-13 §18: the in-band KEYVERSION and CTR of one direction of one TCP connection make
+    forward progress.
+
+    *msgs* are the messages one side sent on one TCP connection, in the order sent. The TCP
+    connection is the subscription of §18: the first message of each direction "cannot be
+    verified for making forward progress" and is the baseline.
+
+    - KEYVERSION: each one is larger than or equal to the one before it, modulo 2^32 and at most
+      2^31 ahead (Requirement.PEP_KEYVERSION_FORWARD). A different KEYVERSION is a different key
+      (USB_KV, TR-10-14 §14): its CTR is a counter space of its own.
+    - CTR: under one KEYVERSION, a message's CTR is at or past the end of every counter value
+      already used on the connection in that direction (Requirement.PEP_CTR_FORWARD). A message
+      uses its CTR and one value more for each 16-byte slice it encrypts (TR-10-14 §12). Skipping
+      values ahead is forward progress; a CTR below that end re-uses iv'_ctr values of the key
+      (TR-10-13 §15), whether it goes back (a restart at 0) or starts inside the slices of an
+      earlier message (a counter that steps by message, not by slice).
+
+    Breaches are DIAG: §18 asks the peer to verify ("should verify"), so they never fail a capture.
+    The KEYVERSION and CTR are read from the clear header, so the check needs no key.
+    """
+    previous: Optional[ChannelMessage] = None
+    # KEYVERSION -> (the CTR where the counter values used under it end, the message that used
+    # the last of them)
+    used_until: dict[int, tuple[int, ChannelMessage]] = {}
     for cm in msgs:
-        ctr = cm.msg.ctr
-        if ctr == 0:
-            continue           # unencrypted message mixed in — checked elsewhere
-        if prev_ctr is not None and ctr <= prev_ctr:
-            session.add(
-                Severity.ERROR, "12",
-                f"{direction_label}: {cm.msg.msg_type_name} CTR=0x{ctr:016X} "
-                f"is not greater than previous CTR=0x{prev_ctr:016X}; "
-                "SHALL be strictly increasing",
-                packet_number=cm.packet_number,
-                requirement=Requirement.CTR_MONOTONIC,
-            )
-        prev_ctr = ctr
+        m = cm.msg
+        if previous is not None and not _is_forward(previous.msg.key_version, m.key_version,
+                                                    _KEYVERSION_MODULUS):
+            p = previous.msg
+            session.add(Severity.DIAG, Requirement.PEP_KEYVERSION_FORWARD.section,
+                        f"{direction_label}: {m.msg_type_name} KEYVERSION=0x{m.key_version:08X} "
+                        f"goes back from 0x{p.key_version:08X}, the KEYVERSION of the "
+                        f"{p.msg_type_name} before it; it SHALL be larger than or equal to the "
+                        "last one received",
+                        packet_number=cm.packet_number,
+                        requirement=Requirement.PEP_KEYVERSION_FORWARD)
+        used = used_until.get(m.key_version)
+        if used is not None and not _is_forward(used[0], m.ctr, _CTR_MODULUS):
+            end, last_cm = used
+            last = last_cm.msg
+            session.add(Severity.DIAG, Requirement.PEP_CTR_FORWARD.section,
+                        f"{direction_label}: {m.msg_type_name} CTR={m.ctr} re-uses counter values "
+                        f"of KEYVERSION=0x{m.key_version:08X}, used up to CTR "
+                        f"{(end - 1) % _CTR_MODULUS} (the {last.msg_type_name} at CTR={last.ctr} "
+                        f"encrypted {pepmod.usb_ctr_advance(last.length)} slice(s) of 16 bytes); "
+                        f"forward progress needs CTR {end} or more",
+                        packet_number=cm.packet_number,
+                        requirement=Requirement.PEP_CTR_FORWARD)
+        message_end = (m.ctr + pepmod.usb_ctr_advance(m.length)) % _CTR_MODULUS
+        if used is None or _is_forward(used[0], message_end, _CTR_MODULUS):
+            used_until[m.key_version] = (message_end, cm)
+        previous = cm
 
 
 def _validate_data_channel(
@@ -1714,10 +1879,7 @@ def _validate_data_channel(
         # Skipped entirely when encrypted (payload is opaque ciphertext).
 
         submit_return_map = {
-            MsgType.USB_CONTROL_SUBMIT:            MsgType.USB_CONTROL_SUBMIT_RETURN,
-            MsgType.USB_BULK_SUBMIT:               MsgType.USB_BULK_SUBMIT_RETURN,
-            MsgType.USB_INTERRUPT_SUBMIT:          MsgType.USB_INTERRUPT_SUBMIT_RETURN,
-            MsgType.USB_ISOCHRONOUS_SUBMIT:        MsgType.USB_ISOCHRONOUS_SUBMIT_RETURN,
+            **_RETURN_OF_SUBMIT,
             MsgType.USB_CANCEL_SUBMIT:             MsgType.USB_CANCEL_SUBMIT_RETURN,
         }
 
@@ -1748,11 +1910,13 @@ def _validate_data_channel(
                         after_reset = (
                             f", after the {reset.msg.msg_type_name} of packet "
                             f"#{reset.packet_number}. A USB Stream Reset opens no new data channel: "
-                            f"SEQNUM goes on from the previous Submit sent on this data channel "
-                            f"(Tables 10-12)") if reset else ""
-                        s.add(Severity.ERROR, "9.14",
+                            f"SEQNUM goes on from the previous Submit sent on this data channel"
+                            ) if reset else ""
+                        # Cited to the section of the Submit's type and the table it refers to.
+                        s.add(Severity.ERROR, MESSAGE_SENDER[mt][1],
                               f"Data channel (substreamid={channel.substreamid}): "
-                              f"{mt.name} SEQNUM={seqnum}; expected {expected_seqnum}{after_reset}",
+                              f"{mt.name} SEQNUM={seqnum}; expected {expected_seqnum}{after_reset} "
+                              f"(Table {_SUBMIT_FIELDS_TABLE[mt]})",
                               packet_number=cm.packet_number,
                               requirement=Requirement.SUBMIT_SEQNUM)
                         seqnum_error_reported = True
@@ -1889,6 +2053,10 @@ def _validate_data_channel(
                                 f"{sub['msg_type'].name} SEQNUM={seqnum} has no Return from the "
                                 f"Sender{cancelled}",
                                 Requirement.RETURN_SENT, sub['packet_number'])
+
+        # -------------------------------------------------------------- §9.22
+        # SHALL: the Cancel Submit's fields as described in Table 17, matching the Submit to cancel
+        _check_cancel_submits(s, channel, sender_msgs, receiver_msgs)
 
         # -------------------------------------------------------------- 9.17
         # ISO_SUBMIT: when A=1 (ASAP), STARTFRAME SHALL be 0
@@ -2056,15 +2224,15 @@ def _validate_data_channel(
                       packet_number=cm.packet_number,
                       requirement=Requirement.CLEAR_MAC_ZERO)
     else:
-        # ---------------------------------------------------------------- §12 — CTR monotonicity
-        _check_ctr_monotonic(s, sender_msgs,
-                             f"Sender->Receiver (data substreamid=0x{channel.substreamid:02X})")
-        _check_ctr_monotonic(s, receiver_msgs,
-                             f"Receiver->Sender (data substreamid=0x{channel.substreamid:02X})")
-        # ---------------------------------------------------------------- §12 — KEYVERSION consistency
-        _check_keyversion_consistency(
+        # ---------------------------------------------------------------- §12 — KEYVERSION non-zero
+        _check_keyversion_nonzero(
             s, sender_msgs, receiver_msgs,
             f"Data (substreamid=0x{channel.substreamid:02X})")
+        # ---------------------------------------------------------------- TR-10-13 §18 — forward progress
+        _check_pep_forward_progress(
+            s, sender_msgs, f"Sender->Receiver (data substreamid=0x{channel.substreamid:02X})")
+        _check_pep_forward_progress(
+            s, receiver_msgs, f"Receiver->Sender (data substreamid=0x{channel.substreamid:02X})")
 
 
 # ---------------------------------------------------------------------------
