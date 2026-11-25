@@ -31,11 +31,17 @@ from enum import Enum
 
 
 class TestState(Enum):
+    # Every state the testing tool can write (nmostesting/TestResult.py, TestStates.names).
+    # Any value other than PASS or Could Not Test is a FAIL (TP-1 section 20.3), so a state
+    # missing here must not stop the analysis: it would leave the run without a verdict.
     PASS = "Pass"
+    WARNING = "Warning"
     FAIL = "Fail"
-    COULD_NOT_TEST = "Could Not Test"
-    TEST_DISABLED = "Test Disabled"
+    MANUAL = "Manual"
     NOT_APPLICABLE = "Not Applicable"
+    NOT_IMPLEMENTED = "Not Implemented"
+    TEST_DISABLED = "Test Disabled"
+    COULD_NOT_TEST = "Could Not Test"
 
 
 @dataclass
