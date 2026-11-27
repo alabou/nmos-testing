@@ -29,7 +29,7 @@ This folder contains the IPMX NMOS Testing package. Follow these instructions to
         set IPMX_RECEIVER_ADDRESS=IPv4 NMOS Control address of the RECEIVER DuT
         set IPMX_RECEIVER_PORT=IPv4 NMOS Control port of the RECEIVER DuT
         set IPMX_VENDOR=XYZ
-        set IPMX_VENDOR_PCAP_CAPTURE=LOCAL or VB440
+        set IPMX_VENDOR_PCAP_CAPTURE=LOCAL or VB440 or VIP
         set IPMX_VENDOR_PCAP_CAPTURE_VB440_ADDRESS=IPv4 address, or host:port, of the capture API of the VB440 probe
         set IPMX_VENDOR_PCAP_CAPTURE_VB440_VIDEO_RECEIVER_ID=ID of the VB440 video Receiver to capture from
         set IPMX_VENDOR_PCAP_CAPTURE_VB440_AUDIO_RECEIVER_ID=ID of the VB440 audio Receiver to capture from
@@ -108,6 +108,90 @@ This folder contains the IPMX NMOS Testing package. Follow these instructions to
     !!! Note that the script now gets the LOCAL interface as a parameter.
 
     !!! Do not forget to have the VB440 Receivers set by IPMX_VENDOR_PCAP_CAPTURE_VB440_VIDEO_RECEIVER_ID and IPMX_VENDOR_PCAP_CAPTURE_VB440_AUDIO_RECEIVER_ID subscribing to the Sender's streams if the VB440 capture mode is used. 
+
+- PacketStorm VIP Capture
+
+    The PacketStorm VIP can capture video and audio streams for analysis by the IPMX Automated Test Package. Captures include RTP media packets and RTCP Sender Reports.
+
+    Prerequisites
+
+    Connect the VIP to the media network.
+
+    Using an NMOS controller, connect the video and audio Senders being tested to the appropriate VIP Receivers BEFORE running the capture test. The streams must be visible on the VIP.
+
+    Confirm that the sender GUIDs configured in the test package identify the Senders connected to the VIP.
+
+    On the VIP, the GUIDs of the connected flows are available on NMOS tab Receive Subsciption: [Active]
+
+    Place vip_packet_capture_sender_id.py in the main test-package folder.
+
+    Install the capture script's dependencies in the Python environment used by the test package:
+
+    python -m pip install requests urllib3
+
+    Configuration
+
+    In the setup file used for your device, select VIP capture and configure the VIP IP address, admin password, and capture port.
+
+    Windows example:
+
+    set "IPMX_VENDOR_PCAP_CAPTURE=VIP"
+    set "VIP_IP=YOUR_VIP_IP_ADDRESS"
+    set "VIP_PASSWORD=YOUR_ADMIN_PASSWORD"
+    set "VIP_PORT=A"
+    set "VIP_VIDEO_COUNT=180"
+    set "VIP_AUDIO_COUNT=3500"
+    set "VIP_CAPLEN=1500"
+
+    Linux/WSL example:
+
+    export IPMX_VENDOR_PCAP_CAPTURE=VIP
+    export VIP_IP="YOUR_VIP_IP_ADDRESS"
+    export VIP_PASSWORD="YOUR_ADMIN_PASSWORD"
+    export VIP_PORT=A
+    export VIP_VIDEO_COUNT=180
+    export VIP_AUDIO_COUNT=3500
+    export VIP_CAPLEN=1500
+
+    Replace the example settings with those for your installation. VIP_PORT selects VIP media capture port A or B; it is not the stream's UDP destination port. Keep the actual admin password out of files committed to the repository.
+
+    Capture Counts
+
+    For video, --video true makes --count specify the number of complete video frames. A count of 180 captures approximately three seconds at 60 fps.
+
+    For video, --video false makes --count specify packets. A count of 235,000 captures approximately three seconds at 60 fps.
+
+    For audio, --video false makes --count specify packets. A count of 3500 provides approximately three seconds for 1 ms audio packet time, allowing for included RTCP packets. Shorter audio packet times require larger counts.
+
+    Verify that the resulting capture spans more than two seconds when performing tests requiring a two-second measurement window.
+
+    Running the Capture
+
+    After loading your setup settings, run:
+
+    Windows:
+    IPMX-PCAPs.bat
+
+    Linux/WSL:
+    ./IPMX-PCAPs.sh
+
+    The VIP integration passes the selected sender GUID to the capture script and downloads the capture into the output directory selected by the test package, normally IPMX_VENDOR_<vendor>.
+
+    The capture script uses --filename for the remote capture filename and --dest for the local output directory.
+
+    Verification and Troubleshooting
+
+    Confirm that the capture file was downloaded successfully.
+
+    Confirm that it contains both RTP packets and RTCP Sender Reports.
+
+    Use the matching SDP file when running the analysis scripts.
+
+    On the VIP, the SDP for the flow is available on the NMOS tab
+
+    If the VIP reports "Packet capture is currently running," allow the existing capture to finish or stop it before retrying.
+
+    If no packets are captured, check the NMOS connection, sender GUID, VIP port, and network connectivity.
 
 - The following steps, a) un IPMX-SETUP-XYZ.bat, b) Run the IS-04 test suite on your Receiver, c) Run the IS-04 test suite on your Sender, and d) Activate your Sender and capture an SDP transport file and a PCAP, should be performed to make sure your environment is properly setup.
 

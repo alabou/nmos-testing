@@ -32,6 +32,84 @@ if "%IPMX_VENDOR_PCAP_CAPTURE%" == "VB440" (
     )
 )
 
+@REM ============================================================
+@REM PacketStorm VIP capture using NMOS Sender ID
+@REM ============================================================
+@REM Runs when IPMX_VENDOR_PCAP_CAPTURE is set to VIP.
+@REM
+@REM Prerequisites:
+@REM - Confirm that VIP_IP, VIP_PORT, VIP_PASSWORD env variable
+@REM   are defined (see ./IPMX-SETUP-VIP.sh for ref)
+@REM - Confirm that vip_packet_capture_sender_id.py exists in 
+@REM   the package folder.
+@REM - Connect the Senders under test to VIP Receivers using NMOS
+@REM   before starting the automated capture test.
+@REM - Verify that the VIP is receiving the selected streams.
+@REM - Finish or stop any existing VIP capture before retrying.
+@REM
+@REM
+@REM VIP_PORT selects VIP port A or B
+@REM
+@REM Video:
+@REM   --video true captures complete video frames.
+@REM   VIP_VIDEO_COUNT specifies the frame count.
+@REM
+@REM   --video false captures packets.
+@REM   VIP_VIDEO_COUNT specifies the packet count.
+@REM
+@REM Audio:
+@REM   --video false captures packets.
+@REM   VIP_AUDIO_COUNT specifies the packet count.
+@REM
+@REM RTCP Sender Reports are included in the capture.
+@REM Capture more than 2 seconds when required by the timing tests.
+@REM
+@REM Return a nonzero exit code if capture or download fails.
+@REM Successful VIP capture should exit without an interactive pause.
+@REM PacketStorm VIP capture using the selected sender ID
+
+set "dest=%~dp1"
+@REM %~dp1 ends with "\", and "\"" escapes the closing quote in the argv of python, which
+@REM merges every argument after --dest into dest. Drop the trailing backslash.
+if "%dest:~-1%" == "\" set "dest=%dest:~0,-1%"
+set "filename=%~nx1"
+set "sender_id=%~n1"
+set "sender_id=%sender_id:*-=%"
+if "%IPMX_VENDOR_PCAP_CAPTURE%" == "VIP" (
+    if "%~4" == "video" (
+        python "%~dp0vip_packet_capture_sender_id.py" ^
+            --ip "%VIP_IP%" ^
+            --password "%VIP_PASSWORD%" ^
+            --sender-id "%sender_id%" ^
+            --port "%VIP_PORT%" ^
+            --filename "%filename%" ^
+            --dest "%dest%" ^
+            --count 30 ^
+            --caplen 1500 ^
+            --video true
+
+        if errorlevel 1 exit /b 1
+    ) else if "%~4" == "audio" (
+        python "%~dp0vip_packet_capture_sender_id.py" ^
+            --ip "%VIP_IP%" ^
+            --password "%VIP_PASSWORD%" ^
+            --sender-id "%sender_id%" ^
+            --port "%VIP_PORT%" ^
+            --filename "%filename%" ^
+            --dest "%dest%" ^
+            --count 1000 ^
+            --caplen 1500 ^
+            --video false
+
+        if errorlevel 1 exit /b 1
+    ) else (
+        echo ERROR: Unsupported capture type "%~4".
+        exit /b 1
+    )
+
+    exit /b 0
+)
+
 @echo IPMX_VENDOR_PCAP_CAPTURE is %IPMX_VENDOR_PCAP_CAPTURE%
 @echo Press any key to continue...
 @pause >nul
